@@ -54,7 +54,9 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .datefilter input[type=month]{font-family:var(--mono);font-size:12px;padding:5px 8px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);border-radius:3px}
 .datefilter button{padding:5px 12px;font-size:12px}
 textarea#biomarkers{width:100%;min-height:96px;resize:vertical;padding:10px 12px;border:1px solid var(--br2);border-radius:3px;background:var(--bg2);color:var(--tx);font-family:var(--mono);font-size:13.5px}
-.hint{font-size:12px;color:var(--tx2);margin-top:8px;line-height:1.55}
+.hint{font-size:12px;color:var(--tx2);margin-top:8px;line-height:1.55;padding-left:18px}
+.hint li{margin-bottom:7px}
+.hint li:last-child{margin-bottom:0}
 .hinttoggle{display:flex;align-items:center;gap:5px;margin-top:8px;background:transparent;border:none;padding:0;font-family:var(--font);font-size:12px;font-weight:600;color:var(--tx2);cursor:pointer}
 .hinttoggle:hover{color:var(--acc)}
 .actions{display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap}
@@ -155,8 +157,17 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
       <textarea id="biomarkers" placeholder="Enter one biomarker per line or comma-separated, e.g.&#10;HbA1c&#10;Troponin&#10;PSA&#10;BNP"></textarea>
       <button class="hinttoggle" id="hintToggleBtn" type="button"><span class="chev" id="hintChev">▸</span> Search tips</button>
       <div id="hintWrap" style="display:none">
-        <div class="hint" id="hintFda">Terms are matched against device name and 510(k) summary text (openFDA has no dedicated "biomarker" field). Greek letters (α, β, …) are automatically spelled out (alpha, beta, …). If an exact phrase finds nothing, the search automatically widens — first dropping word order, then the Ig-class suffix — and flags the result as <span class="mmtag" style="cursor:default">Broad match</span> / <span class="mmtag" style="cursor:default">Antigen-only match</span> so you know it's less precise. "Anti-" is never dropped when the term has it — it distinguishes an antibody test from the antigen itself, so a real match must still contain it, though not necessarily the literal word "anti" ("antibody", "antibodies", "autoantibody", "autoantibodies", and "AB" all count too), and not necessarily in the same field as the antigen name — FDA splits one device's info across several fields, and it's common for the antigen abbreviation to appear in one and the antibody wording in another. For antigens known to appear in named multi-antigen panel kits (autoimmune liver, ANA/ENA, celiac, and similar profiles), 0 confirmed results also triggers a search for plausibly related panel devices, shown separately as <span class="mmtag" style="cursor:default">N possible panel matches</span> — these aren't confirmed (panels rarely name each individual antigen in FDA's structured data), so verify manually, e.g. via Check Measurand.</div>
-        <div class="hint" id="hintLdt" style="display:none">Terms are matched against the analyte/test name in the NY State Wadsworth Center CLEP "Approved Laboratory Developed Tests" database (any-word match, same as the site's own default). Requires an LDT proxy Worker URL configured in Settings (gear icon).</div>
+        <ul class="hint" id="hintFda">
+          <li>Terms are matched against device name and 510(k) summary text (openFDA has no dedicated "biomarker" field).</li>
+          <li>Greek letters (α, β, …) are automatically spelled out (alpha, beta, …).</li>
+          <li>If an exact phrase finds nothing, the search automatically widens — first dropping word order, then the Ig-class suffix — and flags the result as <span class="mmtag" style="cursor:default">Broad match</span> / <span class="mmtag" style="cursor:default">Antigen-only match</span> so you know it's less precise.</li>
+          <li>"Anti-" is never dropped when the term has it — it distinguishes an antibody test from the antigen itself, so a real match must still contain it, though not necessarily the literal word "anti" ("antibody", "antibodies", "autoantibody", "autoantibodies", and "AB" all count too), and not necessarily in the same field as the antigen name — FDA splits one device's info across several fields, and it's common for the antigen abbreviation to appear in one and the antibody wording in another.</li>
+          <li>For antigens known to appear in named multi-antigen panel kits (autoimmune liver, ANA/ENA, celiac, and similar profiles), 0 confirmed results also triggers a search for plausibly related panel devices, shown separately as <span class="mmtag" style="cursor:default">N possible panel matches</span> — these aren't confirmed (panels rarely name each individual antigen in FDA's structured data), so verify manually, e.g. via Check Measurand.</li>
+        </ul>
+        <ul class="hint" id="hintLdt" style="display:none">
+          <li>Terms are matched against the analyte/test name in the NY State Wadsworth Center CLEP "Approved Laboratory Developed Tests" database (any-word match, same as the site's own default).</li>
+          <li>Requires an LDT proxy Worker URL configured in Settings (gear icon).</li>
+        </ul>
       </div>
       <div class="actions">
         <button class="btn-primary" id="searchBtn"><i class="ti ti-search"></i> Search</button>
