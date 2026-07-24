@@ -210,7 +210,16 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
 
 <script>
 const OPENFDA_BASE = 'https://api.fda.gov/device/510k.json';
-const DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm?ID=';
+// openFDA's 510k dataset also includes De Novo classification grants (k_number starting
+// "DEN...", e.g. DEN050002) alongside real 510(k)s (k_number starting "K..."). These are a
+// different FDA review pathway with their own detail page — pmn.cfm (built for K-numbers)
+// returns nothing for a DEN number, so the link must switch to denovo.cfm instead.
+const PMN_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm?ID=';
+const DENOVO_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/denovo.cfm?ID=';
+function detailUrlFor(kNumber) {
+  const base = /^DEN/i.test(kNumber || '') ? DENOVO_DETAIL_BASE : PMN_DETAIL_BASE;
+  return base + encodeURIComponent(kNumber || '');
+}
 const PAGE_LIMIT = 100;
 const MAX_RECORDS = 300; // cap per biomarker to bound request volume
 
@@ -320,7 +329,7 @@ function buildRecordRows(records, term) {
       <td>${escapeHtml(r.applicant || '—')}</td>
       <td>${declBadge(r.decision_description)}</td>
       <td>${escapeHtml(r.decision_date || '—')}</td>
-      <td><a href="${DETAIL_BASE}${encodeURIComponent(r.k_number || '')}" target="_blank" rel="noopener">${escapeHtml(r.k_number || '')} ↗</a></td>
+      <td><a href="${escapeHtml(detailUrlFor(r.k_number))}" target="_blank" rel="noopener">${escapeHtml(r.k_number || '')} ↗</a></td>
       <td>${r.k_number
         ? `<button class="measurand-btn" data-knumber="${escapeHtml(r.k_number)}" data-term="${escapeHtml(term)}">Check Measurand</button><span class="measurand-result"></span>`
         : '—'}</td>
@@ -1370,7 +1379,7 @@ $('exportBtn').addEventListener('click', () => {
         Decision: r.decision_description || '',
         'Approve Date': r.decision_date || '',
         'K Number': r.k_number || '',
-        'Detail Link': r.k_number ? `${DETAIL_BASE}${r.k_number}` : ''
+        'Detail Link': r.k_number ? detailUrlFor(r.k_number) : ''
       });
     });
     (s.panelCandidates || []).forEach(r => {
@@ -1382,7 +1391,7 @@ $('exportBtn').addEventListener('click', () => {
         Decision: r.decision_description || '',
         'Approve Date': r.decision_date || '',
         'K Number': r.k_number || '',
-        'Detail Link': r.k_number ? `${DETAIL_BASE}${r.k_number}` : ''
+        'Detail Link': r.k_number ? detailUrlFor(r.k_number) : ''
       });
     });
   });
