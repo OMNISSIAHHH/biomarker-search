@@ -49,6 +49,10 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .modetab{font-family:var(--font);font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:3px;border:1px solid var(--br2);background:transparent;color:var(--tx2);cursor:pointer;transition:all .15s}
 .modetab:hover{border-color:var(--acc);color:var(--acc)}
 .modetab.active{background:var(--acc);border-color:var(--acc);color:#fff}
+.datefilter{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;font-size:12.5px;color:var(--tx2)}
+.datefilter label{display:flex;align-items:center;gap:6px}
+.datefilter input[type=month]{font-family:var(--mono);font-size:12px;padding:5px 8px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);border-radius:3px}
+.datefilter button{padding:5px 12px;font-size:12px}
 textarea#biomarkers{width:100%;min-height:96px;resize:vertical;padding:10px 12px;border:1px solid var(--br2);border-radius:3px;background:var(--bg2);color:var(--tx);font-family:var(--mono);font-size:13.5px}
 .hint{font-size:12px;color:var(--tx2);margin-top:8px;line-height:1.55}
 .actions{display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap}
@@ -173,6 +177,12 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
       <div class="modetabs" id="sortTabs" style="display:none">
         <button class="modetab active" id="sortByApprovals" type="button">Fewest approvals</button>
         <button class="modetab" id="sortByDate" type="button">Most recent approval</button>
+      </div>
+      <div class="datefilter" id="dateFilterBar" style="display:none">
+        <label>From <input type="month" id="dateFilterFrom"></label>
+        <label>To <input type="month" id="dateFilterTo"></label>
+        <button class="btn-ghost" id="dateFilterClear" type="button">Clear</button>
+        <span id="dateFilterNote"></span>
       </div>
       <div class="hint" id="resultsHint" style="margin:-6px 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
       <table class="sumtable">
@@ -326,8 +336,19 @@ function escapeHtml(s) {
 
 // Shared row template for both confirmed records and unconfirmed panel candidates — same
 // shape, same columns, same "Check Measurand" action either way.
+// openFDA returns records in its own internal order (not date order), so a biomarker's
+// expanded device list looked shuffled regardless of which top-level rank mode was active
+// (e.g. GADA showed 2005 -> 2007 -> 1986). Sorted newest-first as a sensible universal
+// default, independent of sortMode — a biomarker's own device list should read chronologically
+// either way. Records with no date (shouldn't normally happen) sort last. Shared by the
+// on-screen detail table and the Excel export, so both read the same order.
+function sortRecordsByDateDesc(records) {
+  return records.slice().sort((a, b) => (b.decision_date || '').localeCompare(a.decision_date || ''));
+}
+
 function buildRecordRows(records, term) {
-  return records.map(r => `
+  const sorted = sortRecordsByDateDesc(records);
+  return sorted.map(r => `
     <tr>
       <td>${escapeHtml(r.device_name || '—')}</td>
       <td>${escapeHtml(r.applicant || '—')}</td>
@@ -930,6 +951,38 @@ function expansionTag(expansion) {
 
 let sortMode = 'approvals'; // 'approvals' | 'date'
 
+// { from, to }, each either '' (unbounded) or a "YYYY-MM" string from <input type="month">.
+// decision_date is "YYYY-MM-DD", whose first 7 characters compare correctly against a
+// "YYYY-MM" bound with plain string comparison — no Date parsing needed.
+let dateFilter = { from: '', to: '' };
+
+function dateFilterActive() {
+  return !!(dateFilter.from || dateFilter.to);
+}
+
+function inDateFilterRange(record) {
+  const ym = (record.decision_date || '').slice(0, 7);
+  if (!ym) return false; // can't confirm it belongs in range without a date
+  if (dateFilter.from && ym < dateFilter.from) return false;
+  if (dateFilter.to && ym > dateFilter.to) return false;
+  return true;
+}
+
+// Recomputes approved/notApproved/total from just the in-range records, so every view fed by
+// getRanked() (table, chart, rank, Excel export) stays internally consistent with what's
+// actually being counted — rather than filtering the displayed device list while leaving the
+// summary counts describing the unfiltered total.
+function applyDateFilter(rawState) {
+  if (!dateFilterActive()) return rawState;
+  return rawState.map(s => {
+    if (s.error) return s;
+    const records = s.records.filter(inDateFilterRange);
+    const approved = records.filter(r => classify(r.decision_description) === 'se').length;
+    const notApproved = records.filter(r => classify(r.decision_description) === 'nse').length;
+    return { ...s, records, approved, notApproved, total: records.length };
+  });
+}
+
 // Most recent decision_date among a biomarker's matched records, or null if it has none to
 // sort by (0 matches). ISO "YYYY-MM-DD" strings compare correctly with plain string
 // comparison, so no Date parsing is needed.
@@ -942,7 +995,8 @@ function latestApprovalDate(s) {
 }
 
 function getRanked() {
-  const valid = state.filter(s => !s.error).slice();
+  const filtered = applyDateFilter(state);
+  const valid = filtered.filter(s => !s.error).slice();
   if (sortMode === 'date') {
     // Most recently approved first; biomarkers with no dated record (0 matches) sort last
     // regardless of direction, since there's nothing to rank them by.
@@ -966,6 +1020,9 @@ function renderResults() {
   $('sortTabs').style.display = 'flex';
   $('sortByApprovals').classList.toggle('active', sortMode === 'approvals');
   $('sortByDate').classList.toggle('active', sortMode === 'date');
+  $('dateFilterBar').style.display = 'flex';
+  $('dateFilterNote').textContent = dateFilterActive()
+    ? 'Approved/Total counts reflect only this range.' : '';
   $('chartCaptag').textContent = 'Figure 1';
   $('resultsCaptag').textContent = 'Table 1';
   if (sortMode === 'date') {
@@ -1025,7 +1082,9 @@ function renderResults() {
           <tbody>${buildRecordRows(s.records, s.term)}</tbody>
         </table>${shownNote}${modeNote}`;
     } else {
-      wrap.innerHTML = `<div class="dnote">No matching 510(k) submissions found.</div>`;
+      wrap.innerHTML = dateFilterActive()
+        ? `<div class="dnote">No submissions in this date range.</div>`
+        : `<div class="dnote">No matching 510(k) submissions found.</div>`;
     }
     if (hasPanelCandidates) {
       wrap.innerHTML += `
@@ -1187,6 +1246,7 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
   if (chartAndCaptions) {
     $('resultsCard').style.display = 'block';
     $('sortTabs').style.display = 'none'; // FDA-only sort toggle; LDT has no approve-date field to rank by
+    $('dateFilterBar').style.display = 'none'; // same — LDT records have no decision_date to filter on
     $('chartCaptag').textContent = 'Figure 1';
     $('chartTitle').textContent = 'LDT matches by biomarker, ranked fewest first';
     $('chartHint').textContent = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
@@ -1396,6 +1456,15 @@ $('crossCheckBtn').addEventListener('click', async () => {
 $('sortByApprovals').addEventListener('click', () => { sortMode = 'approvals'; renderResults(); });
 $('sortByDate').addEventListener('click', () => { sortMode = 'date'; renderResults(); });
 
+$('dateFilterFrom').addEventListener('change', (e) => { dateFilter.from = e.target.value; renderResults(); });
+$('dateFilterTo').addEventListener('change', (e) => { dateFilter.to = e.target.value; renderResults(); });
+$('dateFilterClear').addEventListener('click', () => {
+  dateFilter = { from: '', to: '' };
+  $('dateFilterFrom').value = '';
+  $('dateFilterTo').value = '';
+  renderResults();
+});
+
 $('searchBtn').addEventListener('click', runSearch);
 
 function ldtSummaryRows(targetState) {
@@ -1468,7 +1537,7 @@ $('exportBtn').addEventListener('click', () => {
   ];
   const detailRows = [];
   valid.forEach(s => {
-    s.records.forEach(r => {
+    sortRecordsByDateDesc(s.records).forEach(r => {
       detailRows.push({
         Biomarker: s.term,
         'Match Status': 'Confirmed',
