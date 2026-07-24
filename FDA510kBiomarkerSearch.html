@@ -819,6 +819,18 @@ function ldtQueryTerm(term) {
   return antigen || searchTerm;
 }
 
+// NY's CLEP database only covers labs holding a NY LDT permit — a small fraction of all
+// LDTs offered nationally. When it finds nothing, a plain Google search for "<term> LDT"
+// routinely surfaces the actual offering lab (ARUP, Mayo, LabCorp, and similar reference
+// labs' public test directories all turn up this way) even though none of them expose a
+// free, no-login, CORS-friendly search API this tool could query directly. This is just a
+// plain link to Google's own search results page — no API key, no proxy, no added cost.
+function googleLdtSearchLink(term) {
+  const query = `${term} LDT laboratory developed test`;
+  const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">Search Google for "${escapeHtml(term)} LDT" ↗</a>`;
+}
+
 async function fetchLdtBiomarker(term, proxyUrl) {
   const params = new URLSearchParams({ q: ldtQueryTerm(term), status: 'All' });
   let res;
@@ -1193,7 +1205,7 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
           <tbody>${rows}</tbody>
         </table>${shownNote}`;
     } else {
-      wrap.innerHTML = `<div class="dnote">No matching LDTs found.</div>`;
+      wrap.innerHTML = `<div class="dnote">No matching LDTs found. ${googleLdtSearchLink(s.term)}</div>`;
     }
     const td = document.createElement('td');
     td.colSpan = 6;
