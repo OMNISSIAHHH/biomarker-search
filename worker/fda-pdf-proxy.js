@@ -14,8 +14,9 @@
 // than scraping the link text. There are two possible documents, and not every device has
 // either one:
 //   - the modern "Decision Summary" template, at /cdrh_docs/reviews/{K}.pdf
-//   - the plain clearance-letter-style "Summary", at /cdrh_docs/pdf{YY}/{K}.pdf, where YY is
-//     the 2-digit year embedded in the K number itself (K123456 -> received in 20{YY})
+//   - the plain clearance-letter-style "Summary", at /cdrh_docs/pdf{folder}/{K}.pdf — see
+//     summaryYearFolder() below for how {folder} is derived from the K number's year; it is
+//     NOT simply the zero-padded 2-digit year for every record.
 // Some devices have both, some have only one, some (mostly pre-2000s) have neither. Try the
 // Decision Summary first (it's the one with a reliable "Measurand:"/"Analyte:" field), fall
 // back to the plain Summary if that 404s.
@@ -26,6 +27,19 @@
 const DECISION_SUMMARY_BASE = 'https://www.accessdata.fda.gov/cdrh_docs/reviews';
 const SUMMARY_BASE = 'https://www.accessdata.fda.gov/cdrh_docs';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+
+// FDA's plain "Summary" archive isn't consistently zero-padded by year. Confirmed against
+// FDA's own working links for real K numbers spanning every era:
+//   - 1996-2001 (K-number year code 96-99, 00-01): no year folder at all -> /cdrh_docs/pdf/
+//   - 2002-2009 (code 02-09): single digit, NOT zero-padded -> /cdrh_docs/pdf7/, not pdf07/
+//   - 2010 onward (code 10-99): the two-digit code as-is -> /cdrh_docs/pdf25/
+// Always zero-padding to 2 digits (e.g. building "pdf07") 404s for the whole 2002-2009 range
+// and for 1996-2001, silently hiding real, existing documents.
+function summaryYearFolder(kNumber) {
+  const yy = parseInt(kNumber.slice(1, 3), 10);
+  if (yy >= 96 || yy <= 1) return '';
+  return String(yy); // no leading zero for 2-9; "10"-"99" already print as-is
+}
 
 function corsHeaders() {
   return {
@@ -67,8 +81,7 @@ export default {
       res = await fetchUpstream(`${DECISION_SUMMARY_BASE}/${kNumber}.pdf`);
       if (res.status === 404) {
         source = 'summary';
-        const yy = kNumber.slice(1, 3);
-        res = await fetchUpstream(`${SUMMARY_BASE}/pdf${yy}/${kNumber}.pdf`);
+        res = await fetchUpstream(`${SUMMARY_BASE}/pdf${summaryYearFolder(kNumber)}/${kNumber}.pdf`);
       }
     } catch (err) {
       return jsonError({ error: 'Upstream fetch failed', detail: String(err && err.message || err) }, 502);

@@ -155,8 +155,9 @@ FDA's own detail page (`pmn.cfm?ID=...`) labels this document inconsistently acr
 doesn't matter here, since the Worker goes straight to the known URL patterns rather than
 scraping link text. There are two possible documents, and not every device has either one:
 the modern "Decision Summary" template (`/cdrh_docs/reviews/{K}.pdf`), tried first, and the
-plain clearance-letter-style "Summary" (`/cdrh_docs/pdf{YY}/{K}.pdf`, where `YY` is the
-2-digit year embedded in the K number), tried as a fallback if the first 404s.
+plain clearance-letter-style "Summary" (`/cdrh_docs/pdf{folder}/{K}.pdf`), tried as a fallback
+if the first 404s — see `summaryYearFolder()` in the Worker source for how `{folder}` is
+derived from the K number's year (it's not simply the zero-padded 2-digit year for every era).
 
 This Worker deliberately does **not** parse the PDF — Cloudflare Workers have no built-in PDF
 parser, and bundling one would require a build step this project avoids. It's a pure byte
@@ -171,6 +172,12 @@ Notes for anyone modifying this:
 - Not every 510(k) has either document — coverage is good for modern IVD/clinical chemistry
   devices but far weaker (or absent) for older submissions (pre-2000s ones regularly 404 on
   both).
+- The plain "Summary" archive's year folder isn't consistently zero-padded — confirmed
+  against FDA's own working links: 1996-2001 has no year folder at all (`/cdrh_docs/pdf/`),
+  2002-2009 uses a single digit with no leading zero (`/cdrh_docs/pdf7/`, not `pdf07`), and
+  2010 onward uses the two-digit year as-is (`/cdrh_docs/pdf25/`). Guessing a zero-padded
+  2-digit folder for every record 404s across the entire 1996-2009 range even when a real
+  document exists.
 - accessdata.fda.gov's bot detection blocks requests without a realistic browser
   `User-Agent` header (returns a small HTML "apology" page instead of the PDF) — the Worker
   already sets one; don't remove it.
