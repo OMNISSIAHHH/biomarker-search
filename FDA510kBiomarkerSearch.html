@@ -493,8 +493,49 @@ function crossFieldAntiClause() {
   return '(' + SEARCH_FIELDS.map(antiSynonymClause).join(' OR ') + ')';
 }
 
+const ISOTYPE_SUFFIX = /\s+Ig[AGME][1-4]?$/i;
+
 function stripIsotypeSuffix(term) {
-  return term.replace(/\s+Ig[AGME][1-4]?$/i, '').trim();
+  return term.replace(ISOTYPE_SUFFIX, '').trim();
+}
+
+// An Ig-class suffix ("... IgG") implies an antibody test just as strongly as an explicit
+// "Anti-" prefix does, even when the user didn't type "anti" — e.g. "ASA IgG" (antisperm
+// antibody). Once stripIsotypeSuffix removes that suffix (tier 3+), what's left can be a
+// short, generic-looking abbreviation ("ASA") with zero remaining context, and a bare-word
+// search for it collides with completely unrelated devices across FDA's full device catalog
+// (snoring appliances, blood tubing, lasers — all contain "ASA" as a token). requireAnti
+// alone didn't catch this because hasAntiPrefix requires the literal word "anti" at the
+// START of the term, which "ASA IgG" never had.
+function hasIgSuffix(term) {
+  return ISOTYPE_SUFFIX.test(term.trim());
+}
+
+// Only used for the *implied* case above (Ig suffix but no explicit "Anti-"). Deliberately
+// narrower than ANTI_SYNONYMS — it drops the bare words "anti" and "ab", which are common
+// English/device fragments unrelated to antibody testing ("anti-snoring", "anti-regurgitation",
+// "AB" as in blood type) and were the reason the broader list still let false positives
+// through even after requiring *some* anti-shaped word to co-occur. "Antibody"/"antibodies"/
+// "autoantibody"/"autoantibodies" are unambiguous, so this constraint is safe to require
+// whenever tier 3+ has dropped down to matching a bare, isotype-suffix-stripped token with no
+// other remaining context.
+const STRICT_ANTIBODY_WORDS = ['antibody', 'antibodies', 'autoantibody', 'autoantibodies'];
+
+function strictAntibodyClause(field) {
+  return '(' + STRICT_ANTIBODY_WORDS.map(w => `${field}:"${w}"`).join(' OR ') + ')';
+}
+
+function crossFieldStrictAntibodyClause() {
+  return '(' + SEARCH_FIELDS.map(strictAntibodyClause).join(' OR ') + ')';
+}
+
+// 'explicit' — term literally started with "Anti-"; 'implied' — no "Anti-" prefix, but an
+// Ig-class suffix still signals an antibody test; 'none' — plain analyte/protein name, no
+// antibody semantics at all (e.g. "PSA", "BNP").
+function antiRequirementMode(term) {
+  if (hasAntiPrefix(term)) return 'explicit';
+  if (hasIgSuffix(term)) return 'implied';
+  return 'none';
 }
 
 function splitTokens(term) {
@@ -516,19 +557,21 @@ function crossFieldTokensClause(tokens) {
   return '(' + tokens.map(tok => fieldOr(f => `${f}:"${tok}"`)).join(' AND ') + ')';
 }
 
-function withCrossFieldAnti(mainExpr, requireAnti) {
-  return requireAnti ? `(${mainExpr} AND ${crossFieldAntiClause()})` : mainExpr;
+function withCrossFieldAnti(mainExpr, mode) {
+  if (mode === 'explicit') return `(${mainExpr} AND ${crossFieldAntiClause()})`;
+  if (mode === 'implied') return `(${mainExpr} AND ${crossFieldStrictAntibodyClause()})`;
+  return mainExpr;
 }
 
 // Tier 2: same words, adjacency/order no longer required (still requires every word to
 // appear somewhere in the same field — an anti/antibody synonym, when the term implies one,
 // is checked separately across all fields, not tied to that same field).
 function buildBroadExpr(term) {
-  const requireAnti = hasAntiPrefix(term);
+  const mode = antiRequirementMode(term);
   const tokens = splitTokens(stripAntiPrefix(term));
   if (!tokens.length) return null;
-  if (!requireAnti && tokens.length < 2) return null;
-  return withCrossFieldAnti(fieldOr(f => tokenClause(f, tokens)), requireAnti);
+  if (mode === 'none' && tokens.length < 2) return null;
+  return withCrossFieldAnti(fieldOr(f => tokenClause(f, tokens)), mode);
 }
 
 // Tier 3: also drop the Ig-class suffix — many cleared assays don't state the isotype in
@@ -536,14 +579,15 @@ function buildBroadExpr(term) {
 // longer confirm the isotype itself matched, so callers must label it as such. An
 // anti/antibody synonym is still required when the term implies one (checked across all
 // fields, per crossFieldAntiClause above) — that's what separates an antibody test from the
-// antigen/analyte itself, so dropping it would change what a match means.
+// antigen/analyte itself, so dropping it would change what a match means. Note the mode is
+// computed from the ORIGINAL term, before the Ig suffix that implied it gets stripped below.
 function buildAntigenExpr(term) {
-  const requireAnti = hasAntiPrefix(term);
+  const mode = antiRequirementMode(term);
   const antigen = stripAntiPrefix(stripIsotypeSuffix(term));
   if (!antigen) return null;
   const tokens = splitTokens(antigen);
   const mainExpr = tokens.length > 1 ? fieldOr(f => tokenClause(f, tokens)) : buildExactExpr(antigen);
-  return withCrossFieldAnti(mainExpr, requireAnti);
+  return withCrossFieldAnti(mainExpr, mode);
 }
 
 // Reference list of common biomarker abbreviations -> full name, keyed by the term with
@@ -652,13 +696,13 @@ function splitExpansionTokens(phrase) {
 // routinely spell one word of a multi-word name in openFDA's classification text
 // (openfda.device_name) while another word only appears in the free-text device_name (see
 // the beta2-gp1-domain1 entry below), so same-field AND would miss genuine matches here too.
-function buildExpansionExpr(expansion, requireAnti) {
+function buildExpansionExpr(expansion, mode) {
   if (!expansion) return null;
   const phrase = expansion.search || expansion.full;
   const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length);
   if (!groups.length) return null;
   const mainExpr = '(' + groups.map(crossFieldTokensClause).join(' OR ') + ')';
-  return withCrossFieldAnti(mainExpr, requireAnti);
+  return withCrossFieldAnti(mainExpr, mode);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -732,7 +776,7 @@ async function fetchBiomarker(term, apiKey) {
   }
 
   if (expansion) {
-    const expansionExpr = buildExpansionExpr(expansion, hasAntiPrefix(searchTerm));
+    const expansionExpr = buildExpansionExpr(expansion, antiRequirementMode(searchTerm));
     if (expansionExpr) {
       await sleep(150);
       const exp = await runOpenFdaQuery(expansionExpr, apiKey);
