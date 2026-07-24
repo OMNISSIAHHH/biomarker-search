@@ -1,18 +1,25 @@
 # Proxy Workers
 
-This folder has two small Cloudflare Workers. Both exist for the same reason: the site each
-one talks to sends no `Access-Control-Allow-Origin` header, so a browser blocks the tool's
-`fetch()` from reading the response directly. Each Worker fetches the real site server-side
-(no CORS restriction between servers) and returns the result with CORS enabled, so the tool
-can call the Worker instead.
+No coding experience needed for this either — it's copy-paste, entirely through your web
+browser, on Cloudflare's free plan (no credit card required). It takes about 5 minutes per
+Worker.
 
-| Worker | Talks to | Used for |
+**What's a "Worker" and why do I need one?** Two features of this tool — searching New York's
+lab-developed-test list, and the "Check Measurand" button — need to read data from a website
+that, for its own security reasons, refuses to hand that data directly to a page running in
+your browser. A Worker is a small, free helper program (hosted by Cloudflare, not your own
+computer) that fetches the data on the tool's behalf and passes it along. You never see or
+touch its code beyond pasting it in once during setup.
+
+This folder has two of these small programs:
+
+| Worker | Fetches from | Powers |
 |---|---|---|
-| `ldt-proxy.js` | NY State Wadsworth Center CLEP LDT database | The **LDT** search tab |
-| `fda-pdf-proxy.js` | accessdata.fda.gov (510(k) Decision Summary PDFs) | "Check Measurand" on an FDA search result |
+| `ldt-proxy.js` | NY State Wadsworth Center's lab-developed-test list | The **LDT** search tab |
+| `fda-pdf-proxy.js` | The FDA's own website (Decision Summary PDFs) | The **Check Measurand** button on an FDA search result |
 
-Both are optional — the FDA 510(k) search tab works with neither of them deployed. Deploy
-whichever feature you want to use; skip the other if you don't need it.
+Both are optional — the main **FDA 510(k)** search works fine with neither one set up. Only
+set up the one(s) for the feature(s) you actually want; skip the other if you don't need it.
 
 ## Deploy (no local Node/wrangler needed)
 
