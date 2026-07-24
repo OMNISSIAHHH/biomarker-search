@@ -170,6 +170,10 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
     <div class="card" id="resultsCard" style="display:none">
       <span class="captag" id="resultsCaptag">Table 1</span>
       <div class="stitle" id="resultsTitle">Results, ranked by fewest approvals</div>
+      <div class="modetabs" id="sortTabs" style="display:none">
+        <button class="modetab active" id="sortByApprovals" type="button">Fewest approvals</button>
+        <button class="modetab" id="sortByDate" type="button">Most recent approval</button>
+      </div>
       <div class="hint" id="resultsHint" style="margin:-6px 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
       <table class="sumtable">
         <thead id="resultsHead"><tr>
@@ -924,23 +928,57 @@ function expansionTag(expansion) {
   return ` <span class="fullname">(${escapeHtml(expansion.full)})</span>`;
 }
 
+let sortMode = 'approvals'; // 'approvals' | 'date'
+
+// Most recent decision_date among a biomarker's matched records, or null if it has none to
+// sort by (0 matches). ISO "YYYY-MM-DD" strings compare correctly with plain string
+// comparison, so no Date parsing is needed.
+function latestApprovalDate(s) {
+  let latest = '';
+  for (const r of s.records) {
+    if (r.decision_date && r.decision_date > latest) latest = r.decision_date;
+  }
+  return latest || null;
+}
+
 function getRanked() {
-  // Fewest FDA-cleared products first: less competition, more opportunity.
-  const valid = state.filter(s => !s.error)
-    .slice()
-    .sort((a, b) => a.approved - b.approved || a.total - b.total || a.term.localeCompare(b.term));
+  const valid = state.filter(s => !s.error).slice();
+  if (sortMode === 'date') {
+    // Most recently approved first; biomarkers with no dated record (0 matches) sort last
+    // regardless of direction, since there's nothing to rank them by.
+    valid.sort((a, b) => {
+      const da = latestApprovalDate(a), db = latestApprovalDate(b);
+      if (da == null && db == null) return a.term.localeCompare(b.term);
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return db.localeCompare(da) || a.term.localeCompare(b.term);
+    });
+  } else {
+    // Fewest FDA-cleared products first: less competition, more opportunity.
+    valid.sort((a, b) => a.approved - b.approved || a.total - b.total || a.term.localeCompare(b.term));
+  }
   const errored = state.filter(s => s.error);
   return { valid, errored };
 }
 
 function renderResults() {
   $('resultsCard').style.display = 'block';
+  $('sortTabs').style.display = 'flex';
+  $('sortByApprovals').classList.toggle('active', sortMode === 'approvals');
+  $('sortByDate').classList.toggle('active', sortMode === 'date');
   $('chartCaptag').textContent = 'Figure 1';
-  $('chartTitle').textContent = 'Cleared products by biomarker, ranked fewest first';
-  $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here. "Not Cleared" is normally 0 — openFDA\'s public 510(k) database only publishes cleared devices, not "Not Substantially Equivalent" decisions.';
   $('resultsCaptag').textContent = 'Table 1';
-  $('resultsTitle').textContent = 'Results, ranked by fewest approvals';
-  $('resultsHint').textContent = 'Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.';
+  if (sortMode === 'date') {
+    $('chartTitle').textContent = 'Cleared products by biomarker, ranked by most recent approval';
+    $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here. "Not Cleared" is normally 0 — openFDA\'s public 510(k) database only publishes cleared devices, not "Not Substantially Equivalent" decisions.';
+    $('resultsTitle').textContent = 'Results, ranked by most recent approval';
+    $('resultsHint').textContent = 'Rank 1 = most recently FDA-cleared product. Biomarkers with 0 cleared products have no date to rank by and sort last.';
+  } else {
+    $('chartTitle').textContent = 'Cleared products by biomarker, ranked fewest first';
+    $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here. "Not Cleared" is normally 0 — openFDA\'s public 510(k) database only publishes cleared devices, not "Not Substantially Equivalent" decisions.';
+    $('resultsTitle').textContent = 'Results, ranked by fewest approvals';
+    $('resultsHint').textContent = 'Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.';
+  }
   $('resultsHead').innerHTML = `<tr>
     <th style="width:44px">Rank</th>
     <th style="width:30%">Biomarker</th>
@@ -1148,6 +1186,7 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
 
   if (chartAndCaptions) {
     $('resultsCard').style.display = 'block';
+    $('sortTabs').style.display = 'none'; // FDA-only sort toggle; LDT has no approve-date field to rank by
     $('chartCaptag').textContent = 'Figure 1';
     $('chartTitle').textContent = 'LDT matches by biomarker, ranked fewest first';
     $('chartHint').textContent = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
@@ -1353,6 +1392,9 @@ $('crossCheckBtn').addEventListener('click', async () => {
   $('crossCheckBtn').disabled = false;
   $('crossCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
+
+$('sortByApprovals').addEventListener('click', () => { sortMode = 'approvals'; renderResults(); });
+$('sortByDate').addEventListener('click', () => { sortMode = 'date'; renderResults(); });
 
 $('searchBtn').addEventListener('click', runSearch);
 
