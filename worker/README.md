@@ -21,6 +21,21 @@ This folder has two of these small programs:
 Both are optional — the main **FDA 510(k)** search works fine with neither one set up. Only
 set up the one(s) for the feature(s) you actually want; skip the other if you don't need it.
 
+## Don't want to set one up? Use these instead
+
+Paste these directly into **Settings** (gear icon) and skip the deploy steps below entirely:
+
+```
+LDT proxy Worker URL:     https://ldt-proxy.francis121026.workers.dev
+FDA PDF proxy Worker URL: https://fda-pdf-proxyjs.francis121026.workers.dev
+```
+
+These are donated, shared instances — convenient to try the tool immediately, but they run on
+one person's free Cloudflare account with a shared daily request limit across everyone using
+them, and no uptime guarantee. If you're using this tool regularly or for real work, deploy
+your own (below) — it's free, it's yours alone, and it takes about the same 5 minutes either
+way.
+
 ## Deploy (no local Node/wrangler needed)
 
 This takes about 5 minutes per Worker, entirely in the browser, on Cloudflare's free plan (no

@@ -129,8 +129,9 @@ can be misleading or abbreviated. The result appears right there, marked either 
 **One-time setup required:** the FDA's paperwork website doesn't allow this tool to read it
 directly for security reasons on FDA's side, so this feature needs a small, free
 "go-between" service (called a "Worker") that you set up once. It takes about 5 minutes and
-needs no coding — see **[worker/README.md](worker/README.md)** for the exact clicks. Until you
-do this, clicking **Check Measurand** will tell you it needs a Worker URL in Settings.
+needs no coding — see **[worker/README.md](worker/README.md)** for the exact clicks, or paste
+in a ready-made shared Worker URL from there if you'd rather skip setup entirely. Until you do
+either, clicking **Check Measurand** will tell you it needs a Worker URL in Settings.
 
 If you skip this setup, every other part of the tool still works fine — this is an optional
 extra layer of confirmation.
@@ -151,8 +152,9 @@ York's list in one pass.
 
 **One-time setup required:** same reason as the Measurand feature above — New York's website
 needs a small free Worker set up once before this will work. See
-**[worker/README.md](worker/README.md)** for the walkthrough. Until then, this tab will tell
-you to add a Worker URL in Settings first.
+**[worker/README.md](worker/README.md)** for the walkthrough, or grab a ready-made shared
+Worker URL from there instead if you'd rather skip setup entirely. Until then, this tab will
+tell you to add a Worker URL in Settings first.
 
 ### If nothing turns up
 
