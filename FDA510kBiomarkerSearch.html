@@ -183,7 +183,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
     <div class="card" id="chartCard" style="display:none">
       <span class="captag" id="chartCaptag">Figure 1</span>
       <div class="stitle" id="chartTitle">Cleared products by biomarker, ranked fewest first</div>
-      <div class="hint" id="chartHint" style="margin:-6px 0 12px">Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here. "Not Cleared" is normally 0 — openFDA's public 510(k) database only publishes cleared devices, not "Not Substantially Equivalent" decisions.</div>
+      <div class="hint" id="chartHint" style="margin:-6px 0 12px">Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.</div>
       <div class="chartwrap"><canvas id="chart"></canvas></div>
     </div>
 
@@ -207,7 +207,6 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
           <th style="width:30%">Biomarker</th>
           <th>Total Submissions</th>
           <th>Cleared (Approved)</th>
-          <th>Not Cleared</th>
           <th></th>
         </tr></thead>
         <tbody id="resultsBody"></tbody>
@@ -253,7 +252,7 @@ function detailUrlFor(kNumber) {
 const PAGE_LIMIT = 100;
 const MAX_RECORDS = 300; // cap per biomarker to bound request volume
 
-let state = []; // [{term, total, approved, notApproved, records, error}]
+let state = []; // [{term, total, approved, records, error}]
 let chartRef = null;
 
 const $ = (id) => document.getElementById(id);
@@ -927,10 +926,9 @@ async function runFdaSearch() {
     try {
       const { total, records, matchMode, expansion, panelCandidates } = await fetchBiomarker(term, apiKey);
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
-      const notApproved = records.filter(r => classify(r.decision_description) === 'nse').length;
-      state.push({ term, total, approved, notApproved, records, matchMode, expansion, panelCandidates: panelCandidates || [], error: null });
+      state.push({ term, total, approved, records, matchMode, expansion, panelCandidates: panelCandidates || [], error: null });
     } catch (e) {
-      state.push({ term, total: 0, approved: 0, notApproved: 0, records: [], error: e.message || String(e) });
+      state.push({ term, total: 0, approved: 0, records: [], error: e.message || String(e) });
     }
     if (i < terms.length - 1) await sleep(250);
   }
@@ -990,7 +988,7 @@ function inDateFilterRange(record) {
   return true;
 }
 
-// Recomputes approved/notApproved/total from just the in-range records, so every view fed by
+// Recomputes approved/total from just the in-range records, so every view fed by
 // getRanked() (table, chart, rank, Excel export) stays internally consistent with what's
 // actually being counted — rather than filtering the displayed device list while leaving the
 // summary counts describing the unfiltered total.
@@ -1000,8 +998,7 @@ function applyDateFilter(rawState) {
     if (s.error) return s;
     const records = s.records.filter(inDateFilterRange);
     const approved = records.filter(r => classify(r.decision_description) === 'se').length;
-    const notApproved = records.filter(r => classify(r.decision_description) === 'nse').length;
-    return { ...s, records, approved, notApproved, total: records.length };
+    return { ...s, records, approved, total: records.length };
   });
 }
 
@@ -1049,12 +1046,12 @@ function renderResults() {
   $('resultsCaptag').textContent = 'Table 1';
   if (sortMode === 'date') {
     $('chartTitle').textContent = 'Cleared products by biomarker, ranked by most recent approval';
-    $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here. "Not Cleared" is normally 0 — openFDA\'s public 510(k) database only publishes cleared devices, not "Not Substantially Equivalent" decisions.';
+    $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
     $('resultsTitle').textContent = 'Results, ranked by most recent approval';
     $('resultsHint').textContent = 'Rank 1 = most recently FDA-cleared product. Biomarkers with 0 cleared products have no date to rank by and sort last.';
   } else {
     $('chartTitle').textContent = 'Cleared products by biomarker, ranked fewest first';
-    $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here. "Not Cleared" is normally 0 — openFDA\'s public 510(k) database only publishes cleared devices, not "Not Substantially Equivalent" decisions.';
+    $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
     $('resultsTitle').textContent = 'Results, ranked by fewest approvals';
     $('resultsHint').textContent = 'Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.';
   }
@@ -1063,7 +1060,6 @@ function renderResults() {
     <th style="width:30%">Biomarker</th>
     <th>Total Submissions</th>
     <th>Cleared (Approved)</th>
-    <th>Not Cleared</th>
     <th></th>
   </tr>`;
   const tbody = $('resultsBody');
@@ -1085,7 +1081,6 @@ function renderResults() {
       <td><div class="biocell"><span class="chev">▸</span>${escapeHtml(s.term)}${expansionTag(s.expansion)}${matchModeTag(s.matchMode)}${panelTag}</div></td>
       <td>${s.total}</td>
       <td><span class="badge ${s.approved >= HIGH_APPROVAL_THRESHOLD ? 'high' : 'low'}">${s.approved}</span></td>
-      <td>${s.notApproved}</td>
       <td></td>`;
     tbody.appendChild(mainRow);
 
@@ -1117,7 +1112,7 @@ function renderResults() {
         </table>`;
     }
     const td = document.createElement('td');
-    td.colSpan = 6;
+    td.colSpan = 5;
     td.appendChild(wrap);
     detailRow.appendChild(td);
     tbody.appendChild(detailRow);
@@ -1136,7 +1131,7 @@ function renderResults() {
     mainRow.innerHTML = `
       <td class="rankcell">—</td>
       <td><div class="biocell">${escapeHtml(s.term)}</div></td>
-      <td colspan="3"><span class="badge err">Search failed</span> <span class="errline">${escapeHtml(s.error)}</span></td>
+      <td colspan="2"><span class="badge err">Search failed</span> <span class="errline">${escapeHtml(s.error)}</span></td>
       <td></td>`;
     tbody.appendChild(mainRow);
   });
@@ -1148,9 +1143,37 @@ Chart.defaults.font.family = "'IBM Plex Mono', monospace";
 Chart.defaults.font.size = 11;
 Chart.defaults.color = '#4A5A68';
 
+// A biomarker with e.g. 300 approvals sitting next to ones with 1-2 squashes the small bars
+// down to a sub-pixel sliver on a shared linear scale — exactly the low-approval-count
+// biomarkers this tool is built to highlight. Drawing the actual number above every bar keeps
+// each value legible regardless of bar height; minBarLength (set per-dataset below) keeps a
+// small but genuinely non-zero bar visibly present rather than invisible.
+const barValueLabelsPlugin = {
+  id: 'barValueLabels',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    chart.data.datasets.forEach((dataset, datasetIndex) => {
+      const meta = chart.getDatasetMeta(datasetIndex);
+      if (meta.hidden) return;
+      meta.data.forEach((bar, index) => {
+        const value = dataset.data[index];
+        if (value == null || value === 0) return;
+        ctx.save();
+        ctx.fillStyle = '#4A5A68';
+        ctx.font = "600 10px 'IBM Plex Mono', monospace";
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(String(value), bar.x, bar.y - 3);
+        ctx.restore();
+      });
+    });
+  }
+};
+Chart.register(barValueLabelsPlugin);
+
 // Links the chart back to the results table: hovering a table row highlights the matching
-// bar (both datasets, since a row covers cleared + not-cleared together), and clicking a bar
-// scrolls to and expands the matching row — the two views stay in sync either direction.
+// bar, and clicking a bar scrolls to and expands the matching row — the two views stay in
+// sync either direction.
 function highlightChartBar(index) {
   if (!chartRef) return;
   const elements = index == null ? [] : chartRef.data.datasets.map((_, datasetIndex) => ({ datasetIndex, index }));
@@ -1213,8 +1236,7 @@ function renderChart(valid) {
     data: {
       labels: valid.map(s => s.term),
       datasets: [
-        { label: 'Cleared (Approved)', data: valid.map(s => s.approved), backgroundColor: '#1B7A4D' },
-        { label: 'Not Cleared', data: valid.map(s => s.notApproved), backgroundColor: '#0066B3' }
+        { label: 'Cleared (Approved)', data: valid.map(s => s.approved), backgroundColor: '#1B7A4D', minBarLength: 4 }
       ]
     },
     options: {
@@ -1375,8 +1397,8 @@ function renderLdtChart(valid) {
     data: {
       labels: valid.map(s => s.term),
       datasets: [
-        { label: 'Approved', data: valid.map(s => s.approved), backgroundColor: '#1B7A4D' },
-        { label: 'Conditionally Approved', data: valid.map(s => s.conditional), backgroundColor: '#0066B3' }
+        { label: 'Approved', data: valid.map(s => s.approved), backgroundColor: '#1B7A4D', minBarLength: 4 },
+        { label: 'Conditionally Approved', data: valid.map(s => s.conditional), backgroundColor: '#0066B3', minBarLength: 4 }
       ]
     },
     options: {
@@ -1542,7 +1564,6 @@ $('exportBtn').addEventListener('click', () => {
       'Full Name': s.expansion ? s.expansion.full : '',
       'Total Submissions': s.total,
       'Cleared (Approved)': s.approved,
-      'Not Cleared': s.notApproved,
       'Match Type': MATCH_MODE_LABEL[s.matchMode] || 'Exact match',
       Error: ''
     })),
@@ -1552,7 +1573,6 @@ $('exportBtn').addEventListener('click', () => {
       'Full Name': s.expansion ? s.expansion.full : '',
       'Total Submissions': '',
       'Cleared (Approved)': '',
-      'Not Cleared': '',
       'Match Type': '',
       Error: s.error
     }))
