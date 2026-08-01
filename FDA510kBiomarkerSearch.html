@@ -144,6 +144,10 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <div class="sinfo">Optional: "Check Measurand" on an FDA record reads the device's official Decision Summary PDF to confirm what it actually measures (same CORS problem as LDT — needs its own small proxy Worker, deployed the same way; see <code>worker/README.md</code>). Not every device has one.</div>
         <input class="skey" id="fdaPdfProxyUrl" placeholder="FDA PDF proxy Worker URL">
       </div>
+      <div class="srow" style="margin-top:8px">
+        <div class="sinfo">Optional: when a biomarker abbreviation isn't in this tool's own built-in dictionary, an <a href="https://uts.nlm.nih.gov/uts/license" target="_blank" rel="noopener">NLM UMLS Terminology Services</a> API key lets it look up the spelled-out medical name automatically instead of returning nothing. Free, but NLM manually reviews each request — allow up to 3 business days after signing up before the key works. No proxy Worker needed for this one.</div>
+        <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
+      </div>
     </div>
   </div>
 
@@ -163,6 +167,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
           <li>If an exact phrase finds nothing, the search automatically widens — first dropping word order, then the Ig-class suffix — and flags the result as <span class="mmtag" style="cursor:default">Broad match</span> / <span class="mmtag" style="cursor:default">Antigen-only match</span> so you know it's less precise.</li>
           <li>"Anti-" is never dropped when the term has it — it distinguishes an antibody test from the antigen itself, so a real match must still contain it, though not necessarily the literal word "anti" ("antibody", "antibodies", "autoantibody", "autoantibodies", and "AB" all count too), and not necessarily in the same field as the antigen name — FDA splits one device's info across several fields, and it's common for the antigen abbreviation to appear in one and the antibody wording in another.</li>
           <li>For antigens known to appear in named multi-antigen panel kits (autoimmune liver, ANA/ENA, celiac, and similar profiles), 0 confirmed results also triggers a search for plausibly related panel devices, shown separately as <span class="mmtag" style="cursor:default">N possible panel matches</span> — these aren't confirmed (panels rarely name each individual antigen in FDA's structured data), so verify manually, e.g. via Check Measurand.</li>
+          <li>If an abbreviation isn't in this tool's own dictionary, and a UMLS API key is set in Settings, its spelled-out medical name is looked up automatically instead of returning nothing — flagged as <span class="mmtag" style="cursor:default">UMLS-resolved match</span> since that name hasn't been manually verified the way the built-in dictionary has.</li>
         </ul>
         <ul class="hint" id="hintLdt" style="display:none">
           <li>Terms are matched against the analyte/test name in the NY State Wadsworth Center CLEP "Approved Laboratory Developed Tests" database (any-word match, same as the site's own default).</li>
@@ -262,6 +267,14 @@ $('gearBtn').addEventListener('click', () => $('spanel').classList.toggle('open'
 const savedKey = localStorage.getItem('openfda_api_key');
 if (savedKey) $('apiKey').value = savedKey;
 $('apiKey').addEventListener('change', (e) => localStorage.setItem('openfda_api_key', e.target.value.trim()));
+
+const savedUmlsKey = localStorage.getItem('umls_api_key');
+if (savedUmlsKey) $('umlsApiKey').value = savedUmlsKey;
+$('umlsApiKey').addEventListener('change', (e) => localStorage.setItem('umls_api_key', e.target.value.trim()));
+
+function getUmlsApiKey() {
+  return $('umlsApiKey').value.trim();
+}
 
 // A bare domain pasted without "https://" (e.g. "ldt-proxy.example.workers.dev") isn't an
 // absolute URL, so fetch() silently resolves it *relative to this file* instead of erroring
@@ -763,6 +776,45 @@ function buildExpansionExpr(expansion, mode) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Tier 4b: for a term with no entry in our own hand-curated ABBREVIATION_EXPANSIONS (tier 4
+// above), ask NLM's UMLS Metathesaurus what the abbreviation's spelled-out medical name is,
+// instead of giving up. UMLS aggregates from many source vocabularies (SNOMED CT, LOINC,
+// MeSH, etc.) that between them know a huge number of lab-shorthand terms our own list simply
+// hasn't been taught yet — this is what would have found "cTnT" -> "Troponin T" automatically,
+// without needing a manually-added dictionary entry first.
+//
+// Unlike the LDT and FDA-PDF sites, UMLS's REST API sends Access-Control-Allow-Origin: *, so
+// this can be called directly from the browser — no proxy Worker needed.
+//
+// Tries the strictest match first (searchType=exact, i.e. the search string must equal a
+// known synonym/atom exactly) and only falls back to the looser default ("words": every word
+// in the search string must appear in the candidate name) if that finds nothing — same
+// most-precise-first philosophy as the openFDA tiers above. A concept resolved this way is
+// unverified (nobody has manually confirmed the match is right, unlike every entry in
+// ABBREVIATION_EXPANSIONS), so callers must label it as such rather than treating it as
+// equivalent to a curated entry.
+const UMLS_SEARCH_BASE = 'https://uts-ws.nlm.nih.gov/rest/search/current';
+
+async function lookupUmlsExpansion(term, umlsApiKey) {
+  if (!umlsApiKey) return null;
+  for (const searchType of ['exact', 'words']) {
+    try {
+      const params = new URLSearchParams({ string: term, apiKey: umlsApiKey, searchType, pageSize: '5' });
+      const res = await fetch(`${UMLS_SEARCH_BASE}?${params.toString()}`);
+      if (!res.ok) continue; // bad/unapproved key, rate limit, etc. — treat as no match, not a hard error
+      const body = await res.json();
+      const results = body?.result?.results || [];
+      const hit = results.find(r => r.ui && r.ui !== 'NONE' && r.name);
+      if (hit) return { full: hit.name };
+    } catch {
+      // Network failure, CORS block if a key is somehow malformed, etc. — fall through to the
+      // next searchType, and ultimately to the caller's own fallback (panel candidates or a
+      // plain 0-result return), rather than breaking the whole biomarker search.
+    }
+  }
+  return null;
+}
+
 async function runOpenFdaQuery(expr, apiKey) {
   let skip = 0, total = 0;
   const records = [];
@@ -810,7 +862,7 @@ function buildPanelExpr(categoryWords) {
   return '(' + fields.map(f => `(${panelClause(f)} AND ${categoryClause(f)})`).join(' OR ') + ')';
 }
 
-async function fetchBiomarker(term, apiKey) {
+async function fetchBiomarker(term, apiKey, umlsApiKey) {
   const searchTerm = toSearchTerm(term);
   const expansion = lookupExpansion(searchTerm);
 
@@ -837,6 +889,20 @@ async function fetchBiomarker(term, apiKey) {
       await sleep(150);
       const exp = await runOpenFdaQuery(expansionExpr, apiKey);
       if (exp.total > 0) return { ...exp, matchMode: 'expansion', expansion };
+    }
+  }
+
+  // Only reached for terms with no entry in our own curated dictionary at all — an existing
+  // (even if unhelpful) local entry is trusted over an unverified external lookup.
+  if (!expansion && umlsApiKey) {
+    const umlsExpansion = await lookupUmlsExpansion(searchTerm, umlsApiKey);
+    if (umlsExpansion) {
+      const umlsExpr = buildExpansionExpr(umlsExpansion, antiRequirementMode(searchTerm));
+      if (umlsExpr) {
+        await sleep(150);
+        const umls = await runOpenFdaQuery(umlsExpr, apiKey);
+        if (umls.total > 0) return { ...umls, matchMode: 'umls', expansion: umlsExpansion };
+      }
     }
   }
 
@@ -921,6 +987,7 @@ async function runFdaSearch() {
   localStorage.setItem('biomarker_terms', $('biomarkers').value);
 
   const apiKey = $('apiKey').value.trim();
+  const umlsApiKey = getUmlsApiKey();
   $('searchBtn').disabled = true;
   $('exportBtn').disabled = true;
   $('emptyState').style.display = 'none';
@@ -934,7 +1001,7 @@ async function runFdaSearch() {
     $('progressTxt').textContent = `Searching ${i + 1} of ${terms.length}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / terms.length) * 100)}%`;
     try {
-      const { total, records, matchMode, expansion, panelCandidates } = await fetchBiomarker(term, apiKey);
+      const { total, records, matchMode, expansion, panelCandidates } = await fetchBiomarker(term, apiKey, umlsApiKey);
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
       state.push({ term, total, approved, records, matchMode, expansion, panelCandidates: panelCandidates || [], error: null });
     } catch (e) {
@@ -961,12 +1028,14 @@ const HIGH_APPROVAL_THRESHOLD = 10;
 const MATCH_MODE_LABEL = {
   broad: 'Broad match',
   'antigen-only': 'Antigen-only match',
-  expansion: 'Expanded-name match'
+  expansion: 'Expanded-name match',
+  umls: 'UMLS-resolved match'
 };
 const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
   'antigen-only': 'No match including the Ig-class (IgG/IgA/IgM) — matched on the antigen name alone, since many FDA device names omit the isotype. The count may include products that are not isotype-specific.',
-  expansion: 'No match on the abbreviation itself — matched by searching its spelled-out full name instead, since some FDA device names use the full term rather than the shorthand.'
+  expansion: 'No match on the abbreviation itself — matched by searching its spelled-out full name instead, since some FDA device names use the full term rather than the shorthand.',
+  umls: 'This abbreviation isn\'t in this tool\'s own built-in dictionary — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.'
 };
 
 function matchModeTag(mode) {

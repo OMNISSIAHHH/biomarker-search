@@ -17,6 +17,7 @@ runs entirely in your web browser (Chrome, Edge, Firefox, Safari — whatever yo
 - [Getting started](#getting-started)
 - [Searching for a biomarker](#searching-for-a-biomarker)
 - [Reading your results](#reading-your-results)
+- [Automatic abbreviation lookup (UMLS)](#automatic-abbreviation-lookup-umls)
 - [Sorting your results](#sorting-your-results)
 - [Filtering by date](#filtering-by-date)
 - [Exporting to Excel](#exporting-to-excel)
@@ -70,7 +71,6 @@ ways.
 | Biomarker | The name you typed. If the tool had to search more loosely to find anything, a small tag appears next to it explaining how (see below) |
 | Total Submissions | How many FDA filings mention this biomarker |
 | Cleared (Approved) | How many of those were actually cleared by the FDA. A **red** number means 10 or more — a more crowded, competitive space. A **green** number means fewer than 10 |
-| Not Cleared | Almost always 0 — the FDA's public database only lists devices that *were* cleared, not ones that were rejected |
 
 Click anywhere on a row to expand it and see the individual devices behind that number: device
 name, the company that submitted it, the decision, the approval date, a link to the official
@@ -88,9 +88,34 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
   because the FDA's own records don't spell out which individual biomarkers are inside the
   bundle — you'd need to open the device's paperwork to check by hand (the **Check Measurand**
   button on that device can help)
+- **UMLS-resolved match** — the abbreviation wasn't recognized by this tool's own built-in list
+  at all, so its spelled-out medical name was looked up automatically instead (see
+  [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls) below)
 
 None of these tags mean the result is wrong — they just tell you how confident the match is,
-so an exact match is more reliable than an "expanded-name match."
+so an exact match is more reliable than an "expanded-name match" or a "UMLS-resolved match."
+
+## Automatic abbreviation lookup (UMLS)
+
+This tool keeps its own small, hand-checked list mapping common lab-shorthand abbreviations
+(like "GADA" or "cTnT") to the full medical name FDA paperwork actually uses. But that list
+can't cover everything — if you search an abbreviation it doesn't recognize, you can let it
+ask the National Library of Medicine's UMLS medical terminology database what the abbreviation
+means, instead of just returning nothing.
+
+**One-time setup required, and it's slower than the other two:** go to
+**[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in with an
+identity provider (Login.gov works if you don't have one already), and agree to the license
+terms — this is a real license request, so the National Library of Medicine reviews it by
+hand and it can take **up to 3 business days** before your account is approved. Once approved,
+sign in, open your profile, and generate an API key. Paste that key into **Settings** (gear
+icon) → **UMLS API key**. Unlike the LDT and Measurand features, this one needs no separate
+Worker setup — paste the key and it works.
+
+Until you do this (or for any abbreviation already in this tool's own list), searches work
+exactly as before. A match found this way is flagged **UMLS-resolved match** because, unlike
+every entry in the tool's own list, nobody has manually confirmed the looked-up name is
+correct — worth a quick sanity check, e.g. via **Check Measurand**.
 
 ## Sorting your results
 
@@ -175,9 +200,10 @@ frequently show up this way).
 - This tool is for research purposes only. It is not medical advice and should never be used
   to make decisions about patient care. Always double-check anything important directly on the
   [FDA's own website](https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm).
-- Everything you type and any settings you enter (like a Worker URL) are saved only inside your
-  own browser, on your own computer — nothing is sent anywhere except directly to the FDA (and,
-  if you set them up, to New York's site and the FDA paperwork site).
+- Everything you type and any settings you enter (like a Worker URL or API key) are saved only
+  inside your own browser, on your own computer — nothing is sent anywhere except directly to
+  the FDA (and, if you set them up, to New York's site, the FDA paperwork site, and NLM's UMLS
+  database).
 
 ## Glossary
 
@@ -193,10 +219,12 @@ frequently show up this way).
 | **Worker** | A small, free program that runs on Cloudflare's servers (not your computer) and acts as a go-between, letting this tool reach a website that would otherwise block it directly. You set one up once by copy-pasting code into a web page — no programming needed. See [worker/README.md](worker/README.md). |
 | **API / API key** | A way for one computer program to ask another for data automatically (in this case, this tool asking the FDA's database for results). An "API key" is just a free password that raises how many searches per day you're allowed — you don't need one to use this tool, it just helps if you're doing a lot of searching. |
 | **openFDA** | The FDA's own public, free database that this tool queries. |
+| **UMLS (Unified Medical Language System)** | A huge, free medical terminology database run by the National Library of Medicine (NLM) that combines many other medical vocabularies and knows an enormous number of abbreviations and their full names. This tool can optionally use it to resolve a biomarker abbreviation it doesn't already recognize. |
 
 ## Tech (for anyone who *does* code)
 
 Plain HTML/CSS/JS, no build tooling, no dependencies to install. Uses
 [Chart.js](https://www.chartjs.org/) for the chart and [SheetJS](https://sheetjs.com/) for
 Excel export, both loaded from a CDN. See [worker/README.md](worker/README.md) for the two
-optional Cloudflare Worker proxies.
+optional Cloudflare Worker proxies. The UMLS lookup needs no proxy — its API sends CORS headers
+that allow calling it directly from the browser.
