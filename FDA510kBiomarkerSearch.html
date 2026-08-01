@@ -712,6 +712,16 @@ const ABBREVIATION_EXPANSIONS = {
   'pr3': { full: 'Proteinase 3', panel: ['vasculitis'] },
   'kl-6': { full: 'Krebs von den Lungen-6' },
   'psa': { full: 'Prostate-Specific Antigen' },
+  // "cTnT" never appears verbatim in FDA text — Roche's Elecsys line and others always spell
+  // out "Troponin T" in full, so it needs the expansion tier to be found at all (confirmed via
+  // curl: Roche's K201441 "Elecsys Troponin T Gen 5" and 14 others). "cTnI" does appear
+  // literally in some device names ("DIMENSION VISTA CTNI...") so tier 1 already finds a
+  // handful of those directly — this entry mainly serves terms typed with a space/hyphen that
+  // tier 1 won't catch verbatim. `search` omits "Cardiac" since several real devices (e.g.
+  // "ELECSYS TROPONIN T STAT TEST") don't include that word at all; requiring it would have
+  // excluded them.
+  'ctnt': { full: 'Cardiac Troponin T', search: 'Troponin T' },
+  'ctni': { full: 'Cardiac Troponin I', search: 'Troponin I' },
   'bnp': { full: 'Brain Natriuretic Peptide' },
   'hba1c': { full: 'Hemoglobin A1c' },
   'crp': { full: 'C-Reactive Protein' },
