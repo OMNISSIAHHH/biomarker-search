@@ -151,6 +151,11 @@ test actually measures — a more authoritative check than the device's name alo
 can be misleading or abbreviated. The result appears right there, marked either **Matches** or
 **No match**.
 
+Most documents label this field "Measurand" or "Analyte," but multi-parameter devices like
+hematology analyzers don't have one at all — for those, the tool automatically falls back to
+whatever section actually lists the parameters tested (e.g. "Type of Test" or "Intended Use"),
+so you still get a useful answer either way.
+
 **One-time setup required:** the FDA's paperwork website doesn't allow this tool to read it
 directly for security reasons on FDA's side, so this feature needs a small, free
 "go-between" service (called a "Worker") that you set up once. It takes about 5 minutes and

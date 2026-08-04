@@ -400,19 +400,49 @@ function buildRecordRows(records, term) {
 // letter (statement_or_summary in the API is just a "Summary"/"Statement" flag, not the
 // actual text) and not every device has one. accessdata.fda.gov has no CORS support, so
 // worker/fda-pdf-proxy.js relays the raw PDF bytes; PDF.js (loaded via CDN) extracts text
-// client-side and this looks for the standard IVD template's "Measurand:" field.
+// client-side and this looks for the field stating what the device actually tests for —
+// "Measurand:"/"Analyte:" where the template has one, a couple of fallback labels otherwise
+// (see MEASURAND_FIELD_LABELS below).
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-// FDA's IVD Decision Summary template labels this field "Measurand:" in most documents but
-// "Analyte:" in others, and the section letter it's under varies (seen both "B." and "C.").
-// Anchoring on "<letter>. Measurand/Analyte ... <next lettered section>" instead of just the
-// bare word avoids both false negatives (wrong label) and false positives (the word
-// "measurand"/"analyte" can appear informally elsewhere in the document, e.g. in a
-// traceability paragraph, well before or after the real labeled field).
+// FDA's Decision Summary isn't one universal template — different device TYPES use
+// genuinely different structures, not just different labels for the same field. Confirmed
+// against real documents:
+//   - Single-analyte immunoassay/chemistry kits: "Measurand:" or "Analyte:" names the
+//     analyte directly (e.g. K072135: "C. Measurand: Glutamic acid decarboxylase
+//     autoantibodies (GADA)").
+//   - Multi-parameter systems (e.g. hematology analyzers) have NO Measurand/Analyte section
+//     at all — confirmed K112605 (Sysmex XN-Series): section C is "Manufacturer and
+//     Instrument Name" instead, and the parameter list actually lives under "Type of Test or
+//     Tests Performed" (e.g. "D. Type of Test or Tests Performed: Quantitative test for WBC,
+//     RBC, HGB, HCT, ..."), restated again in "Intended Use".
+// Tried in this priority order — most direct first — stopping at the first one found.
 // The section-letter prefix isn't consistently punctuated across FDA's template revisions —
 // some documents use "C. Measurand:", others "B Measurand:" with no period at all — so the
-// period after the letter has to be optional on both ends of the pattern.
-const MEASURAND_PATTERN = /[A-Z]\.?\s*(Measurand|Analyte)s?:?\s*([\s\S]{1,300}?)\s*(?:[A-Z]\.?\s*Type of Test|Type of Test:)/i;
+// period after the letter is optional. The colon, however, is NOT optional: confirmed via a
+// real document (K112605) that dropping that requirement lets the pattern match a stray
+// in-sentence use of the word "measurand" as ordinary metrology prose ("...the measurand and
+// results were within specifications for WBC, RBC...") rather than an actual section header
+// — the colon is what distinguishes a true labeled field from that. Each field's value ends
+// at the start of the NEXT lettered section, whatever it happens to be named — assuming a
+// fixed "next section is always called X" is exactly what broke here, since which section
+// follows which varies by template.
+const MEASURAND_FIELD_LABELS = [
+  'Measurand',
+  'Analyte',
+  'Type of Test(?:s)?(?:\\s+or\\s+Tests\\s+Performed)?',
+  'Intended Use'
+];
+
+// Deliberately case-sensitive (no 'i' flag) — every real document examined capitalizes these
+// section labels consistently ("Measurand:", "Type of Test:", ...), and a case-INsensitive
+// [A-Z] would silently case-fold to match ANY letter, turning the "next section header" check
+// into "any lowercase word followed by another word" — which matches almost anywhere in
+// ordinary prose. Confirmed this exact bug: with 'i', "Glutamic acid decarboxylase..." got
+// truncated to "Glutami" because "c acid" alone satisfied the case-folded lookahead.
+function measurandFieldPattern(labelPattern) {
+  return new RegExp(`[A-Z]\\.?\\s*(${labelPattern})s?\\s*:\\s*([\\s\\S]{1,400}?)\\s*(?=[A-Z]\\.?\\s+[A-Z][a-z]|$)`);
+}
 
 async function extractMeasurand(arrayBuffer) {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -421,8 +451,10 @@ async function extractMeasurand(arrayBuffer) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     fullText += content.items.map(it => it.str).join(' ') + '\n';
-    const m = fullText.match(MEASURAND_PATTERN);
-    if (m) return { label: m[1], value: m[2].trim() };
+    for (const labelPattern of MEASURAND_FIELD_LABELS) {
+      const m = fullText.match(measurandFieldPattern(labelPattern));
+      if (m) return { label: m[1], value: m[2].trim() };
+    }
   }
   return null;
 }
@@ -453,7 +485,7 @@ async function checkMeasurand(button) {
     const found = await extractMeasurand(buf);
 
     if (!found) {
-      resultSpan.textContent = 'No "Measurand"/"Analyte" field found in this device\'s review document.';
+      resultSpan.textContent = 'No field stating what this device measures was found in its review document.';
       resultSpan.className = 'measurand-result err';
       button.remove();
       return;

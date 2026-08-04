@@ -204,11 +204,19 @@ Notes for anyone modifying this:
   `User-Agent` header (returns a small HTML "apology" page instead of the PDF) — the Worker
   already sets one; don't remove it.
 - The field is labeled **"Measurand:"** in most documents but **"Analyte:"** in others, and
-  the lettered section it falls under varies (seen both `B` and `C`), with or without a
-  period after the letter (`"C. Measurand:"` vs `"B Measurand:"`). The client-side regex
-  (`MEASURAND_PATTERN` in the main HTML file) accounts for all of these, anchored on the
-  section-letter-plus-label structure and terminated at the next section (`Type of Test:`) —
-  matching on the bare word alone caused false negatives (wrong label) and would risk false
-  positives (the word can appear informally elsewhere in the document, e.g. in a
-  traceability paragraph). This is reliable for the templates seen so far but not guaranteed
-  for every document format FDA has used over the decades.
+  the lettered section it falls under varies (seen `B` and `C`, with or without a period after
+  the letter — `"C. Measurand:"` vs `"B Measurand:"`). Multi-parameter devices (e.g. hematology
+  analyzers) have **no Measurand/Analyte section at all** — confirmed against a real Sysmex
+  XN-Series decision summary (K112605), whose section C is "Manufacturer and Instrument Name"
+  instead, with the actual parameter list only under "Type of Test or Tests Performed". The
+  client-side logic (`MEASURAND_FIELD_LABELS` / `measurandFieldPattern` in the main HTML file)
+  tries "Measurand" and "Analyte" first, then falls back to "Type of Test (or Tests
+  Performed)" and "Intended Use" for templates with neither — each field's value ends at
+  whatever the next lettered section happens to be, rather than assuming a fixed name for it,
+  since which section follows which isn't consistent across templates either.
+  Matching on the bare word alone caused false negatives (wrong label) and false positives
+  (e.g. "measurand" appears as an ordinary metrology term in some precision-study prose, not
+  just as a section header — this is why the colon after the label is required, not optional:
+  a stray in-sentence mention is never followed directly by a colon). This is reliable for the
+  templates seen so far but not guaranteed for every document format FDA has used over the
+  decades.
