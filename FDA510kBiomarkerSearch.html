@@ -236,6 +236,9 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         </tr></thead>
         <tbody id="crossBody"></tbody>
       </table>
+      <div class="actions">
+        <button class="btn-export" id="crossExportBtn"><i class="ti ti-file-spreadsheet"></i> Export to Excel</button>
+      </div>
     </div>
 
     <div class="empty" id="emptyState">Enter biomarkers above and click Search.</div>
@@ -1661,7 +1664,10 @@ function ldtDetailRows(targetState) {
   return detailRows;
 }
 
-$('exportBtn').addEventListener('click', () => {
+// Shared by both the main Export to Excel button and the one at the bottom of the LDT
+// cross-check table (Table 2) — same workbook either way, so clicking either produces an
+// identical file; the second button just saves scrolling back up after running a cross-check.
+function exportToExcel() {
   const ts = new Date().toISOString().slice(0, 10);
   const wb = XLSX.utils.book_new();
 
@@ -1730,7 +1736,10 @@ $('exportBtn').addEventListener('click', () => {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ldtDetailRows(crossState)), 'LDT Cross-Check Details');
   }
   XLSX.writeFile(wb, `FDA_510k_Biomarker_Search_${ts}.xlsx`);
-});
+}
+
+$('exportBtn').addEventListener('click', exportToExcel);
+$('crossExportBtn').addEventListener('click', exportToExcel);
 </script>
 </body>
 </html>
