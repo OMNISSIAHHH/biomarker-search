@@ -705,7 +705,14 @@ const ABBREVIATION_EXPANSIONS = {
   'his': { full: 'Histone' },
   'jo-1': { full: 'Histidyl-tRNA Synthetase', panel: ['connective tissue', 'myositis'] },
   'nrnp/sm': { full: 'Nuclear Ribonucleoprotein / Smith Antigen', panel: ['connective tissue', 'ena'] },
-  'nuc': { full: 'Nucleosome', panel: ['connective tissue', 'ena'] },
+  // "Nuc" is ambiguous lab shorthand — it can mean "Nucleosome" (a distinct ENA-panel
+  // autoantibody) or, as used here, informal shorthand for "Antinuclear" (ANA). Confirmed via
+  // curl that "Nucleosome" alone has zero matches anywhere in openFDA's 510k data — no FDA-
+  // cleared device names it at all — while "Antinuclear" correctly finds 457 real matches,
+  // including K150155 (NOVA Lite DAPI ANA Kit), the real device a user searching "Anti-Nuc
+  // IgG" expected. Resolving to "Antinuclear" makes this behave the same as the separate
+  // 'ana' entry below, since in practice that's what "Nuc" means when it actually matters.
+  'nuc': { full: 'Antinuclear Antibody', search: 'Antinuclear', panel: ['connective tissue', 'ena'] },
   'pcna': { full: 'Proliferating Cell Nuclear Antigen', panel: ['connective tissue', 'ena'] },
   'pm-scl': { full: 'Polymyositis-Scleroderma Antigen', panel: ['connective tissue', 'myositis'] },
   'rib p': { full: 'Ribosomal P Protein', panel: ['connective tissue', 'ena'] },
