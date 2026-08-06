@@ -734,7 +734,24 @@ const ABBREVIATION_EXPANSIONS = {
   'dsg3': { full: 'Desmoglein 3', panel: ['pemphigus'] },
   'if': { full: 'Intrinsic Factor' },
   'pca': { full: 'Parietal Cell Antibody' },
-  'cl': { full: 'Cardiolipin', panel: ['phospholipid'] },
+  // openFDA's openfda.device_name classification text sometimes writes this as one fused,
+  // hyphen-less word "Anticardiolipin" (e.g. K223093's classification is "System, Test,
+  // Anticardiolipin Immunological", while its actual device_name has no "cardiolipin" text at
+  // all) — a form the "anti" + antigen tokenization the other tiers do would never produce.
+  // "/" tries both forms as alternates (confirmed via curl neither is a strict subset of the
+  // other: plain "Cardiolipin" alone finds 67 devices via device_name text, "Anticardiolipin"
+  // finds 94 via openfda.device_name, together 98 unique).
+  'cl': { full: 'Cardiolipin', search: 'Cardiolipin/Anticardiolipin', alwaysCheck: true, panel: ['phospholipid'] },
+  // Dictionary lookup is keyed by whatever the user actually typed after stripping "Anti-"/Ig
+  // suffix — someone typing the spelled-out word ("Anti-cardiolipin IgG") produces the lookup
+  // key "cardiolipin", which is a different string than the abbreviation key "cl" above and
+  // would otherwise miss this entry (and the Anticardiolipin fix) entirely. Same entry, just
+  // reachable both ways.
+  'cardiolipin': { full: 'Cardiolipin', search: 'Cardiolipin/Anticardiolipin', alwaysCheck: true, panel: ['phospholipid'] },
+  // "aCL" (lowercase a = "anti") is the actual common lab shorthand for this antibody — the
+  // "a" doesn't match hasAntiPrefix's literal "anti" check, so this needs its own key too;
+  // stripAntiPrefix/stripIsotypeSuffix leave it as "acl" after lowercasing.
+  'acl': { full: 'Cardiolipin', search: 'Cardiolipin/Anticardiolipin', alwaysCheck: true, panel: ['phospholipid'] },
   'ps/pt': { full: 'Phosphatidylserine / Prothrombin', panel: ['phospholipid'] },
   // FDA's own openfda.device_name classification text calls this antigen literally "B2"
   // (not "Beta2"/"β2") — e.g. K141274: 'System,Test,Antibodies,B2 - Glycoprotein I (B2 - Gpi)'.
@@ -807,13 +824,35 @@ function splitExpansionTokens(phrase) {
 // routinely spell one word of a multi-word name in openFDA's classification text
 // (openfda.device_name) while another word only appears in the free-text device_name (see
 // the beta2-gp1-domain1 entry below), so same-field AND would miss genuine matches here too.
+// A single-token group whose one word itself starts with "anti" (e.g. "Anticardiolipin")
+// already encodes anti-ness in its own spelling — FDA's openfda.device_name classification
+// text sometimes fuses "Anti" directly onto the antigen with no separator at all (confirmed
+// via curl: K223093's classification is "System, Test, Anticardiolipin Immunological", with
+// no separately-searchable "anti" token anywhere on the record). Requiring a *separate*
+// anti/antibody synonym token elsewhere on the same record — what withCrossFieldAnti's
+// 'explicit'/'implied' modes do — would never succeed for a record like that even though it
+// unambiguously IS an antibody test; the fused word can't satisfy a search for the bare word
+// "anti" as its own token. Plain multi-word or non-"anti"-prefixed groups (e.g. "Cardiolipin"
+// alone) still get the full check, since for those the exemption wouldn't be justified.
+function groupImpliesAnti(tokens) {
+  return tokens.length === 1 && /^anti/i.test(tokens[0]);
+}
+
 function buildExpansionExpr(expansion, mode) {
   if (!expansion) return null;
   const phrase = expansion.search || expansion.full;
   const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length);
   if (!groups.length) return null;
-  const mainExpr = '(' + groups.map(crossFieldTokensClause).join(' OR ') + ')';
-  return withCrossFieldAnti(mainExpr, mode);
+  const antiExemptGroups = groups.filter(groupImpliesAnti);
+  const antiRequiredGroups = groups.filter(g => !groupImpliesAnti(g));
+  const parts = [];
+  if (antiRequiredGroups.length) {
+    parts.push(withCrossFieldAnti('(' + antiRequiredGroups.map(crossFieldTokensClause).join(' OR ') + ')', mode));
+  }
+  if (antiExemptGroups.length) {
+    parts.push('(' + antiExemptGroups.map(crossFieldTokensClause).join(' OR ') + ')');
+  }
+  return '(' + parts.join(' OR ') + ')';
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -904,49 +943,102 @@ function buildPanelExpr(categoryWords) {
   return '(' + fields.map(f => `(${panelClause(f)} AND ${categoryClause(f)})`).join(' OR ') + ')';
 }
 
+// Combines two query results into one, deduplicated by k_number. Used to UNION a
+// dictionary-verified alternate wording's matches into whatever an earlier, less-complete
+// tier already found, rather than discarding them — see the comment in fetchBiomarker below
+// for why that matters. total uses the deduplicated record count as a floor: correct
+// whenever neither individual query hit the MAX_RECORDS cap (records.length === total for
+// each), which is true for the large majority of real searches; if one did hit the cap, this
+// is a conservative (never-inflated) estimate, consistent with the cap already being a known,
+// displayed limitation elsewhere in the tool.
+function mergeQueryResults(a, b) {
+  const byK = new Map();
+  for (const r of a.records) byK.set(r.k_number, r);
+  for (const r of b.records) byK.set(r.k_number, r);
+  const records = Array.from(byK.values());
+  const total = Math.max(a.total, b.total, records.length);
+  return { total, records };
+}
+
 async function fetchBiomarker(term, apiKey, umlsApiKey) {
   const searchTerm = toSearchTerm(term);
   const expansion = lookupExpansion(searchTerm);
+  let resultExpansion = expansion;
+  // { total, records, matchMode } from the first tier that found anything — kept, not
+  // returned immediately, so later tiers can still union in matches it couldn't see.
+  let best = null;
 
   const exact = await runOpenFdaQuery(buildExactExpr(searchTerm), apiKey);
-  if (exact.total > 0) return { ...exact, matchMode: 'exact', expansion };
+  if (exact.total > 0) best = { ...exact, matchMode: 'exact' };
 
-  const broadExpr = buildBroadExpr(searchTerm);
-  if (broadExpr) {
-    await sleep(150);
-    const broad = await runOpenFdaQuery(broadExpr, apiKey);
-    if (broad.total > 0) return { ...broad, matchMode: 'broad', expansion };
+  if (!best) {
+    const broadExpr = buildBroadExpr(searchTerm);
+    if (broadExpr) {
+      await sleep(150);
+      const broad = await runOpenFdaQuery(broadExpr, apiKey);
+      if (broad.total > 0) best = { ...broad, matchMode: 'broad' };
+    }
   }
 
-  const antigenExpr = buildAntigenExpr(searchTerm);
-  if (antigenExpr && antigenExpr !== buildExactExpr(searchTerm)) {
-    await sleep(150);
-    const antigen = await runOpenFdaQuery(antigenExpr, apiKey);
-    if (antigen.total > 0) return { ...antigen, matchMode: 'antigen-only', expansion };
+  if (!best) {
+    const antigenExpr = buildAntigenExpr(searchTerm);
+    if (antigenExpr && antigenExpr !== buildExactExpr(searchTerm)) {
+      await sleep(150);
+      const antigen = await runOpenFdaQuery(antigenExpr, apiKey);
+      if (antigen.total > 0) best = { ...antigen, matchMode: 'antigen-only' };
+    }
   }
 
+  // A dictionary-verified alternate wording is normally only tried once nothing else has
+  // matched (below) — but for entries explicitly flagged alwaysCheck: true, it's checked (and
+  // its matches UNIONed in) even when an earlier tier already found something. This is opt-in,
+  // not the default, because doing it universally resurfaces a *different*, pre-existing
+  // weakness for some entries: confirmed via curl that 'bp180' ("Bullous Pemphigoid 180") also
+  // matches K193115, a real device that only tests BP230 — its openfda.device_name is a
+  // classification string shared verbatim by every device under that product code
+  // ("...Bullous Pemphigoid 180 And Bullous Pemphigoid 230"), regardless of which one a given
+  // submission actually covers, so a token/phrase match against that field alone can't tell
+  // the siblings apart. That risk already existed before this tier ever ran for 'bp180' — the
+  // old "stop at the first success" design just never exercised it, since the antigen-only
+  // tier already found something. alwaysCheck is reserved for entries individually verified to
+  // be safe here: confirmed for 'cl'/'cardiolipin', where K223093, a real cleared
+  // Anticardiolipin IgG/IgM device, has no "cardiolipin" text anywhere in device_name (it just
+  // says "Aptiva APS IgG Reagent...") — its only searchable evidence is the fused, hyphen-less
+  // classification word "Anticardiolipin," a form no earlier tier's tokenization of the user's
+  // typed term would ever produce, and not one shared with any other distinct antigen.
   if (expansion) {
     const expansionExpr = buildExpansionExpr(expansion, antiRequirementMode(searchTerm));
-    if (expansionExpr) {
+    if (expansionExpr && (!best || expansion.alwaysCheck)) {
       await sleep(150);
       const exp = await runOpenFdaQuery(expansionExpr, apiKey);
-      if (exp.total > 0) return { ...exp, matchMode: 'expansion', expansion };
+      if (exp.total > 0) {
+        best = best ? { ...mergeQueryResults(best, exp), matchMode: best.matchMode } : { ...exp, matchMode: 'expansion' };
+      }
     }
   }
 
   // Only reached for terms with no entry in our own curated dictionary at all — an existing
-  // (even if unhelpful) local entry is trusted over an unverified external lookup.
-  if (!expansion && umlsApiKey) {
+  // (even if unhelpful) local entry is trusted over an unverified external lookup. Kept as a
+  // last resort only (not unioned into an already-successful earlier tier, unlike alwaysCheck
+  // dictionary entries above): a UMLS-resolved name is automatically looked up, not manually
+  // verified against real openFDA data the way every ABBREVIATION_EXPANSIONS entry is, so it
+  // doesn't carry the same basis for trusting it enough to broaden an already-confirmed match.
+  if (!best && !expansion && umlsApiKey) {
     const umlsExpansion = await lookupUmlsExpansion(searchTerm, umlsApiKey);
     if (umlsExpansion) {
       const umlsExpr = buildExpansionExpr(umlsExpansion, antiRequirementMode(searchTerm));
       if (umlsExpr) {
         await sleep(150);
         const umls = await runOpenFdaQuery(umlsExpr, apiKey);
-        if (umls.total > 0) return { ...umls, matchMode: 'umls', expansion: umlsExpansion };
+        if (umls.total > 0) {
+          best = { ...umls, matchMode: 'umls' };
+          resultExpansion = umlsExpansion;
+        }
       }
     }
   }
+
+  if (best) return { ...best, expansion: resultExpansion };
 
   if (expansion && expansion.panel) {
     const panelExpr = buildPanelExpr(expansion.panel);
