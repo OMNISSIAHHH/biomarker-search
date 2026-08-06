@@ -53,6 +53,11 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .datefilter label{display:flex;align-items:center;gap:6px}
 .datefilter input[type=month]{font-family:var(--mono);font-size:12px;padding:5px 8px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);border-radius:3px}
 .datefilter button{padding:5px 12px;font-size:12px}
+.datefilter select,.datefilter input[type=text]{font-family:var(--mono);font-size:12px;padding:5px 8px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);border-radius:3px}
+.datefilter input[type=text]{width:180px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);background:var(--bg2);border:1px solid var(--br2);border-radius:3px;padding:3px 4px 3px 8px;color:var(--tx2)}
+.chip button{background:none;border:none;padding:0 2px;margin:0;font-size:13px;line-height:1;cursor:pointer;color:var(--tx3)}
+.chip button:hover{color:var(--red)}
 textarea#biomarkers{width:100%;min-height:96px;resize:vertical;padding:10px 12px;border:1px solid var(--br2);border-radius:3px;background:var(--bg2);color:var(--tx);font-family:var(--mono);font-size:13.5px}
 .hint{font-size:12px;color:var(--tx2);margin-top:8px;line-height:1.55;padding-left:18px}
 .hint li{margin-bottom:7px}
@@ -204,6 +209,12 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <label>To <input type="month" id="dateFilterTo"></label>
         <button class="btn-ghost" id="dateFilterClear" type="button">Clear</button>
         <span id="dateFilterNote"></span>
+      </div>
+      <div class="datefilter" id="applicantFilterBar" style="display:none">
+        <label>Submitted by <select id="applicantFilterSelect"><option value="">All applicants</option></select></label>
+        <label>Exclude <input type="text" id="excludeInput" placeholder="Biomarker or company name"></label>
+        <button class="btn-ghost" id="excludeAddBtn" type="button">Exclude</button>
+        <span id="excludeChips"></span>
       </div>
       <div class="hint" id="resultsHint" style="margin:-6px 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
       <table class="sumtable">
@@ -1258,6 +1269,53 @@ function applyDateFilter(rawState) {
   });
 }
 
+// '' means no filter (all applicants shown). The same company can submit several separate
+// 510(k)s for one biomarker over time — this narrows a biomarker's device list down to just
+// one applicant's submissions, so that pattern is easy to see on its own.
+let applicantFilter = '';
+
+// Sorted, de-duplicated list of every applicant name across the current search — used both
+// to populate the filter dropdown and to decide whether a previously-selected applicant is
+// still valid after a new search runs.
+function uniqueApplicants(rawState) {
+  const set = new Set();
+  rawState.forEach(s => { if (!s.error) s.records.forEach(r => { if (r.applicant) set.add(r.applicant); }); });
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
+
+function applyApplicantFilter(rawState) {
+  if (!applicantFilter) return rawState;
+  return rawState.map(s => {
+    if (s.error) return s;
+    const records = s.records.filter(r => r.applicant === applicantFilter);
+    const approved = records.filter(r => classify(r.decision_description) === 'se').length;
+    return { ...s, records, approved, total: records.length };
+  });
+}
+
+// Lowercased strings the user has explicitly excluded, each matched as a case-insensitive
+// substring against either a biomarker's own name or a record's applicant — so one exclusion
+// list handles "exclude this biomarker entirely" and "exclude this company's submissions"
+// the same way, per how the user asked for it (search either name, exclude what matches).
+let excludedTerms = [];
+
+function matchesExclusion(text) {
+  const lower = (text || '').toLowerCase();
+  return excludedTerms.some(ex => lower.includes(ex));
+}
+
+function applyExclusions(rawState) {
+  if (!excludedTerms.length) return rawState;
+  return rawState
+    .filter(s => s.error || !matchesExclusion(s.term))
+    .map(s => {
+      if (s.error) return s;
+      const records = s.records.filter(r => !matchesExclusion(r.applicant));
+      const approved = records.filter(r => classify(r.decision_description) === 'se').length;
+      return { ...s, records, approved, total: records.length };
+    });
+}
+
 // Most recent decision_date among a biomarker's matched records, or null if it has none to
 // sort by (0 matches). ISO "YYYY-MM-DD" strings compare correctly with plain string
 // comparison, so no Date parsing is needed.
@@ -1270,7 +1328,7 @@ function latestApprovalDate(s) {
 }
 
 function getRanked() {
-  const filtered = applyDateFilter(state);
+  const filtered = applyApplicantFilter(applyExclusions(applyDateFilter(state)));
   const valid = filtered.filter(s => !s.error).slice();
   if (sortMode === 'date') {
     // Most recently approved first; biomarkers with no dated record (0 matches) sort last
@@ -1290,6 +1348,31 @@ function getRanked() {
   return { valid, errored };
 }
 
+// Rebuilds the applicant dropdown from the current search's own data every render, since the
+// list of real applicants is different for every set of biomarkers searched. Falls back to
+// "All applicants" if the previously-selected one isn't among this search's results (e.g. a
+// brand new search ran) rather than silently filtering by a company that isn't even present.
+function populateApplicantFilter() {
+  const applicants = uniqueApplicants(state);
+  const select = $('applicantFilterSelect');
+  if (!applicants.includes(applicantFilter)) applicantFilter = '';
+  select.innerHTML = '<option value="">All applicants</option>' +
+    applicants.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  select.value = applicantFilter;
+}
+
+function renderExcludeChips() {
+  $('excludeChips').innerHTML = excludedTerms.map(t => `
+    <span class="chip">${escapeHtml(t)}<button type="button" data-term="${escapeHtml(t)}" title="Remove this exclusion">×</button></span>
+  `).join('');
+  $('excludeChips').querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      excludedTerms = excludedTerms.filter(t => t !== btn.dataset.term);
+      renderResults();
+    });
+  });
+}
+
 function renderResults() {
   $('resultsCard').style.display = 'block';
   $('sortTabs').style.display = 'flex';
@@ -1298,6 +1381,9 @@ function renderResults() {
   $('dateFilterBar').style.display = 'flex';
   $('dateFilterNote').textContent = dateFilterActive()
     ? 'Approved/Total counts reflect only this range.' : '';
+  $('applicantFilterBar').style.display = 'flex';
+  populateApplicantFilter();
+  renderExcludeChips();
   $('chartCaptag').textContent = 'Figure 1';
   $('resultsCaptag').textContent = 'Table 1';
   if (sortMode === 'date') {
@@ -1547,6 +1633,7 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
     $('resultsCard').style.display = 'block';
     $('sortTabs').style.display = 'none'; // FDA-only sort toggle; LDT has no approve-date field to rank by
     $('dateFilterBar').style.display = 'none'; // same — LDT records have no decision_date to filter on
+    $('applicantFilterBar').style.display = 'none'; // same — LDT uses "facility," not "applicant"
     $('chartCaptag').textContent = 'Figure 1';
     $('chartTitle').textContent = 'LDT matches by biomarker, ranked fewest first';
     $('chartHint').textContent = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
@@ -1762,6 +1849,18 @@ $('dateFilterClear').addEventListener('click', () => {
   $('dateFilterTo').value = '';
   renderResults();
 });
+
+$('applicantFilterSelect').addEventListener('change', (e) => { applicantFilter = e.target.value; renderResults(); });
+
+function addExclusion() {
+  const val = $('excludeInput').value.trim().toLowerCase();
+  if (!val || excludedTerms.includes(val)) return;
+  excludedTerms.push(val);
+  $('excludeInput').value = '';
+  renderResults();
+}
+$('excludeAddBtn').addEventListener('click', addExclusion);
+$('excludeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addExclusion(); } });
 
 $('searchBtn').addEventListener('click', runSearch);
 
