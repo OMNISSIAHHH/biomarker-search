@@ -1903,14 +1903,68 @@ function ldtDetailRows(targetState) {
 // Shared by both the main Export to Excel button and the one at the bottom of the LDT
 // cross-check table (Table 2) — same workbook either way, so clicking either produces an
 // identical file; the second button just saves scrolling back up after running a cross-check.
+// Sets column widths and turns on Excel's filter-dropdown row, reusing the range json_to_sheet
+// already computed in ws['!ref'] (covers the header plus every data row) so the filter applies
+// to the whole sheet, not just the header.
+function formatSheet(ws, colWidths) {
+  if (colWidths) ws['!cols'] = colWidths.map(w => ({ wch: w }));
+  if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
+  return ws;
+}
+
+// A saved export otherwise gives no way to tell, weeks later, whether "only 3 rows" means
+// "only 3 real matches" or "a filter was narrowing the view" — this sheet records every filter/
+// sort setting active at export time, plus which biomarkers were actually searched, so the file
+// is self-explanatory on its own without needing to remember the browser session it came from.
+function buildSearchInfoRows() {
+  const rows = [
+    ['Exported', new Date().toLocaleString()],
+    ['Search mode', searchMode === 'ldt' ? 'LDT (NY State)' : 'FDA 510(k)'],
+    ['Biomarkers searched', parseTerms($('biomarkers').value).join(', ') || '(none)']
+  ];
+  if (searchMode !== 'ldt') {
+    rows.push(['Sort order', sortMode === 'date' ? 'Most recent approval' : 'Fewest approvals']);
+    rows.push(['Date filter', dateFilterActive() ? `${dateFilter.from || '(no start)'} to ${dateFilter.to || '(no end)'}` : 'None']);
+    rows.push(['Submitted-by filter', applicantFilter || 'All applicants']);
+    rows.push(['"Show only" filter', showOnlyTerms.length ? showOnlyTerms.join(', ') : 'None']);
+    rows.push(['LDT cross-check included', crossState.length ? 'Yes' : 'No']);
+  }
+  return [['Field', 'Value'], ...rows];
+}
+
+// One row per applicant across every biomarker currently in view — the Submitted By filter
+// exists because the same company can file multiple times for one biomarker, so a saved export
+// should let that pattern be seen at a glance without building a pivot table by hand.
+function buildApplicantSummaryRows(valid) {
+  const byApplicant = new Map();
+  valid.forEach(s => {
+    s.records.forEach(r => {
+      const name = r.applicant || 'Unknown';
+      if (!byApplicant.has(name)) byApplicant.set(name, { total: 0, biomarkers: new Set() });
+      const entry = byApplicant.get(name);
+      entry.total += 1;
+      entry.biomarkers.add(s.term);
+    });
+  });
+  return Array.from(byApplicant.entries())
+    .map(([applicant, { total, biomarkers }]) => ({
+      Applicant: applicant,
+      'Total Submissions': total,
+      'Biomarkers Covered': biomarkers.size,
+      'Biomarker List': Array.from(biomarkers).sort().join(', ')
+    }))
+    .sort((a, b) => b['Total Submissions'] - a['Total Submissions'] || a.Applicant.localeCompare(b.Applicant));
+}
+
 function exportToExcel() {
   const ts = new Date().toISOString().slice(0, 10);
   const wb = XLSX.utils.book_new();
 
   if (searchMode === 'ldt') {
     if (!ldtState.length) return;
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ldtSummaryRows(ldtState)), 'LDT Summary');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ldtDetailRows(ldtState)), 'LDT Details');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSearchInfoRows()), 'Search Info');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(ldtState)), [8, 26, 16, 12, 20, 24]), 'LDT Summary');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtDetailRows(ldtState)), [22, 34, 26, 18, 18, 16, 50]), 'LDT Details');
     XLSX.writeFile(wb, `NY_LDT_Biomarker_Search_${ts}.xlsx`);
     return;
   }
@@ -1938,11 +1992,11 @@ function exportToExcel() {
     }))
   ];
   const detailRows = [];
+  const panelRows = [];
   valid.forEach(s => {
     sortRecordsByDateDesc(s.records).forEach(r => {
       detailRows.push({
         Biomarker: s.term,
-        'Match Status': 'Confirmed',
         'Device Name': r.device_name || '',
         'Submitted By': r.applicant || '',
         Decision: r.decision_description || '',
@@ -1952,9 +2006,8 @@ function exportToExcel() {
       });
     });
     (s.panelCandidates || []).forEach(r => {
-      detailRows.push({
+      panelRows.push({
         Biomarker: s.term,
-        'Match Status': 'Possible panel match — unverified',
         'Device Name': r.device_name || '',
         'Submitted By': r.applicant || '',
         Decision: r.decision_description || '',
@@ -1965,11 +2018,19 @@ function exportToExcel() {
     });
   });
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Summary');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'Details');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSearchInfoRows()), 'Search Info');
+  XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(summaryRows), [8, 22, 30, 16, 16, 20, 30]), 'Summary');
+  const applicantRows = buildApplicantSummaryRows(valid);
+  if (applicantRows.length) {
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(applicantRows), [30, 16, 16, 60]), 'Applicant Summary');
+  }
+  XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(detailRows), [22, 40, 30, 20, 14, 12, 50]), 'Details');
+  if (panelRows.length) {
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(panelRows), [22, 40, 30, 20, 14, 12, 50]), 'Possible Panel Matches');
+  }
   if (crossState.length) {
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ldtSummaryRows(crossState)), 'LDT Cross-Check');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ldtDetailRows(crossState)), 'LDT Cross-Check Details');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(crossState)), [8, 26, 16, 12, 20, 24]), 'LDT Cross-Check');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtDetailRows(crossState)), [22, 34, 26, 18, 18, 16, 50]), 'LDT Cross-Check Details');
   }
   XLSX.writeFile(wb, `FDA_510k_Biomarker_Search_${ts}.xlsx`);
 }
