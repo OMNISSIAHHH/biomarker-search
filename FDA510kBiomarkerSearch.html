@@ -684,6 +684,35 @@ function buildAntigenExpr(term) {
   return withCrossFieldAnti(mainExpr, mode);
 }
 
+// Tier 3b: some FDA openfda.device_name classification text fuses "Anti" directly onto a
+// single-word antigen with no separator at all — e.g. "Anticardiolipin" (confirmed via curl
+// for K223093, a real cleared device with no other searchable "cardiolipin" text anywhere on
+// the record: its device_name is just "Aptiva APS IgG Reagent..."). This is a genuine,
+// recurring FDA naming convention, not a one-off quirk specific to that antigen — rather than
+// requiring a hand-added dictionary entry every time a *different* antigen turns out to
+// follow it too, always try the fused form automatically, derived straight from whatever
+// antigen the user actually typed. No dictionary lookup involved, so this generalizes to any
+// antigen without needing to be individually taught.
+// Deliberately conservative in two ways: only for antibody-context terms (an anti-prefix or
+// Ig suffix — antiRequirementMode !== 'none'), and only when the antigen is a single word —
+// fusing a multi-word antigen (e.g. "Antibeta2glycoprotein1") isn't a pattern FDA's own
+// classification text actually uses, so attempting it would just waste an API call. An exact
+// single-token match against a specific fused word is inherently precise (unlike token-AND
+// matching against a shared classification string, which is what caused the BP180/BP230
+// cross-contamination false positive elsewhere in this file) — a coincidental match would
+// require some unrelated device's classification to contain this *exact* fused string as its
+// own token, which is extremely unlikely — so this is safe to always check and merge in,
+// without needing a per-entry alwaysCheck opt-in the way dictionary entries do.
+function buildFusedAntiExpr(term) {
+  if (antiRequirementMode(term) === 'none') return null;
+  const antigen = stripAntiPrefix(stripIsotypeSuffix(term)).trim();
+  const tokens = splitTokens(antigen);
+  if (tokens.length !== 1) return null;
+  const fused = 'Anti' + tokens[0].replace(/[^A-Za-z0-9]/g, '');
+  if (fused.toLowerCase() === 'anti') return null; // nothing left after stripping punctuation
+  return crossFieldTokensClause([fused]);
+}
+
 // Reference list of common biomarker abbreviations -> full name, keyed by the term with
 // "Anti-"/Ig-class stripped and lowercased (so "GADA", "Anti-GADA", "Anti-GADA IgG" all
 // resolve the same way). Best-effort, not exhaustive. `search` overrides the phrase used
@@ -989,6 +1018,18 @@ async function fetchBiomarker(term, apiKey, umlsApiKey) {
     }
   }
 
+  // Always checked and unioned in, regardless of whether an earlier tier already found
+  // something — safe to do unconditionally here (see buildFusedAntiExpr's own comment for
+  // why this tier doesn't need the same alwaysCheck opt-in dictionary entries do).
+  const fusedExpr = buildFusedAntiExpr(searchTerm);
+  if (fusedExpr) {
+    await sleep(150);
+    const fused = await runOpenFdaQuery(fusedExpr, apiKey);
+    if (fused.total > 0) {
+      best = best ? { ...mergeQueryResults(best, fused), matchMode: best.matchMode } : { ...fused, matchMode: 'fused-anti' };
+    }
+  }
+
   // A dictionary-verified alternate wording is normally only tried once nothing else has
   // matched (below) — but for entries explicitly flagged alwaysCheck: true, it's checked (and
   // its matches UNIONed in) even when an earlier tier already found something. This is opt-in,
@@ -1163,13 +1204,15 @@ const MATCH_MODE_LABEL = {
   broad: 'Broad match',
   'antigen-only': 'Antigen-only match',
   expansion: 'Expanded-name match',
-  umls: 'UMLS-resolved match'
+  umls: 'UMLS-resolved match',
+  'fused-anti': 'Fused-word match'
 };
 const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
   'antigen-only': 'No match including the Ig-class (IgG/IgA/IgM) — matched on the antigen name alone, since many FDA device names omit the isotype. The count may include products that are not isotype-specific.',
   expansion: 'No match on the abbreviation itself — matched by searching its spelled-out full name instead, since some FDA device names use the full term rather than the shorthand.',
-  umls: 'This abbreviation isn\'t in this tool\'s own built-in dictionary — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.'
+  umls: 'This abbreviation isn\'t in this tool\'s own built-in dictionary — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
+  'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.'
 };
 
 function matchModeTag(mode) {
