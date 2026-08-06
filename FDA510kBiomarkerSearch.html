@@ -212,9 +212,9 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
       </div>
       <div class="datefilter" id="applicantFilterBar" style="display:none">
         <label>Submitted by <select id="applicantFilterSelect"><option value="">All applicants</option></select></label>
-        <label>Exclude <input type="text" id="excludeInput" placeholder="Biomarker or company name"></label>
-        <button class="btn-ghost" id="excludeAddBtn" type="button">Exclude</button>
-        <span id="excludeChips"></span>
+        <label>Show only <input type="text" id="showOnlyInput" placeholder="Biomarker or company name"></label>
+        <button class="btn-ghost" id="showOnlyAddBtn" type="button">Add</button>
+        <span id="showOnlyChips"></span>
       </div>
       <div class="hint" id="resultsHint" style="margin:-6px 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
       <table class="sumtable">
@@ -1293,24 +1293,28 @@ function applyApplicantFilter(rawState) {
   });
 }
 
-// Lowercased strings the user has explicitly excluded, each matched as a case-insensitive
-// substring against either a biomarker's own name or a record's applicant — so one exclusion
-// list handles "exclude this biomarker entirely" and "exclude this company's submissions"
-// the same way, per how the user asked for it (search either name, exclude what matches).
-let excludedTerms = [];
+// Lowercased strings the user wants isolated — narrows the view down to ONLY biomarkers/
+// companies matching one of these (a positive filter, not a blocklist), each checked as a
+// case-insensitive substring against either a biomarker's own name or a record's applicant.
+let showOnlyTerms = [];
 
-function matchesExclusion(text) {
+function matchesShowOnly(text) {
   const lower = (text || '').toLowerCase();
-  return excludedTerms.some(ex => lower.includes(ex));
+  return showOnlyTerms.some(t => lower.includes(t));
 }
 
-function applyExclusions(rawState) {
-  if (!excludedTerms.length) return rawState;
+// A biomarker stays visible if its own name matches one of the terms (in which case ALL its
+// records are kept — the user asked to see this biomarker specifically, not a filtered slice
+// of it) or if at least one of its records' applicant matches (in which case only THOSE
+// records are kept, narrowing it down to just that company's submissions, same as the
+// Submitted By dropdown does for a single company). Everything else is hidden entirely.
+function applyShowOnlyFilter(rawState) {
+  if (!showOnlyTerms.length) return rawState;
   return rawState
-    .filter(s => s.error || !matchesExclusion(s.term))
+    .filter(s => s.error || matchesShowOnly(s.term) || s.records.some(r => matchesShowOnly(r.applicant)))
     .map(s => {
-      if (s.error) return s;
-      const records = s.records.filter(r => !matchesExclusion(r.applicant));
+      if (s.error || matchesShowOnly(s.term)) return s;
+      const records = s.records.filter(r => matchesShowOnly(r.applicant));
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
       return { ...s, records, approved, total: records.length };
     });
@@ -1328,7 +1332,7 @@ function latestApprovalDate(s) {
 }
 
 function getRanked() {
-  const filtered = applyApplicantFilter(applyExclusions(applyDateFilter(state)));
+  const filtered = applyApplicantFilter(applyShowOnlyFilter(applyDateFilter(state)));
   const valid = filtered.filter(s => !s.error).slice();
   if (sortMode === 'date') {
     // Most recently approved first; biomarkers with no dated record (0 matches) sort last
@@ -1361,13 +1365,13 @@ function populateApplicantFilter() {
   select.value = applicantFilter;
 }
 
-function renderExcludeChips() {
-  $('excludeChips').innerHTML = excludedTerms.map(t => `
-    <span class="chip">${escapeHtml(t)}<button type="button" data-term="${escapeHtml(t)}" title="Remove this exclusion">×</button></span>
+function renderShowOnlyChips() {
+  $('showOnlyChips').innerHTML = showOnlyTerms.map(t => `
+    <span class="chip">${escapeHtml(t)}<button type="button" data-term="${escapeHtml(t)}" title="Remove this filter">×</button></span>
   `).join('');
-  $('excludeChips').querySelectorAll('button').forEach(btn => {
+  $('showOnlyChips').querySelectorAll('button').forEach(btn => {
     btn.addEventListener('click', () => {
-      excludedTerms = excludedTerms.filter(t => t !== btn.dataset.term);
+      showOnlyTerms = showOnlyTerms.filter(t => t !== btn.dataset.term);
       renderResults();
     });
   });
@@ -1383,7 +1387,7 @@ function renderResults() {
     ? 'Approved/Total counts reflect only this range.' : '';
   $('applicantFilterBar').style.display = 'flex';
   populateApplicantFilter();
-  renderExcludeChips();
+  renderShowOnlyChips();
   $('chartCaptag').textContent = 'Figure 1';
   $('resultsCaptag').textContent = 'Table 1';
   if (sortMode === 'date') {
@@ -1852,15 +1856,15 @@ $('dateFilterClear').addEventListener('click', () => {
 
 $('applicantFilterSelect').addEventListener('change', (e) => { applicantFilter = e.target.value; renderResults(); });
 
-function addExclusion() {
-  const val = $('excludeInput').value.trim().toLowerCase();
-  if (!val || excludedTerms.includes(val)) return;
-  excludedTerms.push(val);
-  $('excludeInput').value = '';
+function addShowOnlyTerm() {
+  const val = $('showOnlyInput').value.trim().toLowerCase();
+  if (!val || showOnlyTerms.includes(val)) return;
+  showOnlyTerms.push(val);
+  $('showOnlyInput').value = '';
   renderResults();
 }
-$('excludeAddBtn').addEventListener('click', addExclusion);
-$('excludeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addExclusion(); } });
+$('showOnlyAddBtn').addEventListener('click', addShowOnlyTerm);
+$('showOnlyInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addShowOnlyTerm(); } });
 
 $('searchBtn').addEventListener('click', runSearch);
 
