@@ -1610,22 +1610,20 @@ function renderLdtChart(valid) {
     data: {
       labels: valid.map(s => s.term),
       datasets: [
-        { label: 'Approved', data: valid.map(s => s.approved), backgroundColor: '#1B7A4D', minBarLength: 4 },
-        { label: 'Conditionally Approved', data: valid.map(s => s.conditional), backgroundColor: '#0066B3', minBarLength: 4 }
+        { label: 'Total LDT Matches', data: valid.map(s => s.total), backgroundColor: '#1B7A4D', minBarLength: 4 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       scales: {
         x: {
-          stacked: true,
           grid: { color: 'rgba(10,40,70,.08)' },
-          ticks: { color: (ctx) => (valid[ctx.index] && (valid[ctx.index].approved + valid[ctx.index].conditional) === 0) ? '#0066B3' : '#4A5A68' }
+          ticks: { color: (ctx) => (valid[ctx.index] && valid[ctx.index].total === 0) ? '#0066B3' : '#4A5A68' }
         },
-        y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(10,40,70,.08)' } }
+        y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(10,40,70,.08)' } }
       },
       plugins: {
-        legend: { position: 'bottom', labels: { font: { family: "'IBM Plex Sans', sans-serif", size: 12 } } },
+        legend: { display: false },
         tooltip: { callbacks: { footer: () => 'Click to jump to this row in the table' } }
       },
       onHover: (evt) => {
