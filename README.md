@@ -19,7 +19,7 @@ runs entirely in your web browser (Chrome, Edge, Firefox, Safari — whatever yo
 - [Reading your results](#reading-your-results)
 - [Automatic abbreviation lookup (UMLS)](#automatic-abbreviation-lookup-umls)
 - [Sorting your results](#sorting-your-results)
-- [Filtering by date](#filtering-by-date)
+- [Filtering and narrowing your results](#filtering-and-narrowing-your-results)
 - [Exporting to Excel](#exporting-to-excel)
 - [Checking a specific device's paperwork ("Measurand")](#checking-a-specific-devices-paperwork-measurand)
 - [Searching lab-developed tests (LDT) in New York State](#searching-lab-developed-tests-ldt-in-new-york-state)
@@ -71,6 +71,7 @@ ways.
 | Biomarker | The name you typed. If the tool had to search more loosely to find anything, a small tag appears next to it explaining how (see below) |
 | Total Submissions | How many FDA filings mention this biomarker |
 | Cleared (Approved) | How many of those were actually cleared by the FDA. A **red** number means 10 or more — a more crowded, competitive space. A **green** number means fewer than 10 |
+| Unique Applicants | How many *distinct companies* are behind those submissions. If this is lower than Total Submissions, at least one company filed more than once for this biomarker — worth a look with the [Submitted by filter](#filtering-and-narrowing-your-results) below |
 
 Click anywhere on a row to expand it and see the individual devices behind that number: device
 name, the company that submitted it, the decision, the approval date, a link to the official
@@ -91,6 +92,10 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
 - **UMLS-resolved match** — the abbreviation wasn't recognized by this tool's own built-in list
   at all, so its spelled-out medical name was looked up automatically instead (see
   [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls) below)
+- **Fused-word match** — FDA sometimes writes "Anti" and the antigen as one run-together word
+  with no space or hyphen (e.g. "Anticardiolipin"). The tool automatically tries that fused
+  form for any antibody-style search, so this can show up even for terms with no special
+  handling built in ahead of time
 
 None of these tags mean the result is wrong — they just tell you how confident the match is,
 so an exact match is more reliable than an "expanded-name match" or a "UMLS-resolved match."
@@ -127,21 +132,62 @@ Above the table, there are two buttons:
   the top. Useful for spotting where the FDA has been recently active. Biomarkers with zero
   cleared devices have no date to sort by, so they always sit at the bottom in this view.
 
-## Filtering by date
+## Filtering and narrowing your results
 
-Still above the table, you'll find two small **From** / **To** boxes where you can pick a
-month and year. Once you pick either one, the table (and the chart, and the numbers) update to
-count only devices cleared within that window — handy for questions like "how many of these
-were cleared in just the last 5 years?" Click **Clear** to go back to showing everything.
+Above the table, you'll find several filters. All of them work together, all of them update
+the table/chart/numbers together (nothing needs a re-search), and all of them carry over into
+the Excel export automatically.
+
+**By date.** Two small **From** / **To** boxes let you pick a month and year — the table then
+only counts devices cleared within that window. Handy for questions like "how many of these
+were cleared in just the last 5 years?" Click **Clear** to reset just this one.
+
+**By company ("Submitted by").** A dropdown listing every company that shows up anywhere in
+your current results. Pick one to narrow every biomarker's device list down to just that
+company's submissions — useful for seeing a single company's pattern across several
+biomarkers, or confirming the "Unique Applicants" gap mentioned above.
+
+**"Show only" a specific biomarker or company.** Type a name into this box and click **Add** —
+the view narrows down to *only* whatever matches (searching either a biomarker's own name or
+an applicant's name), everything else is hidden. Each thing you add shows up as a small
+removable tag; click its **×** to bring the rest back.
+
+**Rule out an FDA review panel.** Short abbreviations can collide with something completely
+unrelated — "RF" matches both *Rheumatoid Factor* (a real lab test) and *Radio Frequency*
+(ablation devices, a totally different product category), since it's the literal same two
+letters. Every FDA device is routed to a review panel when it's cleared (Immunology, Clinical
+Chemistry, General Surgery, and so on) — click **Rule out FDA review panel** to open a list of
+every panel actually present in your current results, and check the ones that clearly don't
+belong (e.g. ruling out "General, Plastic Surgery" for a lab-test search) to clean up the
+count. Nothing is ruled out automatically — you're always the one deciding, since only you can
+judge which panels make sense to exclude for a given biomarker. Use **Clear all review
+panels** (inside that same dropdown) to undo just this filter.
+
+**Clearing everything at once.** Click **Clear all filters** to reset the date range,
+company filter, "show only" list, and ruled-out panels together in one click.
 
 ## Exporting to Excel
 
 Click **Export to Excel** at any time after a search to download a spreadsheet file. It always
-matches whatever is currently on screen — the same sort order and the same date filter, if
-you've set one. It contains:
+matches whatever is currently on screen — the same sort order and every active filter — so two
+exports from the same search can look very different if you've narrowed things down in
+between. It contains:
 
-- **Summary** — one row per biomarker with its totals.
-- **Details** — one row per individual device found, across every biomarker you searched.
+- **Search Info** — a record of exactly how this export was produced: when, which biomarkers,
+  the sort order, and the state of every filter. Meant so the file explains itself later,
+  without needing to remember the browser session it came from.
+- **Summary** — one row per biomarker with its totals, including Unique Applicants.
+- **Applicant Summary** — one row per company across your whole search, with its total
+  submissions and how many different biomarkers it covers. A quick way to see which companies
+  dominate a space without building a pivot table by hand.
+- **Details** — one row per confirmed individual device found, across every biomarker you
+  searched.
+- **Possible Panel Matches** — the unconfirmed "possible panel match" candidates (see the tags
+  above), kept in their own sheet so they're never mistaken for a confirmed result.
+
+If you ran the LDT cross-check (see below), two more sheets are added with those results —
+there's also a second **Export to Excel** button at the bottom of that table specifically, in
+case that's the last thing you looked at.
 
 ## Checking a specific device's paperwork ("Measurand")
 
@@ -220,6 +266,7 @@ frequently show up this way).
 | **Cleared / Approved** | The FDA decided the device is "Substantially Equivalent" and it can be legally sold. |
 | **LDT (Lab-Developed Test)** | A test that a single laboratory designs, builds, and runs in-house, rather than buying a ready-made FDA-cleared kit. These are regulated differently than FDA-cleared devices — some states, like New York, require their own separate approval for them. |
 | **Decision Summary** | The FDA's official write-up explaining why a specific device was cleared — usually a PDF, a few pages long, with a standard structure. |
+| **FDA review panel (advisory committee)** | The medical specialty group inside the FDA that reviewed a given device — e.g. Immunology, Clinical Chemistry, General Surgery. Every cleared device is routed to one; genuine lab tests almost always land in a handful of diagnostic-related panels, never a surgical/hardware one. |
 | **Measurand** | The technical term (used in that FDA paperwork) for exactly what a test measures — e.g. "Anti-GAD65 antibodies in human serum." |
 | **Worker** | A small, free program that runs on Cloudflare's servers (not your computer) and acts as a go-between, letting this tool reach a website that would otherwise block it directly. You set one up once by copy-pasting code into a web page — no programming needed. See [worker/README.md](worker/README.md). |
 | **API / API key** | A way for one computer program to ask another for data automatically (in this case, this tool asking the FDA's database for results). An "API key" is just a free password that raises how many searches per day you're allowed — you don't need one to use this tool, it just helps if you're doing a lot of searching. |
