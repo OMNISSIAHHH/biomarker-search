@@ -58,7 +58,9 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);background:var(--bg2);border:1px solid var(--br2);border-radius:3px;padding:3px 4px 3px 8px;color:var(--tx2)}
 .chip button{background:none;border:none;padding:0 2px;margin:0;font-size:13px;line-height:1;cursor:pointer;color:var(--tx3)}
 .chip button:hover{color:var(--red)}
-.committee-check{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-family:var(--mono);color:var(--tx2);margin-right:10px;cursor:pointer}
+.committee-dropdown{position:relative}
+.committee-panel{position:absolute;top:calc(100% + 4px);left:0;z-index:20;background:var(--bg);border:1px solid var(--br2);border-radius:3px;padding:10px 12px;box-shadow:0 6px 16px rgba(10,40,70,.15);min-width:260px;max-height:280px;overflow-y:auto}
+.committee-check{display:flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono);color:var(--tx2);cursor:pointer;padding:3px 0;white-space:nowrap}
 .committee-check input{cursor:pointer}
 .committee-check.ruled-out{color:var(--tx3);text-decoration:line-through}
 textarea#biomarkers{width:100%;min-height:96px;resize:vertical;padding:10px 12px;border:1px solid var(--br2);border-radius:3px;background:var(--bg2);color:var(--tx);font-family:var(--mono);font-size:13.5px}
@@ -220,8 +222,12 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <span id="showOnlyChips"></span>
       </div>
       <div class="datefilter" id="committeeFilterBar" style="display:none">
-        <span>Rule out FDA review panel:</span>
-        <span id="committeeCheckboxes"></span>
+        <div class="committee-dropdown">
+          <button class="btn-ghost" id="committeeDropdownBtn" type="button">Rule out FDA review panel<span id="committeeDropdownCount"></span> ▾</button>
+          <div class="committee-panel" id="committeePanel" style="display:none">
+            <div id="committeeCheckboxes"></div>
+          </div>
+        </div>
       </div>
       <div class="hint" id="resultsHint" style="margin:-6px 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
       <table class="sumtable">
@@ -1290,6 +1296,13 @@ function uniqueApplicants(rawState) {
   return Array.from(set).sort((a, b) => a.localeCompare(b));
 }
 
+// Count of distinct companies behind one biomarker's submissions — lower than the submission
+// count itself means at least one company filed more than once for it (the pattern the
+// Submitted By filter exists to let someone isolate and look at directly).
+function uniqueApplicantCount(records) {
+  return new Set(records.map(r => r.applicant).filter(Boolean)).size;
+}
+
 function applyApplicantFilter(rawState) {
   if (!applicantFilter) return rawState;
   return rawState.map(s => {
@@ -1427,6 +1440,7 @@ function renderShowOnlyChips() {
 function renderCommitteeCheckboxes() {
   const committees = uniqueCommittees(state);
   $('committeeFilterBar').style.display = committees.length ? 'flex' : 'none';
+  $('committeeDropdownCount').textContent = excludedCommittees.size ? ` (${excludedCommittees.size} ruled out)` : '';
   $('committeeCheckboxes').innerHTML = committees.map(({ code, description }) => {
     const ruledOut = excludedCommittees.has(code);
     return `<label class="committee-check${ruledOut ? ' ruled-out' : ''}">
@@ -1439,6 +1453,7 @@ function renderCommitteeCheckboxes() {
       if (e.target.checked) excludedCommittees.delete(e.target.dataset.code);
       else excludedCommittees.add(e.target.dataset.code);
       renderResults();
+      $('committeePanel').style.display = 'block'; // stays open across re-render so multiple boxes can be toggled in one go
     });
   });
 }
@@ -1473,6 +1488,7 @@ function renderResults() {
     <th style="width:30%">Biomarker</th>
     <th>Total Submissions</th>
     <th>Cleared (Approved)</th>
+    <th title="How many distinct companies these submissions come from — lower than Total Submissions means one or more companies filed more than once">Unique Applicants</th>
     <th></th>
   </tr>`;
   const tbody = $('resultsBody');
@@ -1494,6 +1510,7 @@ function renderResults() {
       <td><div class="biocell"><span class="chev">▸</span>${escapeHtml(s.term)}${expansionTag(s.expansion)}${matchModeTag(s.matchMode)}${panelTag}</div></td>
       <td>${s.total}</td>
       <td><span class="badge ${s.approved >= HIGH_APPROVAL_THRESHOLD ? 'high' : 'low'}">${s.approved}</span></td>
+      <td>${uniqueApplicantCount(s.records)}</td>
       <td></td>`;
     tbody.appendChild(mainRow);
 
@@ -1525,7 +1542,7 @@ function renderResults() {
         </table>`;
     }
     const td = document.createElement('td');
-    td.colSpan = 5;
+    td.colSpan = 6;
     td.appendChild(wrap);
     detailRow.appendChild(td);
     tbody.appendChild(detailRow);
@@ -1544,7 +1561,7 @@ function renderResults() {
     mainRow.innerHTML = `
       <td class="rankcell">—</td>
       <td><div class="biocell">${escapeHtml(s.term)}</div></td>
-      <td colspan="2"><span class="badge err">Search failed</span> <span class="errline">${escapeHtml(s.error)}</span></td>
+      <td colspan="3"><span class="badge err">Search failed</span> <span class="errline">${escapeHtml(s.error)}</span></td>
       <td></td>`;
     tbody.appendChild(mainRow);
   });
@@ -1924,6 +1941,16 @@ $('dateFilterClear').addEventListener('click', () => {
 
 $('applicantFilterSelect').addEventListener('change', (e) => { applicantFilter = e.target.value; renderResults(); });
 
+$('committeeDropdownBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const panel = $('committeePanel');
+  panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+});
+document.addEventListener('click', (e) => {
+  const dropdown = $('committeeFilterBar');
+  if (dropdown && !dropdown.contains(e.target)) $('committeePanel').style.display = 'none';
+});
+
 function addShowOnlyTerm() {
   const val = $('showOnlyInput').value.trim().toLowerCase();
   if (!val || showOnlyTerms.includes(val)) return;
@@ -2047,6 +2074,7 @@ function exportToExcel() {
       'Full Name': s.expansion ? s.expansion.full : '',
       'Total Submissions': s.total,
       'Cleared (Approved)': s.approved,
+      'Unique Applicants': uniqueApplicantCount(s.records),
       'Match Type': MATCH_MODE_LABEL[s.matchMode] || 'Exact match',
       Error: ''
     })),
@@ -2056,6 +2084,7 @@ function exportToExcel() {
       'Full Name': s.expansion ? s.expansion.full : '',
       'Total Submissions': '',
       'Cleared (Approved)': '',
+      'Unique Applicants': '',
       'Match Type': '',
       Error: s.error
     }))
@@ -2088,7 +2117,7 @@ function exportToExcel() {
   });
 
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSearchInfoRows()), 'Search Info');
-  XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(summaryRows), [8, 22, 30, 16, 16, 20, 30]), 'Summary');
+  XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(summaryRows), [8, 22, 30, 16, 16, 16, 20, 30]), 'Summary');
   const applicantRows = buildApplicantSummaryRows(valid);
   if (applicantRows.length) {
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(applicantRows), [30, 16, 16, 60]), 'Applicant Summary');
