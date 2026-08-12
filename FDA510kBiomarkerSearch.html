@@ -234,7 +234,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
           <div class="committee-panel" id="committeePanel" style="display:none">
             <div class="committee-panel-head">
               <strong>Review panels</strong>
-              <button class="btn-ghost" id="committeeClearBtn" type="button">Clear all review panels</button>
+              <button class="btn-ghost" id="committeeClearBtn" type="button">Select all</button>
             </div>
             <div id="committeeCheckboxes"></div>
           </div>
@@ -1490,6 +1490,11 @@ function renderCommitteeCheckboxes() {
   const committees = uniqueCommittees(state);
   $('committeeFilterBar').style.display = committees.length ? 'flex' : 'none';
   $('committeeDropdownCount').textContent = excludedCommittees.size ? ` (${excludedCommittees.size} ruled out)` : '';
+  // One toggle button instead of separate Select all / Deselect all buttons: once every panel
+  // is ruled out there's nothing left to select, so the label always reflects the one action
+  // that's actually useful from the current state.
+  const allRuledOut = committees.length > 0 && committees.every(c => excludedCommittees.has(c.code));
+  $('committeeClearBtn').textContent = allRuledOut ? 'Deselect all' : 'Select all';
   $('committeeCheckboxes').innerHTML = committees.map(({ code, description }) => {
     const ruledOut = excludedCommittees.has(code);
     return `<div class="committee-row${ruledOut ? ' ruled-out' : ''}">
@@ -2014,7 +2019,9 @@ document.addEventListener('click', (e) => {
 
 $('committeeClearBtn').addEventListener('click', (e) => {
   e.stopPropagation();
-  excludedCommittees = new Set();
+  const committees = uniqueCommittees(state);
+  const allRuledOut = committees.length > 0 && committees.every(c => excludedCommittees.has(c.code));
+  excludedCommittees = allRuledOut ? new Set() : new Set(committees.map(c => c.code));
   renderResults();
   $('committeePanel').style.display = 'block'; // same "stays open" behavior as toggling one box
 });
