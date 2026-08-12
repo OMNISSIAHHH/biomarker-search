@@ -60,9 +60,13 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .chip button:hover{color:var(--red)}
 .committee-dropdown{position:relative}
 .committee-panel{position:absolute;top:calc(100% + 4px);left:0;z-index:20;background:var(--bg);border:1px solid var(--br2);border-radius:3px;padding:10px 12px;box-shadow:0 6px 16px rgba(10,40,70,.15);min-width:260px;max-height:280px;overflow-y:auto}
-.committee-check{display:flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono);color:var(--tx2);cursor:pointer;padding:3px 0;white-space:nowrap}
+.committee-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:3px 0}
+.committee-check{display:flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono);color:var(--tx2);cursor:pointer;white-space:nowrap}
 .committee-check input{cursor:pointer}
-.committee-check.ruled-out{color:var(--tx3);text-decoration:line-through}
+.committee-row.ruled-out .committee-check{color:var(--tx3);text-decoration:line-through}
+.committee-only{background:none;border:none;padding:0;margin:0;font-family:var(--font);font-size:11px;font-weight:600;color:var(--acc);cursor:pointer;text-decoration:none;visibility:hidden}
+.committee-row:hover .committee-only{visibility:visible}
+.committee-only:hover{text-decoration:underline}
 .committee-panel-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--br)}
 .committee-panel-head strong{font-size:11px;font-family:var(--font);color:var(--tx2);text-transform:uppercase;letter-spacing:.05em}
 .committee-panel-head button{padding:2px 8px;font-size:11px}
@@ -1478,16 +1482,23 @@ function renderShowOnlyChips() {
 // the action you're taking, not a snapshot of current inclusion. This way "Clear all review
 // panels" reads correctly too: it unchecks every box (clearing the selections you'd made),
 // landing back on the neutral default of nothing ruled out, rather than checking every box.
+// "Only" exists because the common case isn't "rule out most of a long list one at a time" —
+// it's "I know the one panel I actually want, rule out everything else" (e.g. isolating "IM"
+// out of RF's 14 panels would otherwise take 13 individual clicks). Clicking it rules out
+// every OTHER panel currently in the list in one go, leaving just that one included.
 function renderCommitteeCheckboxes() {
   const committees = uniqueCommittees(state);
   $('committeeFilterBar').style.display = committees.length ? 'flex' : 'none';
   $('committeeDropdownCount').textContent = excludedCommittees.size ? ` (${excludedCommittees.size} ruled out)` : '';
   $('committeeCheckboxes').innerHTML = committees.map(({ code, description }) => {
     const ruledOut = excludedCommittees.has(code);
-    return `<label class="committee-check${ruledOut ? ' ruled-out' : ''}">
-      <input type="checkbox" data-code="${escapeHtml(code)}" ${ruledOut ? 'checked' : ''}>
-      ${escapeHtml(code)} (${escapeHtml(description)})
-    </label>`;
+    return `<div class="committee-row${ruledOut ? ' ruled-out' : ''}">
+      <label class="committee-check">
+        <input type="checkbox" data-code="${escapeHtml(code)}" ${ruledOut ? 'checked' : ''}>
+        ${escapeHtml(code)} (${escapeHtml(description)})
+      </label>
+      <button type="button" class="committee-only" data-code="${escapeHtml(code)}">Only</button>
+    </div>`;
   }).join('');
   $('committeeCheckboxes').querySelectorAll('input').forEach(cb => {
     cb.addEventListener('change', (e) => {
@@ -1495,6 +1506,15 @@ function renderCommitteeCheckboxes() {
       else excludedCommittees.delete(e.target.dataset.code);
       renderResults();
       $('committeePanel').style.display = 'block'; // stays open across re-render so multiple boxes can be toggled in one go
+    });
+  });
+  $('committeeCheckboxes').querySelectorAll('.committee-only').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const keepCode = btn.dataset.code;
+      excludedCommittees = new Set(committees.map(c => c.code).filter(c => c !== keepCode));
+      renderResults();
+      $('committeePanel').style.display = 'block';
     });
   });
 }
