@@ -58,6 +58,9 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);background:var(--bg2);border:1px solid var(--br2);border-radius:3px;padding:3px 4px 3px 8px;color:var(--tx2)}
 .chip button{background:none;border:none;padding:0 2px;margin:0;font-size:13px;line-height:1;cursor:pointer;color:var(--tx3)}
 .chip button:hover{color:var(--red)}
+.committee-check{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-family:var(--mono);color:var(--tx2);margin-right:10px;cursor:pointer}
+.committee-check input{cursor:pointer}
+.committee-check.ruled-out{color:var(--tx3);text-decoration:line-through}
 textarea#biomarkers{width:100%;min-height:96px;resize:vertical;padding:10px 12px;border:1px solid var(--br2);border-radius:3px;background:var(--bg2);color:var(--tx);font-family:var(--mono);font-size:13.5px}
 .hint{font-size:12px;color:var(--tx2);margin-top:8px;line-height:1.55;padding-left:18px}
 .hint li{margin-bottom:7px}
@@ -215,6 +218,10 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <label>Show only <input type="text" id="showOnlyInput" placeholder="Biomarker or company name"></label>
         <button class="btn-ghost" id="showOnlyAddBtn" type="button">Add</button>
         <span id="showOnlyChips"></span>
+      </div>
+      <div class="datefilter" id="committeeFilterBar" style="display:none">
+        <span>Rule out FDA review panel:</span>
+        <span id="committeeCheckboxes"></span>
       </div>
       <div class="hint" id="resultsHint" style="margin:-6px 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
       <table class="sumtable">
@@ -1320,6 +1327,42 @@ function applyShowOnlyFilter(rawState) {
     });
 }
 
+// A short/generic abbreviation can collide with a completely different, unrelated meaning in
+// a totally different device category — e.g. "RF" (Rheumatoid Factor, an IVD lab test) vs.
+// "RF" as in Radio Frequency (ablation probes, generators, guidewires — cardiovascular/
+// surgical hardware, confirmed via curl to make up the bulk of RF's false positives). There's
+// no reliable way to auto-detect which meaning a device belongs to, and different users may
+// disagree on which FDA review panels are plausible for a given biomarker — so rather than
+// hardcoding a fixed blocklist, this surfaces every advisory_committee actually present in the
+// current results as a checkbox and lets the user rule specific ones out themselves, same
+// record-narrowing pattern as the other filters (rows stay visible, counts recompute).
+let excludedCommittees = new Set();
+
+// Sorted list of every {code, description} pair actually present in the current search — same
+// "only offer what's real" approach as uniqueApplicants, so the checkboxes shown always match
+// what's actually in the data instead of a static, possibly-incomplete panel list.
+function uniqueCommittees(rawState) {
+  const map = new Map();
+  rawState.forEach(s => { if (!s.error) s.records.forEach(r => {
+    if (r.advisory_committee && !map.has(r.advisory_committee)) {
+      map.set(r.advisory_committee, r.advisory_committee_description || r.advisory_committee);
+    }
+  }); });
+  return Array.from(map.entries())
+    .map(([code, description]) => ({ code, description }))
+    .sort((a, b) => a.code.localeCompare(b.code));
+}
+
+function applyCommitteeFilter(rawState) {
+  if (!excludedCommittees.size) return rawState;
+  return rawState.map(s => {
+    if (s.error) return s;
+    const records = s.records.filter(r => !excludedCommittees.has(r.advisory_committee));
+    const approved = records.filter(r => classify(r.decision_description) === 'se').length;
+    return { ...s, records, approved, total: records.length };
+  });
+}
+
 // Most recent decision_date among a biomarker's matched records, or null if it has none to
 // sort by (0 matches). ISO "YYYY-MM-DD" strings compare correctly with plain string
 // comparison, so no Date parsing is needed.
@@ -1332,7 +1375,7 @@ function latestApprovalDate(s) {
 }
 
 function getRanked() {
-  const filtered = applyApplicantFilter(applyShowOnlyFilter(applyDateFilter(state)));
+  const filtered = applyCommitteeFilter(applyApplicantFilter(applyShowOnlyFilter(applyDateFilter(state))));
   const valid = filtered.filter(s => !s.error).slice();
   if (sortMode === 'date') {
     // Most recently approved first; biomarkers with no dated record (0 matches) sort last
@@ -1377,6 +1420,29 @@ function renderShowOnlyChips() {
   });
 }
 
+// Checkboxes reflect every review panel actually present in the full, unfiltered search
+// results (not the already-filtered view) so a committee's checkbox doesn't disappear just
+// because another active filter (date range, applicant, etc.) happens to hide its records —
+// same reasoning as populateApplicantFilter using `state` rather than the filtered set.
+function renderCommitteeCheckboxes() {
+  const committees = uniqueCommittees(state);
+  $('committeeFilterBar').style.display = committees.length ? 'flex' : 'none';
+  $('committeeCheckboxes').innerHTML = committees.map(({ code, description }) => {
+    const ruledOut = excludedCommittees.has(code);
+    return `<label class="committee-check${ruledOut ? ' ruled-out' : ''}">
+      <input type="checkbox" data-code="${escapeHtml(code)}" ${ruledOut ? '' : 'checked'}>
+      ${escapeHtml(code)} (${escapeHtml(description)})
+    </label>`;
+  }).join('');
+  $('committeeCheckboxes').querySelectorAll('input').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      if (e.target.checked) excludedCommittees.delete(e.target.dataset.code);
+      else excludedCommittees.add(e.target.dataset.code);
+      renderResults();
+    });
+  });
+}
+
 function renderResults() {
   $('resultsCard').style.display = 'block';
   $('sortTabs').style.display = 'flex';
@@ -1388,6 +1454,7 @@ function renderResults() {
   $('applicantFilterBar').style.display = 'flex';
   populateApplicantFilter();
   renderShowOnlyChips();
+  renderCommitteeCheckboxes();
   $('chartCaptag').textContent = 'Figure 1';
   $('resultsCaptag').textContent = 'Table 1';
   if (sortMode === 'date') {
@@ -1638,6 +1705,7 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
     $('sortTabs').style.display = 'none'; // FDA-only sort toggle; LDT has no approve-date field to rank by
     $('dateFilterBar').style.display = 'none'; // same — LDT records have no decision_date to filter on
     $('applicantFilterBar').style.display = 'none'; // same — LDT uses "facility," not "applicant"
+    $('committeeFilterBar').style.display = 'none'; // same — LDT records have no advisory_committee field
     $('chartCaptag').textContent = 'Figure 1';
     $('chartTitle').textContent = 'LDT matches by biomarker, ranked fewest first';
     $('chartHint').textContent = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
@@ -1927,6 +1995,7 @@ function buildSearchInfoRows() {
     rows.push(['Date filter', dateFilterActive() ? `${dateFilter.from || '(no start)'} to ${dateFilter.to || '(no end)'}` : 'None']);
     rows.push(['Submitted-by filter', applicantFilter || 'All applicants']);
     rows.push(['"Show only" filter', showOnlyTerms.length ? showOnlyTerms.join(', ') : 'None']);
+    rows.push(['FDA review panels ruled out', excludedCommittees.size ? Array.from(excludedCommittees).join(', ') : 'None']);
     rows.push(['LDT cross-check included', crossState.length ? 'Yes' : 'No']);
   }
   return [['Field', 'Value'], ...rows];
