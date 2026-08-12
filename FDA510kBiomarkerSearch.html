@@ -957,22 +957,47 @@ async function lookupUmlsExpansion(term, umlsApiKey) {
   return null;
 }
 
+// Every biomarker can now fan out into several sequential openFDA calls (exact/broad/antigen-
+// only, an always-on fused-word check, dictionary "alwaysCheck" entries, UMLS, panel
+// candidates) — several times what this was originally built for. That makes a transient 429
+// (rate limit) far more likely to land mid-search, and without a retry it used to permanently
+// fail that one biomarker for the rest of the run — which, since a failed biomarker
+// contributes zero records, also silently shrank the review-panel dropdown (fewer surviving
+// biomarkers means fewer distinct advisory_committee values to show). Retries with backoff
+// before giving up, so one transient hiccup doesn't take out a biomarker for the whole search.
+const MAX_FETCH_RETRIES = 3;
+
+async function fetchOpenFdaWithRetry(url) {
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (networkErr) {
+      if (attempt >= MAX_FETCH_RETRIES) {
+        throw new Error('Network error — could not reach the openFDA API. Check your internet connection and try again.');
+      }
+      await sleep(500 * 2 ** attempt);
+      continue;
+    }
+    if (res.status === 429) {
+      if (attempt >= MAX_FETCH_RETRIES) {
+        throw new Error(`Rate limit exceeded on the openFDA API (1,000 requests/day without a key) after ${MAX_FETCH_RETRIES} retries. Add an API key in Settings, or wait and retry.`);
+      }
+      await sleep(1000 * 2 ** attempt); // 1s, 2s, 4s
+      continue;
+    }
+    return res;
+  }
+}
+
 async function runOpenFdaQuery(expr, apiKey) {
   let skip = 0, total = 0;
   const records = [];
   do {
     const params = new URLSearchParams({ search: expr, limit: String(PAGE_LIMIT), skip: String(skip) });
     if (apiKey) params.set('api_key', apiKey);
-    let res;
-    try {
-      res = await fetch(`${OPENFDA_BASE}?${params.toString()}`);
-    } catch (networkErr) {
-      throw new Error('Network error — could not reach the openFDA API. Check your internet connection and try again.');
-    }
+    const res = await fetchOpenFdaWithRetry(`${OPENFDA_BASE}?${params.toString()}`);
     if (res.status === 404) { total = 0; break; }
-    if (res.status === 429) {
-      throw new Error('Rate limit exceeded on the openFDA API (1,000 requests/day without a key). Add an API key in Settings, or wait and retry.');
-    }
     if (!res.ok) {
       let msg = `Request failed with HTTP ${res.status}`;
       try { const body = await res.json(); if (body?.error?.message) msg = `${body.error.message} (HTTP ${res.status})`; } catch {}
