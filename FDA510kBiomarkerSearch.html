@@ -63,6 +63,9 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .committee-check{display:flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono);color:var(--tx2);cursor:pointer;padding:3px 0;white-space:nowrap}
 .committee-check input{cursor:pointer}
 .committee-check.ruled-out{color:var(--tx3);text-decoration:line-through}
+.committee-panel-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--br)}
+.committee-panel-head strong{font-size:11px;font-family:var(--font);color:var(--tx2);text-transform:uppercase;letter-spacing:.05em}
+.committee-panel-head button{padding:2px 8px;font-size:11px}
 textarea#biomarkers{width:100%;min-height:96px;resize:vertical;padding:10px 12px;border:1px solid var(--br2);border-radius:3px;background:var(--bg2);color:var(--tx);font-family:var(--mono);font-size:13.5px}
 .hint{font-size:12px;color:var(--tx2);margin-top:8px;line-height:1.55;padding-left:18px}
 .hint li{margin-bottom:7px}
@@ -225,9 +228,14 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <div class="committee-dropdown">
           <button class="btn-ghost" id="committeeDropdownBtn" type="button">Rule out FDA review panel<span id="committeeDropdownCount"></span> ▾</button>
           <div class="committee-panel" id="committeePanel" style="display:none">
+            <div class="committee-panel-head">
+              <strong>Review panels</strong>
+              <button class="btn-ghost" id="committeeClearBtn" type="button">Clear all review panels</button>
+            </div>
             <div id="committeeCheckboxes"></div>
           </div>
         </div>
+        <button class="btn-ghost" id="clearAllFiltersBtn" type="button">Clear all filters</button>
       </div>
       <div class="hint" id="resultsHint" style="margin:-6px 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
       <table class="sumtable">
@@ -1412,8 +1420,12 @@ function getRanked() {
 // list of real applicants is different for every set of biomarkers searched. Falls back to
 // "All applicants" if the previously-selected one isn't among this search's results (e.g. a
 // brand new search ran) rather than silently filtering by a company that isn't even present.
+// Computed from the committee-filtered state (not raw `state`) so ruling out a review panel
+// also narrows which applicants show up here — a company whose only submissions were in a
+// ruled-out panel has nothing left to show, so it disappears from the list rather than
+// staying selectable as a now-empty option.
 function populateApplicantFilter() {
-  const applicants = uniqueApplicants(state);
+  const applicants = uniqueApplicants(applyCommitteeFilter(state));
   const select = $('applicantFilterSelect');
   if (!applicants.includes(applicantFilter)) applicantFilter = '';
   select.innerHTML = '<option value="">All applicants</option>' +
@@ -1949,6 +1961,23 @@ $('committeeDropdownBtn').addEventListener('click', (e) => {
 document.addEventListener('click', (e) => {
   const dropdown = $('committeeFilterBar');
   if (dropdown && !dropdown.contains(e.target)) $('committeePanel').style.display = 'none';
+});
+
+$('committeeClearBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  excludedCommittees = new Set();
+  renderResults();
+  $('committeePanel').style.display = 'block'; // same "stays open" behavior as toggling one box
+});
+
+$('clearAllFiltersBtn').addEventListener('click', () => {
+  dateFilter = { from: '', to: '' };
+  $('dateFilterFrom').value = '';
+  $('dateFilterTo').value = '';
+  applicantFilter = '';
+  showOnlyTerms = [];
+  excludedCommittees = new Set();
+  renderResults();
 });
 
 function addShowOnlyTerm() {
