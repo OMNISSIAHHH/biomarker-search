@@ -1446,9 +1446,13 @@ function renderShowOnlyChips() {
 }
 
 // Checkboxes reflect every review panel actually present in the full, unfiltered search
-// results (not the already-filtered view) so a committee's checkbox doesn't disappear just
-// because another active filter (date range, applicant, etc.) happens to hide its records —
-// same reasoning as populateApplicantFilter using `state` rather than the filtered set.
+// results (not the already-filtered view) — unlike populateApplicantFilter, this one can't
+// be computed from its own filtered output, so it always lists every panel this search
+// actually touched, whether or not it's currently ruled out.
+// Checking a box means "rule this panel out" (adds it to excludedCommittees) — the box is
+// the action you're taking, not a snapshot of current inclusion. This way "Clear all review
+// panels" reads correctly too: it unchecks every box (clearing the selections you'd made),
+// landing back on the neutral default of nothing ruled out, rather than checking every box.
 function renderCommitteeCheckboxes() {
   const committees = uniqueCommittees(state);
   $('committeeFilterBar').style.display = committees.length ? 'flex' : 'none';
@@ -1456,14 +1460,14 @@ function renderCommitteeCheckboxes() {
   $('committeeCheckboxes').innerHTML = committees.map(({ code, description }) => {
     const ruledOut = excludedCommittees.has(code);
     return `<label class="committee-check${ruledOut ? ' ruled-out' : ''}">
-      <input type="checkbox" data-code="${escapeHtml(code)}" ${ruledOut ? '' : 'checked'}>
+      <input type="checkbox" data-code="${escapeHtml(code)}" ${ruledOut ? 'checked' : ''}>
       ${escapeHtml(code)} (${escapeHtml(description)})
     </label>`;
   }).join('');
   $('committeeCheckboxes').querySelectorAll('input').forEach(cb => {
     cb.addEventListener('change', (e) => {
-      if (e.target.checked) excludedCommittees.delete(e.target.dataset.code);
-      else excludedCommittees.add(e.target.dataset.code);
+      if (e.target.checked) excludedCommittees.add(e.target.dataset.code);
+      else excludedCommittees.delete(e.target.dataset.code);
       renderResults();
       $('committeePanel').style.display = 'block'; // stays open across re-render so multiple boxes can be toggled in one go
     });
