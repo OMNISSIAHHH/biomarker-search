@@ -280,3 +280,7 @@ Plain HTML/CSS/JS, no build tooling, no dependencies to install. Uses
 Excel export, both loaded from a CDN. See [worker/README.md](worker/README.md) for the two
 optional Cloudflare Worker proxies. The UMLS lookup needs no proxy — its API sends CORS headers
 that allow calling it directly from the browser.
+
+## License
+
+[MIT](LICENSE) — free to use, modify, and share.
