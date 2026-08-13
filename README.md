@@ -283,4 +283,6 @@ that allow calling it directly from the browser.
 
 ## License
 
-[MIT](LICENSE) — free to use, modify, and share.
+Modified MIT (see [LICENSE](LICENSE)) — free to use, modify, and share, including internally
+at a company. The one thing it doesn't allow is selling the software itself or bundling it
+into something sold, without the copyright holder's permission.
