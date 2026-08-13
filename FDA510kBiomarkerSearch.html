@@ -769,7 +769,15 @@ const ABBREVIATION_EXPANSIONS = {
   'ana': { full: 'Antinuclear Antibody' },
   'c1q': { full: 'Complement Component 1q' },
   'cenp-b': { full: 'Centromere Protein B', panel: ['connective tissue', 'ena'] },
-  'dsdna': { full: 'Double-Stranded DNA', panel: ['connective tissue', 'ena'] },
+  // Real device names split this several different ways — "dsDNA" fused as one word (which
+  // tier 1's exact-phrase search already catches directly), "Double-Stranded DNA" hyphenated,
+  // and (confirmed via curl for K041628, "AESKULISA DS DNA G") "DS DNA" as two plain
+  // space-separated words, which none of the other tiers' tokenization of a fused "dsDNA"
+  // input would ever produce. alwaysCheck matters here specifically because tier 1 already
+  // finds 37 *other* real dsDNA devices for the common "dsDNA" input, so this would otherwise
+  // never even run for that case. Confirmed via curl the "DS"+"DNA" cross-field pair is clean
+  // (14 results, all genuine anti-dsDNA devices, no false positives).
+  'dsdna': { full: 'Double-Stranded DNA', search: 'Double-Stranded DNA/DS DNA', alwaysCheck: true, panel: ['connective tissue', 'ena'] },
   'his': { full: 'Histone' },
   'jo-1': { full: 'Histidyl-tRNA Synthetase', panel: ['connective tissue', 'myositis'] },
   'nrnp/sm': { full: 'Nuclear Ribonucleoprotein / Smith Antigen', panel: ['connective tissue', 'ena'] },
