@@ -1031,12 +1031,25 @@ async function runOpenFdaQuery(expr, apiKey) {
 // claiming a match, surface plausible panel devices (a generic panel/profile word plus a
 // disease-category word from the biomarker's dictionary entry) as unconfirmed candidates for
 // the user to verify manually, e.g. via Check Measurand.
-const PANEL_INDICATOR_WORDS = ['profile', 'panel', 'blot', 'multiplex', 'euroline'];
+// Confirmed via curl against real device_name text: "screen" catches Phadia's "EliA CTD 13
+// Screen", Sweden Diagnostics' "VARELISA RECOMBI CTD SCREEN", and Zeus's "Alegria Flash CTD
+// Screen"; "essential" catches Werfen/Inova's "Aptiva CTD Essential Reagent" (K213403), which
+// has no "Screen"/"Profile"/"Panel" wording at all. Paired with the category words below (both
+// clauses must match in the same field), this stayed clean — 27 total hits across every
+// connective-tissue/ENA biomarker, all genuine multi-antigen autoimmune panel products.
+const PANEL_INDICATOR_WORDS = ['profile', 'panel', 'blot', 'multiplex', 'euroline', 'screen', 'essential'];
 
 function buildPanelExpr(categoryWords) {
   if (!categoryWords || !categoryWords.length) return null;
+  // "CTD" (Connective Tissue Disease) is the standard clinical abbreviation for the spelled-out
+  // "connective tissue" category word — several real panel reagents (e.g. K213403) use only the
+  // abbreviation in device_name, never the spelled-out phrase, so it's always implied alongside it
+  // rather than requiring every connective-tissue dictionary entry to list it individually.
+  const words = (categoryWords.includes('connective tissue') && !categoryWords.includes('ctd'))
+    ? [...categoryWords, 'ctd']
+    : categoryWords;
   const panelClause = (f) => '(' + PANEL_INDICATOR_WORDS.map(w => `${f}:"${w}"`).join(' OR ') + ')';
-  const categoryClause = (f) => '(' + categoryWords.map(w => `${f}:"${w}"`).join(' OR ') + ')';
+  const categoryClause = (f) => '(' + words.map(w => `${f}:"${w}"`).join(' OR ') + ')';
   const fields = ['device_name', 'openfda.device_name']; // statement_or_summary is just a flag, not real text
   return '(' + fields.map(f => `(${panelClause(f)} AND ${categoryClause(f)})`).join(' OR ') + ')';
 }
@@ -1148,18 +1161,34 @@ async function fetchBiomarker(term, apiKey, umlsApiKey) {
     }
   }
 
-  if (best) return { ...best, expansion: resultExpansion };
-
+  // Runs regardless of whether an earlier tier already confirmed matches (best) — a biomarker
+  // can have both dedicated single-analyte kits (found above, e.g. 37 other real dsDNA devices)
+  // AND a separate bundled multiplex panel reagent that never names the antigen anywhere in
+  // FDA's structured fields. Confirmed for K213403 (Werfen/Inova's "Aptiva CTD Essential
+  // Reagent"): its device_name and openfda.device_name contain no "dsDNA"/"connective
+  // tissue"/"ena" text at all — the only place "anti-dsDNA" appears is the decision summary
+  // PDF's Measurand section, listing it as one of ten bundled antibodies. Previously this whole
+  // tier was skipped once any earlier tier succeeded (an early `if (best) return` before this
+  // ever ran), so a biomarker like dsDNA with plenty of confirmed matches could never surface
+  // this. Shown as a separate, uncounted "possible panel match" section (see renderResults) —
+  // never merged into the confirmed total, since panel membership alone doesn't confirm this
+  // specific analyte — and deduped against whatever's already confirmed.
+  let panelCandidates = [];
   if (expansion && expansion.panel) {
     const panelExpr = buildPanelExpr(expansion.panel);
     if (panelExpr) {
       await sleep(150);
       const panel = await runOpenFdaQuery(panelExpr, apiKey);
-      if (panel.total > 0) return { ...exact, matchMode: 'exact', expansion, panelCandidates: panel.records.slice(0, 20) };
+      if (panel.total > 0) {
+        const confirmedKs = new Set((best || exact).records.map(r => r.k_number));
+        panelCandidates = panel.records.filter(r => !confirmedKs.has(r.k_number)).slice(0, 20);
+      }
     }
   }
 
-  return { ...exact, matchMode: 'exact', expansion };
+  if (best) return { ...best, expansion: resultExpansion, panelCandidates };
+
+  return { ...exact, matchMode: 'exact', expansion, panelCandidates };
 }
 
 // --- LDT (NY State CLEP) search ---------------------------------------------------------
@@ -1574,7 +1603,7 @@ function renderResults() {
     const rank = i + 1;
     const hasPanelCandidates = s.panelCandidates && s.panelCandidates.length > 0;
     const panelTag = hasPanelCandidates
-      ? ` <span class="mmtag" title="No confirmed FDA match, but ${s.panelCandidates.length} device(s) mention a plausibly related multi-antigen panel — expand to check manually.">${s.panelCandidates.length} possible panel match${s.panelCandidates.length === 1 ? '' : 'es'}</span>`
+      ? ` <span class="mmtag" title="${s.panelCandidates.length} additional device(s) mention a plausibly related multi-antigen panel but don't confirm this analyte in FDA's structured data — expand to check manually.">${s.panelCandidates.length} possible panel match${s.panelCandidates.length === 1 ? '' : 'es'}</span>`
       : '';
     const mainRow = document.createElement('tr');
     mainRow.className = 'rowmain';
