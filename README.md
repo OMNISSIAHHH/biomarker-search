@@ -23,7 +23,7 @@ the normal way to run this.
 - [Getting started](#getting-started)
 - [Searching for a biomarker](#searching-for-a-biomarker)
 - [Reading your results](#reading-your-results)
-- [Automatic abbreviation lookup (UMLS)](#automatic-abbreviation-lookup-umls)
+- [Automatic abbreviation lookup (UMLS or a local AI model)](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
 - [Sorting your results](#sorting-your-results)
 - [Filtering and narrowing your results](#filtering-and-narrowing-your-results)
 - [Exporting to Excel](#exporting-to-excel)
@@ -107,7 +107,12 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
   button on that device can help)
 - **UMLS-resolved match** — the abbreviation wasn't recognized by this tool's own built-in list
   at all, so its spelled-out medical name was looked up automatically instead (see
-  [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls) below)
+  [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
+  below)
+- **AI-suggested match** — same situation as above (an unrecognized abbreviation), but resolved
+  by a local AI model instead of UMLS. This is a *generated guess*, not a database lookup — a
+  wrong answer can look just as confident as a right one, so treat this one with more
+  skepticism than a UMLS-resolved match and double-check it, e.g. via **Check Measurand**
 - **Fused-word match** — FDA sometimes writes "Anti" and the antigen as one run-together word
   with no space or hyphen (e.g. "Anticardiolipin"). The tool automatically tries that fused
   form for any antibody-style search, so this can show up even for terms with no special
@@ -128,27 +133,34 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
 None of these tags mean the result is wrong — they just tell you how confident the match is,
 so an exact match is more reliable than an "expanded-name match" or a "UMLS-resolved match."
 
-## Automatic abbreviation lookup (UMLS)
+## Automatic abbreviation lookup (UMLS or a local AI model)
 
 This tool keeps its own small, hand-checked list mapping common lab-shorthand abbreviations
 (like "GADA" or "cTnT") to the full medical name FDA paperwork actually uses. But that list
-can't cover everything — if you search an abbreviation it doesn't recognize, you can let it
-ask the National Library of Medicine's UMLS medical terminology database what the abbreviation
-means, instead of just returning nothing.
+can't cover everything — if you search an abbreviation it doesn't recognize, two different
+optional ways exist to look up its full name automatically instead of just returning nothing.
+Both are opt-in, and if neither is set up, searches work exactly as before.
 
-**One-time setup required, and it's slower than the other two:** go to
+**Option 1 — UMLS** (a real database, slower to set up): go to
 **[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in with an
 identity provider (Login.gov works if you don't have one already), and agree to the license
 terms — this is a real license request, so the National Library of Medicine reviews it by
 hand and it can take **up to 3 business days** before your account is approved. Once approved,
 sign in, open your profile, and generate an API key. Paste that key into **Settings** (gear
 icon) → **UMLS API key**. Unlike the LDT and Measurand features, this one needs no separate
-Worker setup — paste the key and it works.
+Worker setup — paste the key and it works. A match found this way is flagged
+**UMLS-resolved match** because, unlike every entry in the tool's own list, nobody has manually
+confirmed the looked-up name is correct — worth a quick sanity check, e.g. via
+**Check Measurand**.
 
-Until you do this (or for any abbreviation already in this tool's own list), searches work
-exactly as before. A match found this way is flagged **UMLS-resolved match** because, unlike
-every entry in the tool's own list, nobody has manually confirmed the looked-up name is
-correct — worth a quick sanity check, e.g. via **Check Measurand**.
+**Option 2 — a local AI model** (no license or waiting, but a guess instead of a lookup):
+install [Ollama](https://ollama.com), pull a small model (e.g. `ollama pull qwen3:4b`), and
+paste its address into **Settings** → **Local LLM URL** (usually `http://localhost:11434`) and
+the exact model name into **Local LLM model**. When both UMLS and a local model are configured,
+the local model is tried first. A match found this way is flagged **AI-suggested match** — a
+generated guess, not a database entry, so it deserves more skepticism than a UMLS-resolved
+match: a wrong answer from a model can sound exactly as confident as a right one. Always worth
+a sanity check, e.g. via **Check Measurand**, before trusting it.
 
 ## Sorting your results
 

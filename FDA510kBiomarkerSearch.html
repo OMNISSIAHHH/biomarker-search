@@ -166,6 +166,14 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
+        <div class="sinfo">Optional alternative to UMLS above, no license/waiting required: a locally-running <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> instance can suggest the full name and common synonyms for an unrecognized abbreviation instead. This is a <strong>generated guess, not a database lookup</strong> — less trustworthy than UMLS, flagged as such in results, worth a manual check. Tried first if both this and a UMLS key are set.</div>
+        <input class="skey" id="localLlmUrl" placeholder="Local LLM URL (optional, e.g. http://localhost:11434)">
+      </div>
+      <div class="srow" style="margin-top:8px">
+        <div class="sinfo">Model name for the Local LLM URL above, exactly as you pulled it (e.g. <code>ollama pull qwen3:4b</code> → <code>qwen3:4b</code>). Required for the local LLM lookup to run at all.</div>
+        <input class="skey" id="localLlmModel" placeholder="Local LLM model name (e.g. qwen3:4b)">
+      </div>
+      <div class="srow" style="margin-top:8px">
         <div class="sinfo"><strong>Default workflow</strong>, not an optional extra: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — matches inferred by following a device's cited predicate back to an already-confirmed device, which the live search below structurally can't do. Leaving this blank runs the tool in a reduced fallback mode; falls back automatically if unreachable, so nothing breaks either way.</div>
         <input class="skey" id="localIndexUrl" placeholder="Local index server URL (optional, e.g. http://localhost:8000)">
       </div>
@@ -327,6 +335,26 @@ $('umlsApiKey').addEventListener('change', (e) => localStorage.setItem('umls_api
 
 function getUmlsApiKey() {
   return $('umlsApiKey').value.trim();
+}
+
+const savedLocalLlmUrl = localStorage.getItem('local_llm_url');
+if (savedLocalLlmUrl) $('localLlmUrl').value = normalizeProxyUrl(savedLocalLlmUrl);
+$('localLlmUrl').addEventListener('change', (e) => {
+  const url = normalizeProxyUrl(e.target.value);
+  e.target.value = url;
+  localStorage.setItem('local_llm_url', url);
+});
+
+const savedLocalLlmModel = localStorage.getItem('local_llm_model');
+if (savedLocalLlmModel) $('localLlmModel').value = savedLocalLlmModel;
+$('localLlmModel').addEventListener('change', (e) => localStorage.setItem('local_llm_model', e.target.value.trim()));
+
+function getLocalLlmUrl() {
+  return normalizeProxyUrl($('localLlmUrl').value);
+}
+
+function getLocalLlmModel() {
+  return $('localLlmModel').value.trim();
 }
 
 // A bare domain pasted without "https://" (e.g. "ldt-proxy.example.workers.dev") isn't an
@@ -1100,6 +1128,45 @@ async function lookupUmlsExpansion(term, umlsApiKey) {
   return null;
 }
 
+// Alternative to UMLS above for the same "term isn't in the dictionary" gap, no NLM license or
+// multi-day wait required — a locally-running Ollama instance suggests the name instead. This
+// is a fundamentally different kind of unverified: UMLS returns an actual database lookup
+// (still automatic/unverified, but a real entry existed to find); an LLM GENERATES a plausible-
+// sounding answer whether or not it actually knows the term — a wrong answer here looks exactly
+// as confident as a right one. The prompt asks it to say so explicitly when unsure, but that's
+// a request, not a guarantee, so this is tagged more cautiously than UMLS-resolved matches.
+function localLlmPrompt(term) {
+  return `You are looking up laboratory/medical terminology as used in FDA medical device documentation.
+For the abbreviation or shorthand term "${term}", respond with ONLY the following and nothing else — no explanation, no extra commentary:
+Line 1: its full spelled-out scientific/medical name
+Line 2 (optional, only if you know one or more): up to 3 common alternate names or synonyms, comma-separated
+If you do not know this specific term with real confidence, respond with exactly this and nothing else: UNKNOWN`;
+}
+
+async function lookupLocalLlmExpansion(term, baseUrl, model) {
+  if (!baseUrl || !model) return null;
+  try {
+    const res = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt: localLlmPrompt(term), stream: false }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const text = (data.response || '').trim();
+    if (!text || /^UNKNOWN\b/i.test(text)) return null;
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const full = lines[0];
+    if (!full || full.length > 200) return null; // sanity bound — a real name isn't a paragraph
+    const synonyms = lines[1] ? lines[1].split(',').map(s => s.trim()).filter(Boolean) : [];
+    return synonyms.length ? { full, search: [full, ...synonyms].join('/') } : { full };
+  } catch {
+    return null; // model not pulled, server down, timeout, malformed response — never fail the
+                 // whole search over this, same posture as every other optional local service
+  }
+}
+
 // Every biomarker can now fan out into several sequential openFDA calls (exact/broad/antigen-
 // only, an always-on fused-word check, dictionary "alwaysCheck" entries, UMLS, panel
 // candidates) — several times what this was originally built for. That makes a transient 429
@@ -1373,7 +1440,7 @@ async function fetchFromLocalIndex(baseUrl, term) {
   };
 }
 
-async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
+async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, localLlmUrl, localLlmModel) {
   if (localIndexUrl) {
     try {
       return await fetchFromLocalIndex(localIndexUrl, term);
@@ -1466,19 +1533,33 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
   // Only reached for terms with no entry in our own curated dictionary at all — an existing
   // (even if unhelpful) local entry is trusted over an unverified external lookup. Kept as a
   // last resort only (not unioned into an already-successful earlier tier, unlike alwaysCheck
-  // dictionary entries above): a UMLS-resolved name is automatically looked up, not manually
-  // verified against real openFDA data the way every ABBREVIATION_EXPANSIONS entry is, so it
-  // doesn't carry the same basis for trusting it enough to broaden an already-confirmed match.
-  if (!best && !expansion && umlsApiKey) {
-    const umlsExpansion = await lookupUmlsExpansion(searchTerm, umlsApiKey);
-    if (umlsExpansion) {
-      const umlsExpr = buildExpansionExpr(umlsExpansion, antiRequirementMode(searchTerm));
-      if (umlsExpr) {
+  // dictionary entries above): neither a UMLS-resolved nor an AI-suggested name is manually
+  // verified against real openFDA data the way every ABBREVIATION_EXPANSIONS entry is, so
+  // neither carries the same basis for trusting it enough to broaden an already-confirmed
+  // match. Local LLM tried first when configured — it's the one a user chose specifically to
+  // skip UMLS's licensing wait, so prefer it over falling through to UMLS by default; either
+  // way, only one is used per search, not both.
+  if (!best && !expansion) {
+    let resolvedExpansion = null;
+    let resolvedMode = null;
+
+    if (localLlmUrl && localLlmModel) {
+      const llmExpansion = await lookupLocalLlmExpansion(searchTerm, localLlmUrl, localLlmModel);
+      if (llmExpansion) { resolvedExpansion = llmExpansion; resolvedMode = 'ai-suggested'; }
+    }
+    if (!resolvedExpansion && umlsApiKey) {
+      const umlsExpansion = await lookupUmlsExpansion(searchTerm, umlsApiKey);
+      if (umlsExpansion) { resolvedExpansion = umlsExpansion; resolvedMode = 'umls'; }
+    }
+
+    if (resolvedExpansion) {
+      const resolvedExpr = buildExpansionExpr(resolvedExpansion, antiRequirementMode(searchTerm));
+      if (resolvedExpr) {
         await sleep(150);
-        const umls = await runOpenFdaQuery(umlsExpr, apiKey);
-        if (umls.total > 0) {
-          best = { ...umls, matchMode: 'umls' };
-          resultExpansion = umlsExpansion;
+        const resolved = await runOpenFdaQuery(resolvedExpr, apiKey);
+        if (resolved.total > 0) {
+          best = { ...resolved, matchMode: resolvedMode };
+          resultExpansion = resolvedExpansion;
         }
       }
     }
@@ -1621,7 +1702,7 @@ async function runFdaSearch() {
     $('pbarFill').style.width = `${Math.round((i / terms.length) * 100)}%`;
     try {
       const { total, records, matchMode, expansion, panelCandidates, inferredMatches, gudidMatches } =
-        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl);
+        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, getLocalLlmUrl(), getLocalLlmModel());
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
       state.push({
         term, total, approved, records, matchMode, expansion,
@@ -1654,6 +1735,7 @@ const MATCH_MODE_LABEL = {
   'antigen-only': 'Antigen-only match',
   expansion: 'Expanded-name match',
   umls: 'UMLS-resolved match',
+  'ai-suggested': 'AI-suggested match',
   'fused-anti': 'Fused-word match',
   wordform: 'Alternate wordform match'
 };
@@ -1662,6 +1744,7 @@ const MATCH_MODE_TITLE = {
   'antigen-only': 'No match including the Ig-class (IgG/IgA/IgM) — matched on the antigen name alone, since many FDA device names omit the isotype. The count may include products that are not isotype-specific.',
   expansion: 'No match on the abbreviation itself — matched by searching its spelled-out full name instead, since some FDA device names use the full term rather than the shorthand.',
   umls: 'This abbreviation isn\'t in this tool\'s own built-in dictionary — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
+  'ai-suggested': 'This abbreviation isn\'t in this tool\'s own built-in dictionary — the name searched instead was GENERATED by a local AI model, not looked up from a database. Unlike a UMLS-resolved match, this is a guess that can sound confident while being wrong. Verify this one carefully, e.g. via Check Measurand.',
   'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
   wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.'
 };
