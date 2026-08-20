@@ -177,9 +177,10 @@ between. It contains:
   the sort order, and the state of every filter. Meant so the file explains itself later,
   without needing to remember the browser session it came from.
 - **Summary** — one row per biomarker with its totals, including Unique Applicants.
-- **Applicant Summary** — one row per company across your whole search, with its total
-  submissions and how many different biomarkers it covers. A quick way to see which companies
-  dominate a space without building a pivot table by hand.
+- **Biomarker Applicants** — one row per biomarker across your whole search, with its total
+  submissions, how many unique companies filed them, and the actual list of those companies.
+  A quick way to see who the players are for a given biomarker without building a pivot table
+  by hand.
 - **Details** — one row per confirmed individual device found, across every biomarker you
   searched.
 - **Possible Panel Matches** — the unconfirmed "possible panel match" candidates (see the tags

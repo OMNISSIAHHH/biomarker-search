@@ -2125,24 +2125,17 @@ function buildSearchInfoRows() {
 // exists because the same company can file multiple times for one biomarker, so a saved export
 // should let that pattern be seen at a glance without building a pivot table by hand.
 function buildApplicantSummaryRows(valid) {
-  const byApplicant = new Map();
-  valid.forEach(s => {
-    s.records.forEach(r => {
-      const name = r.applicant || 'Unknown';
-      if (!byApplicant.has(name)) byApplicant.set(name, { total: 0, biomarkers: new Set() });
-      const entry = byApplicant.get(name);
-      entry.total += 1;
-      entry.biomarkers.add(s.term);
-    });
-  });
-  return Array.from(byApplicant.entries())
-    .map(([applicant, { total, biomarkers }]) => ({
-      Applicant: applicant,
-      'Total Submissions': total,
-      'Biomarkers Covered': biomarkers.size,
-      'Biomarker List': Array.from(biomarkers).sort().join(', ')
-    }))
-    .sort((a, b) => b['Total Submissions'] - a['Total Submissions'] || a.Applicant.localeCompare(b.Applicant));
+  return valid
+    .map(s => {
+      const applicants = new Set(s.records.map(r => r.applicant || 'Unknown'));
+      return {
+        Biomarker: s.term,
+        'Total Submissions': s.records.length,
+        'Unique Applicants': applicants.size,
+        'Applicant List': Array.from(applicants).sort().join(', ')
+      };
+    })
+    .sort((a, b) => b['Total Submissions'] - a['Total Submissions'] || a.Biomarker.localeCompare(b.Biomarker));
 }
 
 function exportToExcel() {
@@ -2213,7 +2206,7 @@ function exportToExcel() {
   XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(summaryRows), [8, 22, 30, 16, 16, 16, 20, 30]), 'Summary');
   const applicantRows = buildApplicantSummaryRows(valid);
   if (applicantRows.length) {
-    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(applicantRows), [30, 16, 16, 60]), 'Applicant Summary');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(applicantRows), [30, 16, 16, 60]), 'Biomarker Applicants');
   }
   XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(detailRows), [22, 40, 30, 20, 14, 12, 50]), 'Details');
   if (panelRows.length) {
