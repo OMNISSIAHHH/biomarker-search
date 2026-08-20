@@ -45,7 +45,7 @@
   "dgp": { "full": "Deamidated Gliadin Peptide", "panel": ["celiac", "gliadin"] },
   "asca": { "full": "Anti-Saccharomyces Cerevisiae Antibody", "search": "Saccharomyces Cerevisiae" },
   "pla2r": { "full": "Phospholipase A2 Receptor" },
-  "ama-m2": { "full": "Anti-Mitochondrial Antibody, M2 Subtype", "search": "Mitochondrial M2", "panel": ["liver", "hepatitis"] },
+  "ama-m2": { "full": "Anti-Mitochondrial Antibody, M2 Subtype", "search": "Mitochondrial", "panel": ["liver", "hepatitis"] },
   "gp210": { "full": "Glycoprotein 210", "panel": ["liver", "hepatitis"] },
   "lc-1": { "full": "Liver Cytosol Type 1", "panel": ["liver", "hepatitis"] },
   "lkm-1": { "full": "Liver Kidney Microsomal Type 1", "panel": ["liver", "hepatitis"] },

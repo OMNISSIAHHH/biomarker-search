@@ -123,6 +123,9 @@ def _extract_measurand(flattened_text: str) -> tuple[str, str] | None:
 #     paired by list position.
 #   Strategy C (e.g. K223093, 2022): a "Predicate 510(k) Number(s):" subsection where each
 #     line is number-first: "K###### - <name>".
+#   Strategy D (e.g. K163133, 2016 — found while investigating a real AMA/M2 search miss):
+#     one combined header, "Predicate device name (Predicate 510(k) number):", followed by one
+#     or more lines of "<name> (K######)" — the number in parentheses at the end of the name.
 #
 # Tried in order; the first strategy that finds anything wins (a document should only match
 # one template). This is unlikely to be exhaustive of every template FDA has used over the
@@ -139,6 +142,9 @@ STANDALONE_KNUM_RE = re.compile(r"^(K\d{6}|DEN\d{6})$")
 
 SECTION_C_HEADER_RE = re.compile(r"Predicate\s+510\(?k\)?\s+Numbers?\s*\(?s?\)?\s*:", re.IGNORECASE)
 SECTION_C_ROW_RE = re.compile(r"^(K\d{6}|DEN\d{6})\s*-\s*(.+)$")
+
+SECTION_D_HEADER_RE = re.compile(r"Predicate\s+device\s+names?\s*\(Predicate\s+510", re.IGNORECASE)
+SECTION_D_ROW_RE = re.compile(r"^(.+?)\s*\((K\d{6}|DEN\d{6})\)\s*$")
 
 NEXT_SECTION_MARKER_RE = re.compile(r"^([A-Z]\.?|[0-9]+\.)\s+[A-Z]")
 
@@ -226,9 +232,26 @@ def _try_strategy_c(lines: list[str]) -> list[dict]:
     return predicates
 
 
+def _try_strategy_d(lines: list[str]) -> list[dict]:
+    start_idx = None
+    for i, ln in enumerate(lines):
+        if SECTION_D_HEADER_RE.search(ln):
+            start_idx = i + 1
+            break
+    if start_idx is None:
+        return []
+
+    predicates: list[dict] = []
+    for ln in _lines_until_next_section(lines, start_idx):
+        m = SECTION_D_ROW_RE.match(ln)
+        if m:
+            predicates.append({"name": m.group(1).strip(), "k_number": m.group(2).upper()})
+    return predicates
+
+
 def _extract_predicates(line_text: str) -> list[dict]:
     lines = line_text.splitlines()
-    for strategy in (_try_strategy_a, _try_strategy_c, _try_strategy_b):
+    for strategy in (_try_strategy_a, _try_strategy_c, _try_strategy_d, _try_strategy_b):
         found = strategy(lines)
         if found:
             return found

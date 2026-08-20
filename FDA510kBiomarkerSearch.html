@@ -898,7 +898,16 @@ const ABBREVIATION_EXPANSIONS = {
   'dgp': { full: 'Deamidated Gliadin Peptide', panel: ['celiac', 'gliadin'] },
   'asca': { full: 'Anti-Saccharomyces Cerevisiae Antibody', search: 'Saccharomyces Cerevisiae' },
   'pla2r': { full: 'Phospholipase A2 Receptor' },
-  'ama-m2': { full: 'Anti-Mitochondrial Antibody, M2 Subtype', search: 'Mitochondrial M2', panel: ['liver', 'hepatitis'] },
+  // Real devices (e.g. K771155 "Anti-Mitochondrial", K921183 "Diastat Anti-Mitochondrial
+  // Antibody Kit") mostly just say "Anti-Mitochondrial" without ever stating the M2 subtype
+  // in device_name, even though M2 is what's actually being measured clinically — requiring
+  // "M2" as a co-occurring token (as this used to) excluded them. Confirmed via curl: plain
+  // "Mitochondrial" alone finds 5 devices, all genuine anti-mitochondrial antibody tests, no
+  // false positives (spanning 1976-2002 — older than any decision-summary PDF, so this is the
+  // only way to find them; the local index's predicate-chain crawl separately recovers newer
+  // devices like K163133, which cites K982121 as its predicate without naming "mitochondrial"
+  // anywhere in its own device_name).
+  'ama-m2': { full: 'Anti-Mitochondrial Antibody, M2 Subtype', search: 'Mitochondrial', panel: ['liver', 'hepatitis'] },
   'gp210': { full: 'Glycoprotein 210', panel: ['liver', 'hepatitis'] },
   'lc-1': { full: 'Liver Cytosol Type 1', panel: ['liver', 'hepatitis'] },
   'lkm-1': { full: 'Liver Kidney Microsomal Type 1', panel: ['liver', 'hepatitis'] },
