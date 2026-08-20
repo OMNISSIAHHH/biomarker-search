@@ -260,9 +260,11 @@ frequently show up this way).
 ## Deeper cross-checked results (advanced, optional)
 
 Everything above works with no setup. This section is for a separate, optional add-on for
-anyone comfortable running Python — it finds FDA 510(k) approvals the section above
-structurally can't, by reading every candidate device's decision-summary PDF, not just its
-searchable device-name text:
+anyone comfortable running Python — a background crawl that builds a local database file,
+which a small local server then answers searches from. It does two different kinds of things:
+
+**Finds results the live search above structurally can't**, by reading every candidate
+device's decision-summary PDF, not just its searchable device-name text:
 
 - **Bundled panel reagents.** Some devices measure a biomarker as part of a multi-antigen panel
   kit, but never name that biomarker anywhere in FDA's own searchable device data — the only
@@ -273,17 +275,21 @@ searchable device-name text:
   "possible panel match" above (not counted in the totals — a cited predicate is a strong hint,
   not proof of an identical panel, so it's still worth a manual check).
 
+**Precomputes results the live search above already finds, just faster.** The **alternate
+wordform match** and **found via device registry** checks don't need any PDF reading — they're
+identical logic to the live search above, just run once during the crawl instead of fresh on
+every search. The live tool has to make several extra network calls per biomarker to compute
+these on the spot, which measurably slows it down (roughly 2-3x per biomarker in testing); the
+local server instead reads the already-computed answer straight from its local file, so search
+speed there doesn't depend on how many live FDA API calls a term happens to need.
+
 This is 510(k)-only, same as the search above — it does not include PMA (Premarket Approval,
 for higher-risk Class III devices), which is a different FDA regulatory pathway outside this
 tool's scope.
 
-This requires fetching and reading thousands of PDF documents, which is too slow to do live
-during a search — so it's a separate one-time (well, periodic) crawl that builds a local
-database file, which a small local server then answers searches from instantly. The crawl also
-precomputes the **alternate wordform match** and **found via device registry** results the
-live search above computes fresh every time — the local server answers all of it from the
-same local file, so search speed there doesn't depend on how many live FDA API calls a term
-happens to need.
+Fetching and reading thousands of PDF documents for the predicate-chain part is what makes this
+too slow to do live during a search — so the whole thing runs as a separate one-time (well,
+periodic) crawl instead.
 
 **Setup** (one-time, from the repo root, in a terminal):
 ```bash
