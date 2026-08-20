@@ -814,7 +814,13 @@ const ABBREVIATION_EXPANSIONS = {
   // finds 37 *other* real dsDNA devices for the common "dsDNA" input, so this would otherwise
   // never even run for that case. Confirmed via curl the "DS"+"DNA" cross-field pair is clean
   // (14 results, all genuine anti-dsDNA devices, no false positives).
-  'dsdna': { full: 'Double-Stranded DNA', search: 'Double-Stranded DNA/DS DNA', alwaysCheck: true, panel: ['connective tissue', 'ena'] },
+  // gudidSearch: "Double-Stranded DNA" is unsafe against GUDID specifically — see
+  // buildGudidExpr's own comment (it collided with a PCR instrument's generic "double stranded
+  // DNA" methodology description, a real semantic ambiguity). "DS DNA" alone tested clean.
+  // gudidRawTermSafe: the one dictionary entry individually verified safe to also search its
+  // raw fused form ("dsDNA") against GUDID — see buildGudidExpr's own comment for why this is
+  // opt-in, not the default, for every other entry.
+  'dsdna': { full: 'Double-Stranded DNA', search: 'Double-Stranded DNA/DS DNA', gudidSearch: 'DS DNA', gudidRawTermSafe: true, alwaysCheck: true, panel: ['connective tissue', 'ena'] },
   'his': { full: 'Histone' },
   'jo-1': { full: 'Histidyl-tRNA Synthetase', panel: ['connective tissue', 'myositis'] },
   'nrnp/sm': { full: 'Nuclear Ribonucleoprotein / Smith Antigen', panel: ['connective tissue', 'ena'] },
@@ -1088,6 +1094,123 @@ async function runOpenFdaQuery(expr, apiKey) {
   return { total, records };
 }
 
+// --- GUDID cross-check (device registration data) ---------------------------------------
+// FDA's UDI/GUDID device-registration database — a separate free openFDA endpoint from the
+// 510(k) clearance database above — has a free-text `device_description` field that's often
+// far richer than a 510(k) device's own device_name. Multi-antigen panel kits frequently list
+// every component antigen there, even when device_name/openfda.device_name never mention it:
+// confirmed for K213403 ("Aptiva CTD Essential Reagent"), whose GUDID device_description
+// explicitly lists "Synthetic dsDNA antigen...Recombinant Ro52, Ro60, SSB, Scl-70, Jo-1,
+// Centromere B..." among its components, where its 510(k) record has no "dsDNA" text
+// anywhere. Each GUDID record's premarket_submissions field gives a direct, FDA-asserted
+// K-number link — not an inference the way the predicate-chain cross-check (see the local
+// index add-on) is, so matches found this way are treated as confirmed like any other tier,
+// just tagged separately so it's clear how they were found.
+//
+// GUDID covers every medical device category FDA regulates, not just IVD tests — a bigger
+// collision surface than the 510(k) tiers above for short/bare abbreviations (confirmed: bare
+// "ana" matches an unrelated spinal implant system via a packaging-code fragment). Uses the
+// dictionary's spelled-out full name (or search override) instead of the bare typed term
+// whenever a dictionary entry exists, for the same reason a bare-abbreviation false positive
+// had to be fixed by preferring the full name elsewhere in this tool's history — length alone
+// isn't a safe signal (e.g. "psa" is also short but needs the bare abbreviation to find real
+// matches), so this can't be a blanket rule, only "prefer the safer alternative when one
+// exists."
+const GUDID_ENDPOINT = 'https://api.fda.gov/device/udi.json';
+const GUDID_FIELDS = ['device_description', 'brand_name'];
+const GUDID_KNUM_RE = /^(K\d{6}|DEN\d{6})$/i;
+
+function gudidFieldOr(build) {
+  return '(' + GUDID_FIELDS.map(build).join(' OR ') + ')';
+}
+
+function gudidTokenGroupClause(tokens) {
+  return '(' + tokens.map(tok => gudidFieldOr(f => `${f}:"${tok}"`)).join(' AND ') + ')';
+}
+
+function buildGudidExpr(term, expansion) {
+  // Raw dictionary-key-length abbreviations default to EXCLUDED here, opt-in only via
+  // gudidRawTermSafe — the opposite polarity from every other tier in this tool, and
+  // deliberately so: confirmed via curl that bare "cl" against GUDID's device_description
+  // pulls in dental porcelain shade codes, a spinal implant system, dental handpieces, and a
+  // chemistry analyzer calibration standard — GUDID spans every device category FDA regulates
+  // (unlike 510(k)'s more IVD-skewed corpus this tool has relied on all along), so a bare
+  // 2-3 letter abbreviation is far more likely to collide with an unrelated product code or
+  // spec fragment than to be safe. Opt-in (rather than the per-entry opt-out this started as)
+  // because opt-out only protects entries someone happens to have already tested — the "cl"
+  // collision above was found by accident, not by design, which is exactly the failure mode
+  // an opt-out default can't catch for the dictionary's other 50+ untested entries.
+  // gudidRawTermSafe is verified true today only for 'dsdna': K213403's real GUDID description
+  // says fused "dsDNA", which neither dictionary alternate ("Double-Stranded DNA"/"DS DNA")
+  // would match on its own, so relying on the dictionary phrase alone silently lost this exact
+  // match — and "dsDNA" itself, a fused 5-character compound word, doesn't read as a generic
+  // product code/spec fragment the way "cl"/"ana"/"sm" do, confirmed via curl to be clean.
+  const groups = [];
+  if (expansion && expansion.gudidRawTermSafe) {
+    const antigen = stripAntiPrefix(stripIsotypeSuffix(term)).trim();
+    if (antigen) groups.push(...antigen.split('/').map(splitExpansionTokens).filter(g => g.length));
+  } else if (!expansion) {
+    // No dictionary entry at all for this term — nothing safer to fall back to, so still try
+    // the raw term, same last-resort posture the 510(k) tiers already take for undictionaried
+    // terms. A smaller, more self-limiting risk surface than the dictionary's own short keys,
+    // since it only applies to whatever a user actually typed, not a curated abbreviation list.
+    const antigen = stripAntiPrefix(stripIsotypeSuffix(term)).trim();
+    if (antigen) groups.push(...antigen.split('/').map(splitExpansionTokens).filter(g => g.length));
+  }
+  if (expansion) {
+    // gudidSearch overrides search/full for GUDID specifically, when the shared alternate
+    // wording is unsafe against GUDID's much broader (non-IVD) corpus in a way it isn't
+    // against 510(k)'s. Confirmed via curl: 'dsdna's normal "Double-Stranded DNA" alternate
+    // matched K222779 ("Revogene", a PCR molecular-diagnostics instrument) purely because its
+    // generic description explains that PCR amplifies "double stranded DNA" — a real semantic
+    // collision (the same three words mean the SLE autoantigen in serology and the ordinary
+    // PCR substrate in molecular biology), not a token/abbreviation coincidence, so none of
+    // this tool's other cross-field safeguards catch it. "DS DNA" alone tested clean (5/5
+    // genuine, including K041628) and is what gudidSearch keeps here instead.
+    const phrase = expansion.gudidSearch || expansion.search || expansion.full;
+    if (phrase) groups.push(...phrase.split('/').map(splitExpansionTokens).filter(g => g.length));
+  }
+  if (!groups.length) return null;
+  const seen = new Set();
+  const uniqueGroups = groups.filter(g => {
+    const key = g.join('|').toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return '(' + uniqueGroups.map(gudidTokenGroupClause).join(' OR ') + ')';
+}
+
+// Returns the set of K/DEN-numbers found via GUDID's premarket_submissions link — not full
+// device records, since GUDID's own record shape (brand_name/device_description) isn't what
+// the rest of this tool renders. Callers fetch the actual 510(k) records for these numbers
+// via a normal k_number query, same as any other tier.
+async function fetchGudidKNumbers(expr, apiKey) {
+  const kNumbers = new Set();
+  let skip = 0, total = 0;
+  do {
+    const params = new URLSearchParams({ search: expr, limit: String(PAGE_LIMIT), skip: String(skip) });
+    if (apiKey) params.set('api_key', apiKey);
+    const res = await fetchOpenFdaWithRetry(`${GUDID_ENDPOINT}?${params.toString()}`);
+    if (res.status === 404) { total = 0; break; }
+    if (!res.ok) {
+      let msg = `Request failed with HTTP ${res.status}`;
+      try { const body = await res.json(); if (body?.error?.message) msg = `${body.error.message} (HTTP ${res.status})`; } catch {}
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    for (const r of (data.results || [])) {
+      for (const sub of (r.premarket_submissions || [])) {
+        const num = (sub.submission_number || '').toUpperCase();
+        if (GUDID_KNUM_RE.test(num)) kNumbers.add(num);
+      }
+    }
+    total = data.meta?.results?.total ?? 0;
+    skip += PAGE_LIMIT;
+  } while (skip < total && skip < MAX_RECORDS);
+  return kNumbers;
+}
+
 // Tier 5 (last resort, unconfirmed): some antigens are only ever cleared bundled inside a
 // generic multi-antigen panel kit (e.g. an "8Ag" autoimmune liver profile), and FDA's
 // structured fields never name each individual antigen in a panel — only the actual summary
@@ -1256,18 +1379,51 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
     }
   }
 
-  if (best) return { ...best, expansion: resultExpansion };
+  // GUDID tier (see comment above) — always checked, same posture as the fused-anti tier: it
+  // can surface additional real devices even when other tiers already found plenty (K213403 is
+  // exactly this case for "dsDNA" — 51 already-confirmed devices, GUDID finds one more).
+  //
+  // Kept as a SEPARATE unconfirmed bucket, not merged into the confirmed records the way
+  // fused-anti/alwaysCheck-expansion are — despite premarket_submissions being a direct,
+  // FDA-asserted K-number link rather than an inference. Found via testing: some 510(k)
+  // clearances cover a whole product FAMILY (multiple reagent variants under one K-number,
+  // e.g. Abaxis's Piccolo panel discs, only one variant of which actually contains a given
+  // analyte), so a GUDID hit tied to that K-number doesn't always mean the specific device
+  // shown actually contains this analyte — only that something in its cleared family does.
+  // That's a real, demonstrated gap between "linked" and "confirmed," so this gets the same
+  // "verify manually" treatment as possible-panel-match/inferred-via-predicate, not folded
+  // silently into the count. Failures here shouldn't fail the whole search.
+  let gudidMatches = [];
+  try {
+    const gudidExpr = buildGudidExpr(searchTerm, expansion);
+    if (gudidExpr) {
+      await sleep(150);
+      const found = await fetchGudidKNumbers(gudidExpr, apiKey);
+      const already = new Set((best ? best.records : []).map(r => r.k_number));
+      const newKNumbers = Array.from(found).filter(k => !already.has(k));
+      if (newKNumbers.length) {
+        await sleep(150);
+        const kExpr = '(' + newKNumbers.map(k => `k_number:"${k}"`).join(' OR ') + ')';
+        const gudidRecords = await runOpenFdaQuery(kExpr, apiKey);
+        gudidMatches = gudidRecords.records;
+      }
+    }
+  } catch (e) {
+    // Same posture as other supplementary tiers — don't fail the whole search over this.
+  }
+
+  if (best) return { ...best, expansion: resultExpansion, gudidMatches };
 
   if (expansion && expansion.panel) {
     const panelExpr = buildPanelExpr(expansion.panel);
     if (panelExpr) {
       await sleep(150);
       const panel = await runOpenFdaQuery(panelExpr, apiKey);
-      if (panel.total > 0) return { ...exact, matchMode: 'exact', expansion, panelCandidates: panel.records.slice(0, 20) };
+      if (panel.total > 0) return { ...exact, matchMode: 'exact', expansion, panelCandidates: panel.records.slice(0, 20), gudidMatches };
     }
   }
 
-  return { ...exact, matchMode: 'exact', expansion };
+  return { ...exact, matchMode: 'exact', expansion, gudidMatches };
 }
 
 // --- LDT (NY State CLEP) search ---------------------------------------------------------
@@ -1359,12 +1515,13 @@ async function runFdaSearch() {
     $('progressTxt').textContent = `Searching ${i + 1} of ${terms.length}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / terms.length) * 100)}%`;
     try {
-      const { total, records, matchMode, expansion, panelCandidates, inferredMatches } =
+      const { total, records, matchMode, expansion, panelCandidates, inferredMatches, gudidMatches } =
         await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl);
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
       state.push({
         term, total, approved, records, matchMode, expansion,
-        panelCandidates: panelCandidates || [], inferredMatches: inferredMatches || [], error: null,
+        panelCandidates: panelCandidates || [], inferredMatches: inferredMatches || [],
+        gudidMatches: gudidMatches || [], error: null,
       });
     } catch (e) {
       state.push({ term, total: 0, approved: 0, records: [], error: e.message || String(e) });
@@ -1698,12 +1855,16 @@ function renderResults() {
     const inferredTag = hasInferredMatches
       ? ` <span class="mmtag" title="${s.inferredMatches.length} additional device(s), from the local index's predicate-chain crawl, cite an already-confirmed device as their FDA predicate — expand to check manually.">${s.inferredMatches.length} inferred via predicate</span>`
       : '';
+    const hasGudidMatches = s.gudidMatches && s.gudidMatches.length > 0;
+    const gudidTag = hasGudidMatches
+      ? ` <span class="mmtag" title="${s.gudidMatches.length} additional device(s) weren't found by any 510(k) text match — FDA's UDI/GUDID device-registration database mentioned this biomarker in its own device description, linked back to the 510(k) number by FDA's own data — expand to check manually.">${s.gudidMatches.length} found via device registry</span>`
+      : '';
     const mainRow = document.createElement('tr');
     mainRow.className = 'rowmain';
     mainRow.dataset.idx = i;
     mainRow.innerHTML = `
       <td class="rankcell">${rank}</td>
-      <td><div class="biocell"><span class="chev">▸</span>${escapeHtml(s.term)}${expansionTag(s.expansion)}${matchModeTag(s.matchMode)}${panelTag}${inferredTag}</div></td>
+      <td><div class="biocell"><span class="chev">▸</span>${escapeHtml(s.term)}${expansionTag(s.expansion)}${matchModeTag(s.matchMode)}${panelTag}${inferredTag}${gudidTag}</div></td>
       <td>${s.total}</td>
       <td><span class="badge ${s.approved >= HIGH_APPROVAL_THRESHOLD ? 'high' : 'low'}">${s.approved}</span></td>
       <td>${uniqueApplicantCount(s.records)}</td>
@@ -1735,6 +1896,14 @@ function renderResults() {
         <table class="dtable">
           <thead><tr><th>Device Name</th><th>Submitted By</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
           <tbody>${buildRecordRows(s.panelCandidates, s.term)}</tbody>
+        </table>`;
+    }
+    if (hasGudidMatches) {
+      wrap.innerHTML += `
+        <div class="dnote" style="margin-top:10px"><strong>${s.gudidMatches.length} device(s) found via device registry</strong> — FDA's UDI/GUDID device-registration database mentioned "${escapeHtml(s.term)}" in these devices' own free-text description, and links back to their 510(k) number, but none of it appears in the 510(k) record's own searchable fields. Not counted above — some 510(k) clearances cover a whole product family, so this doesn't always mean this exact device contains the analyte, only that something under its clearance does. Verify manually, e.g. via Check Measurand.</div>
+        <table class="dtable">
+          <thead><tr><th>Device Name</th><th>Submitted By</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
+          <tbody>${buildRecordRows(s.gudidMatches, s.term)}</tbody>
         </table>`;
     }
     if (hasInferredMatches) {
@@ -2337,6 +2506,19 @@ function exportToExcel() {
         Biomarker: s.term,
         'Match Type': 'Predicate chain',
         'Via K Number': viaKNumber || '',
+        'Device Name': r.device_name || '',
+        'Submitted By': r.applicant || '',
+        Decision: r.decision_description || '',
+        'Approve Date': r.decision_date || '',
+        'K Number': r.k_number || '',
+        'Detail Link': r.k_number ? detailUrlFor(r.k_number) : ''
+      });
+    });
+    (s.gudidMatches || []).forEach(r => {
+      panelRows.push({
+        Biomarker: s.term,
+        'Match Type': 'Device registry (GUDID)',
+        'Via K Number': '',
         'Device Name': r.device_name || '',
         'Submitted By': r.applicant || '',
         Decision: r.decision_description || '',

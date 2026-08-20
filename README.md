@@ -97,6 +97,13 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
   with no space or hyphen (e.g. "Anticardiolipin"). The tool automatically tries that fused
   form for any antibody-style search, so this can show up even for terms with no special
   handling built in ahead of time
+- **N found via device registry** — the tool also checks FDA's separate UDI/GUDID
+  device-registration database, whose free-text device descriptions are sometimes far more
+  detailed than a 510(k) record's own device name (bundled multi-antigen kits often list every
+  component antigen there, even when the 510(k) record never names them). Not counted in the
+  numbers above — a single 510(k) clearance can cover a whole family of related products, so a
+  device showing up this way doesn't always mean *that exact device* contains the biomarker,
+  only that something under its clearance does. Worth a manual check.
 
 None of these tags mean the result is wrong — they just tell you how confident the match is,
 so an exact match is more reliable than an "expanded-name match" or a "UMLS-resolved match."
@@ -184,8 +191,10 @@ between. It contains:
   by hand.
 - **Details** — one row per confirmed individual device found, across every biomarker you
   searched.
-- **Possible Panel Matches** — the unconfirmed "possible panel match" candidates (see the tags
-  above), kept in their own sheet so they're never mistaken for a confirmed result.
+- **Unconfirmed Matches** — every unconfirmed candidate from the tags above (possible panel
+  matches, devices found via the local index's predicate-chain crawl, and devices found via
+  the device registry), each labeled with its own Match Type column, kept in their own sheet
+  so they're never mistaken for a confirmed result.
 
 If you ran the LDT cross-check (see below), two more sheets are added with those results —
 there's also a second **Export to Excel** button at the bottom of that table specifically, in

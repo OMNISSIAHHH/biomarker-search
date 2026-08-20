@@ -7,7 +7,7 @@
   "ana": { "full": "Antinuclear Antibody" },
   "c1q": { "full": "Complement Component 1q" },
   "cenp-b": { "full": "Centromere Protein B", "panel": ["connective tissue", "ena"] },
-  "dsdna": { "full": "Double-Stranded DNA", "search": "Double-Stranded DNA/DS DNA", "alwaysCheck": true, "panel": ["connective tissue", "ena"] },
+  "dsdna": { "full": "Double-Stranded DNA", "search": "Double-Stranded DNA/DS DNA", "gudidSearch": "DS DNA", "gudidRawTermSafe": true, "alwaysCheck": true, "panel": ["connective tissue", "ena"] },
   "his": { "full": "Histone" },
   "jo-1": { "full": "Histidyl-tRNA Synthetase", "panel": ["connective tissue", "myositis"] },
   "nrnp/sm": { "full": "Nuclear Ribonucleoprotein / Smith Antigen", "panel": ["connective tissue", "ena"] },
