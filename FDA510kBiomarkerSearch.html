@@ -786,6 +786,48 @@ function buildFusedAntiExpr(term) {
   return crossFieldTokensClause([fused]);
 }
 
+// Generalizes what used to require a human to notice one specific miss and hand-add a
+// dictionary `search` override — e.g. dsDNA's fused "dsDNA" vs. FDA's split "DS DNA" form
+// (confirmed for K041628, before that fix this same case would have been silently missed for
+// any newly-added or never-curated biomarker with the same fused/split pattern). Runs for
+// every term automatically, dictionary entry or not.
+//
+// Deliberately conditioned on the term actually HAVING internal structure to vary — a bare
+// short abbreviation like "cl" or "ana" has no camelCase boundary, hyphen, or space to
+// transform, so these generate no variants for it at all, and the collision risk repeatedly
+// found this session for short bare tokens (against PMA, then GUDID) never gets amplified by
+// this tier. Only terms that already carry real internal structure (mixed case, a hyphen, an
+// embedded space) produce anything.
+function generateOrthographicVariants(antigen) {
+  const variants = new Set();
+
+  // CamelCase boundary: "dsDNA" -> "ds DNA", split wherever a lowercase letter is immediately
+  // followed by an uppercase one.
+  const camelSplit = antigen.replace(/([a-z])([A-Z])/g, '$1 $2');
+  if (camelSplit !== antigen) variants.add(camelSplit);
+
+  // Hyphen <-> space, both directions, since FDA device names use either inconsistently.
+  if (antigen.includes('-')) variants.add(antigen.replace(/-/g, ' '));
+  if (antigen.includes(' ')) variants.add(antigen.replace(/\s+/g, '-'));
+
+  // Fully fused: strip every internal space/hyphen, e.g. "DS DNA" -> "DSDNA".
+  const fused = antigen.replace(/[\s-]+/g, '');
+  if (fused !== antigen) variants.add(fused);
+
+  variants.delete(antigen); // identity form is already covered by the antigen-only tier
+  return Array.from(variants);
+}
+
+function buildWordformExpr(term) {
+  const antigen = stripAntiPrefix(stripIsotypeSuffix(term)).trim();
+  if (!antigen) return null;
+  const variants = generateOrthographicVariants(antigen);
+  if (!variants.length) return null;
+  const clauses = variants.map(v => crossFieldTokensClause(splitTokens(v))).filter(Boolean);
+  if (!clauses.length) return null;
+  return '(' + clauses.join(' OR ') + ')';
+}
+
 // Reference list of common biomarker abbreviations -> full name, keyed by the term with
 // "Anti-"/Ig-class stripped and lowercased (so "GADA", "Anti-GADA", "Anti-GADA IgG" all
 // resolve the same way). Best-effort, not exhaustive. `search` overrides the phrase used
@@ -1330,6 +1372,19 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
     }
   }
 
+  // Same always-checked posture as fused-anti above, for the same reason: generalizes what
+  // used to require a human to notice one specific split/fused-form miss (see
+  // generateOrthographicVariants' own comment) and hand-add a dictionary override, so a term
+  // with no dictionary entry at all still gets this coverage.
+  const wordformExpr = buildWordformExpr(searchTerm);
+  if (wordformExpr) {
+    await sleep(150);
+    const wordform = await runOpenFdaQuery(wordformExpr, apiKey);
+    if (wordform.total > 0) {
+      best = best ? { ...mergeQueryResults(best, wordform), matchMode: best.matchMode } : { ...wordform, matchMode: 'wordform' };
+    }
+  }
+
   // A dictionary-verified alternate wording is normally only tried once nothing else has
   // matched (below) — but for entries explicitly flagged alwaysCheck: true, it's checked (and
   // its matches UNIONed in) even when an earlier tier already found something. This is opt-in,
@@ -1549,14 +1604,16 @@ const MATCH_MODE_LABEL = {
   'antigen-only': 'Antigen-only match',
   expansion: 'Expanded-name match',
   umls: 'UMLS-resolved match',
-  'fused-anti': 'Fused-word match'
+  'fused-anti': 'Fused-word match',
+  wordform: 'Alternate wordform match'
 };
 const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
   'antigen-only': 'No match including the Ig-class (IgG/IgA/IgM) — matched on the antigen name alone, since many FDA device names omit the isotype. The count may include products that are not isotype-specific.',
   expansion: 'No match on the abbreviation itself — matched by searching its spelled-out full name instead, since some FDA device names use the full term rather than the shorthand.',
   umls: 'This abbreviation isn\'t in this tool\'s own built-in dictionary — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
-  'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.'
+  'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
+  wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.'
 };
 
 function matchModeTag(mode) {

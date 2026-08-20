@@ -97,6 +97,11 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
   with no space or hyphen (e.g. "Anticardiolipin"). The tool automatically tries that fused
   form for any antibody-style search, so this can show up even for terms with no special
   handling built in ahead of time
+- **Alternate wordform match** — FDA device names aren't consistent about spacing/hyphens
+  either (e.g. some devices write "DS DNA" split apart where you'd type "dsDNA" fused). The
+  tool automatically tries splitting apart fused words, swapping hyphens for spaces (and back),
+  and fully fusing multi-word terms — for any search, not just ones with special handling
+  built in ahead of time
 - **N found via device registry** — the tool also checks FDA's separate UDI/GUDID
   device-registration database, whose free-text device descriptions are sometimes far more
   detailed than a 510(k) record's own device name (bundled multi-antigen kits often list every
