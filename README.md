@@ -6,8 +6,14 @@ it's also offered as a lab-developed test in New York State. It's meant to help 
 gauge whether a biomarker is a crowded space (lots of existing tests) or an open opportunity
 (few or none).
 
-You do **not** need to know how to code to use this. You don't need to install anything. It
-runs entirely in your web browser (Chrome, Edge, Firefox, Safari — whatever you already use).
+This has two parts: a browser interface (no install, no coding) and a local cross-check backend
+(a one-time Python setup). **Running both together is the default, intended way to use this
+tool** — not an optional add-on layered on top. The backend finds real FDA approvals that the
+browser interface structurally cannot see on its own (see
+[Deeper cross-checked results](#deeper-cross-checked-results-default-workflow)). The browser
+interface also works entirely on its own with zero setup, which is genuinely useful for a fast
+first look or when Python isn't available — but treat that as the reduced/fallback mode, not
+the normal way to run this.
 
 > If a word here is unfamiliar (like "510(k)" or "LDT"), check the **[Glossary](#glossary)** at
 > the bottom — it explains every technical and regulatory term used in this guide.
@@ -24,27 +30,30 @@ runs entirely in your web browser (Chrome, Edge, Firefox, Safari — whatever yo
 - [Checking a specific device's paperwork ("Measurand")](#checking-a-specific-devices-paperwork-measurand)
 - [Searching lab-developed tests (LDT) in New York State](#searching-lab-developed-tests-ldt-in-new-york-state)
 - [If nothing turns up](#if-nothing-turns-up)
-- [Deeper cross-checked results (recommended setup)](#deeper-cross-checked-results-recommended-setup)
+- [Deeper cross-checked results (default workflow)](#deeper-cross-checked-results-default-workflow)
 - [Things to keep in mind](#things-to-keep-in-mind)
 - [Glossary](#glossary)
 
 ## Getting started
+
+**Part 1 — the browser interface** (always needed, no install):
 
 1. Go to the top of this page and click the green **Code** button, then **Download ZIP**.
    (If someone already sent you a folder with these files instead, skip this step.)
 2. Find the downloaded ZIP file (usually in your **Downloads** folder) and unzip/extract it —
    right-click it and choose **Extract All** (Windows) or double-click it (Mac).
 3. Open the extracted folder and double-click **`FDA510kBiomarkerSearch.html`**. It will open
-   in your default web browser and you're ready to go.
+   in your default web browser. Every time you want to use the tool again, just double-click
+   that same file.
 
-That's it — there is no installation, no account to create, and no software to set up. Every
-time you want to use the tool again, just double-click that same file.
+**Part 2 — the cross-check backend** (default workflow — do this next, not "later"):
 
-**Before relying on results for real work**, set up
-[Deeper cross-checked results](#deeper-cross-checked-results-recommended-setup) — it's the
-recommended way to run this tool, not an optional extra. The plain search above misses real
-FDA approvals in ways that are structural, not occasional (bundled multi-antigen kits that
-never name the biomarker anywhere FDA's search can see), and the local add-on fixes that.
+Follow [Deeper cross-checked results](#deeper-cross-checked-results-default-workflow) now, as
+part of this same setup. It's a one-time Python install plus a background crawl, and it's what
+makes the results in Part 1 actually reliable — the plain browser search misses real FDA
+approvals in ways that are structural, not occasional (bundled multi-antigen kits that never
+name the biomarker anywhere it can see). Skip it only if you just want a fast, no-install first
+look and understand the results will be less complete.
 
 ## Searching for a biomarker
 
@@ -263,14 +272,15 @@ LDT"** link appears, which opens a normal Google search in a new tab — this of
 actual lab offering it (national reference labs like ARUP, Mayo Clinic Laboratories, or LabCorp
 frequently show up this way).
 
-## Deeper cross-checked results (recommended setup)
+## Deeper cross-checked results (default workflow)
 
-The FDA 510(k) search above works with no setup at all, and remains fully usable on its own —
-useful for a quick first look, or if Python isn't an option for you. But for anything beyond a
-quick check, this local add-on is the recommended way to run this tool: it finds real
-approvals the plain search structurally cannot, and it's faster, not slower, once it's set up
-(see below). It's a background crawl that builds a local database file, which a small local
-server then answers searches from. It does two different kinds of things:
+This is the default, intended way to run this tool — not an advanced add-on for power users.
+The FDA 510(k) search by itself is a reduced/fallback mode: it works with no setup at all,
+which is genuinely useful for a fast first look or when Python isn't available, but it misses
+real approvals in ways that are structural, not edge cases (see below). This local backend is
+what makes results reliable, and it's faster, not slower, once it's set up (see below). It's a
+background crawl that builds a local database file, which a small local server then answers
+searches from. It does two different kinds of things:
 
 **Finds results the live search above structurally can't**, by reading every candidate
 device's decision-summary PDF, not just its searchable device-name text:

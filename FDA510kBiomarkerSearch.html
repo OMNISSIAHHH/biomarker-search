@@ -166,19 +166,19 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo"><strong>Recommended</strong>, not just optional: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — matches inferred by following a device's cited predicate back to an already-confirmed device, which the live search below structurally can't do. Falls back to the live search automatically if this is blank or unreachable, so nothing breaks either way.</div>
+        <div class="sinfo"><strong>Default workflow</strong>, not an optional extra: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — matches inferred by following a device's cited predicate back to an already-confirmed device, which the live search below structurally can't do. Leaving this blank runs the tool in a reduced fallback mode; falls back automatically if unreachable, so nothing breaks either way.</div>
         <input class="skey" id="localIndexUrl" placeholder="Local index server URL (optional, e.g. http://localhost:8000)">
       </div>
     </div>
   </div>
 
   <div id="localIndexNudge" style="display:none;max-width:1100px;margin:0 auto 14px;padding:10px 14px;border:1px solid #d9a441;border-radius:8px;background:#fdf6e8;color:#6b4e0a;font-size:13px">
-    <strong>Set up deeper cross-checked results</strong> for accurate results — the plain search
-    below misses real FDA approvals in ways that are structural, not occasional (bundled
-    multi-antigen kits that never name the biomarker anywhere it can see). Click the
-    <i class="ti ti-settings"></i> gear icon above and see <strong>README.md → "Deeper
-    cross-checked results"</strong> for setup. This notice goes away once a local index server
-    URL is set.
+    <strong>Running in fallback mode.</strong> The default workflow for this tool includes a
+    local cross-check backend — without it, the plain search below misses real FDA approvals
+    in ways that are structural, not occasional (bundled multi-antigen kits that never name the
+    biomarker anywhere it can see). Click the <i class="ti ti-settings"></i> gear icon above
+    and see <strong>README.md → "Deeper cross-checked results"</strong> to set it up. This
+    notice goes away once a local index server URL is set.
   </div>
 
   <div class="content">
