@@ -165,6 +165,10 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <div class="sinfo">Optional: when a biomarker abbreviation isn't in this tool's own built-in dictionary, an <a href="https://uts.nlm.nih.gov/uts/license" target="_blank" rel="noopener">NLM UMLS Terminology Services</a> API key lets it look up the spelled-out medical name automatically instead of returning nothing. Free, but NLM manually reviews each request — allow up to 3 business days after signing up before the key works. No proxy Worker needed for this one.</div>
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
+      <div class="srow" style="margin-top:8px">
+        <div class="sinfo">Optional: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — PMA devices, and matches inferred by following a device's cited predicate back to an already-confirmed device, both of which the live search above can't do. Falls back to the live search automatically if this is blank or unreachable.</div>
+        <input class="skey" id="localIndexUrl" placeholder="Local index server URL (optional, e.g. http://localhost:8000)">
+      </div>
     </div>
   </div>
 
@@ -289,9 +293,14 @@ const OPENFDA_BASE = 'https://api.fda.gov/device/510k.json';
 // returns nothing for a DEN number, so the link must switch to denovo.cfm instead.
 const PMN_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm?ID=';
 const DENOVO_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/denovo.cfm?ID=';
+// PMA (Premarket Approval, Class III devices) — a separate FDA database from 510(k)/De Novo,
+// only reachable via the local index (see indexer/openfda.py's DEVICE_PMA); its numbers
+// ("P######") need their own detail page, distinct from both bases above.
+const PMA_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfpma/pma.cfm?id=';
 function detailUrlFor(kNumber) {
-  const base = /^DEN/i.test(kNumber || '') ? DENOVO_DETAIL_BASE : PMN_DETAIL_BASE;
-  return base + encodeURIComponent(kNumber || '');
+  const num = kNumber || '';
+  const base = /^DEN/i.test(num) ? DENOVO_DETAIL_BASE : /^P\d{6}/i.test(num) ? PMA_DETAIL_BASE : PMN_DETAIL_BASE;
+  return base + encodeURIComponent(num);
 }
 const PAGE_LIMIT = 100;
 const MAX_RECORDS = 300; // cap per biomarker to bound request volume
@@ -343,6 +352,18 @@ $('fdaPdfProxyUrl').addEventListener('change', (e) => {
   localStorage.setItem('fda_pdf_proxy_url', url);
 });
 
+const savedLocalIndexUrl = localStorage.getItem('local_index_url');
+if (savedLocalIndexUrl) $('localIndexUrl').value = normalizeProxyUrl(savedLocalIndexUrl);
+$('localIndexUrl').addEventListener('change', (e) => {
+  const url = normalizeProxyUrl(e.target.value);
+  e.target.value = url;
+  localStorage.setItem('local_index_url', url);
+});
+
+function getLocalIndexUrl() {
+  return normalizeProxyUrl($('localIndexUrl').value);
+}
+
 function getFdaPdfProxyUrl() {
   return normalizeProxyUrl($('fdaPdfProxyUrl').value);
 }
@@ -393,6 +414,11 @@ function classify(decisionDescription) {
   if (!d) return 'other';
   if (d.includes('not substantially equivalent')) return 'nse';
   if (d.includes('substantially equivalent')) return 'se';
+  // PMA Approval isn't a 510(k) SE decision, but it's the PMA pathway's equivalent "reached
+  // market" outcome — bucketed with SE so the approved-count badge reflects real competitive
+  // landscape regardless of which FDA pathway a device went through (see indexer/db.py).
+  if (d.includes('pma approval')) return 'se';
+  if (d.includes('pma denial')) return 'nse';
   return 'other';
 }
 
@@ -419,11 +445,38 @@ function sortRecordsByDateDesc(records) {
   return records.slice().sort((a, b) => (b.decision_date || '').localeCompare(a.decision_date || ''));
 }
 
+// PMA (Premarket Approval) records only ever reach the frontend via the local index — the
+// live tiers above never query that endpoint — so this badge only ever appears when that
+// opt-in source is in use, distinguishing it from the far more common 510(k)/De Novo devices.
+function sourceBadge(r) {
+  return r.source === 'pma' ? ' <span class="mmtag" title="Premarket Approval (Class III) — a separate FDA database from 510(k)/De Novo.">PMA</span>' : '';
+}
+
 function buildRecordRows(records, term) {
   const sorted = sortRecordsByDateDesc(records);
   return sorted.map(r => `
     <tr>
-      <td>${escapeHtml(r.device_name || '—')}</td>
+      <td>${escapeHtml(r.device_name || '—')}${sourceBadge(r)}</td>
+      <td>${escapeHtml(r.applicant || '—')}</td>
+      <td>${declBadge(r.decision_description)}</td>
+      <td>${escapeHtml(r.decision_date || '—')}</td>
+      <td><a href="${escapeHtml(detailUrlFor(r.k_number))}" target="_blank" rel="noopener">${escapeHtml(r.k_number || '')} ↗</a></td>
+      <td>${r.k_number
+        ? `<button class="measurand-btn" data-knumber="${escapeHtml(r.k_number)}" data-term="${escapeHtml(term)}">Check Measurand</button><span class="measurand-result"></span>`
+        : '—'}</td>
+    </tr>`).join('');
+}
+
+// Same row shape as buildRecordRows, but for {device, viaKNumber, reason} entries from the
+// local index's predicate-chain crawl — each row also names the specific predicate it cites,
+// since that's the one piece of evidence a reader needs to go verify the inference manually.
+function buildInferredRows(inferredMatches, term) {
+  const sorted = [...inferredMatches].sort(
+    (a, b) => (b.device.decision_date || '').localeCompare(a.device.decision_date || '')
+  );
+  return sorted.map(({ device: r, viaKNumber }) => `
+    <tr>
+      <td>${escapeHtml(r.device_name || '—')}<div class="dnote" style="margin-top:2px">cites predicate ${escapeHtml(viaKNumber || '—')}</div></td>
       <td>${escapeHtml(r.applicant || '—')}</td>
       <td>${declBadge(r.decision_description)}</td>
       <td>${escapeHtml(r.decision_date || '—')}</td>
@@ -873,6 +926,25 @@ const ABBREVIATION_EXPANSIONS = {
   'tsh': { full: 'Thyroid-Stimulating Hormone' }
 };
 
+// dictionary.json (repo root) is the single source of truth shared with the Python indexer
+// (see indexer/matching.py) — this inline copy above only exists as a working fallback for
+// when the file can't be fetched (opened via file:// with no server, or the file's missing).
+// Mutates the existing object in place, not a reassignment, so every reference elsewhere in
+// this file (all through the same ABBREVIATION_EXPANSIONS binding) picks up the fresh data
+// without needing to change from const or await anything — by the time a user can click
+// Search, this same-origin fetch of a few KB has long since resolved.
+(async () => {
+  try {
+    const res = await fetch('dictionary.json');
+    if (!res.ok) return;
+    const fresh = await res.json();
+    for (const key of Object.keys(ABBREVIATION_EXPANSIONS)) delete ABBREVIATION_EXPANSIONS[key];
+    Object.assign(ABBREVIATION_EXPANSIONS, fresh);
+  } catch {
+    // Keep the inline copy above — better a possibly-stale dictionary than a broken tool.
+  }
+})();
+
 function expansionKey(term) {
   return stripAntiPrefix(stripIsotypeSuffix(term)).trim().toLowerCase();
 }
@@ -1058,7 +1130,51 @@ function mergeQueryResults(a, b) {
   return { total, records };
 }
 
-async function fetchBiomarker(term, apiKey, umlsApiKey) {
+// --- Optional local index (see indexer/ + server/ at the repo root) ---------------------
+// Pre-built by a separate offline crawler: fetches every candidate device's decision summary
+// PDF once, extracts its Measurand AND its cited predicate device(s), and follows predicate
+// chains back to an already-confirmed device to catch bundled panel reagents that never name
+// the analyte anywhere in openFDA's structured fields (confirmed case: K213403, "Aptiva CTD
+// Essential Reagent" — no "dsDNA" text anywhere in its record, only reachable by noting it
+// cites K152013, a confirmed dsDNA device, as its predicate). Also covers PMA devices, a
+// separate FDA database the live tiers below never query. Too slow/rate-limit-heavy to do
+// live per search, so it's opt-in: set a URL in Settings, or leave blank to keep using the
+// live tiers unchanged.
+async function checkLocalIndexHealth(baseUrl) {
+  try {
+    const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return body.status === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+async function fetchFromLocalIndex(baseUrl, term) {
+  const res = await fetch(`${baseUrl}/biomarker/${encodeURIComponent(term)}`);
+  if (!res.ok) throw new Error(`Local index returned HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return {
+    total: data.total,
+    records: data.records || [],
+    matchMode: data.matchMode,
+    expansion: data.expansion,
+    panelCandidates: data.panelCandidates || [],
+    inferredMatches: data.inferredMatches || [],
+  };
+}
+
+async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
+  if (localIndexUrl) {
+    try {
+      return await fetchFromLocalIndex(localIndexUrl, term);
+    } catch (e) {
+      // Any local-index failure (server down mid-search, term not in its dictionary, etc.)
+      // falls through to the live tiers below rather than failing the whole search.
+    }
+  }
   const searchTerm = toSearchTerm(term);
   const expansion = lookupExpansion(searchTerm);
   let resultExpansion = expansion;
@@ -1239,15 +1355,25 @@ async function runFdaSearch() {
   $('crossCard').style.display = 'none';
   $('progressWrap').style.display = 'block';
 
+  // Checked once per search run, not per term, to avoid a redundant health check per
+  // biomarker — if it's down mid-run, individual fetchBiomarker calls still fall back safely.
+  const localIndexUrlSetting = getLocalIndexUrl();
+  const localIndexUrl = localIndexUrlSetting && await checkLocalIndexHealth(localIndexUrlSetting)
+    ? localIndexUrlSetting : null;
+
   state = [];
   for (let i = 0; i < terms.length; i++) {
     const term = terms[i];
     $('progressTxt').textContent = `Searching ${i + 1} of ${terms.length}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / terms.length) * 100)}%`;
     try {
-      const { total, records, matchMode, expansion, panelCandidates } = await fetchBiomarker(term, apiKey, umlsApiKey);
+      const { total, records, matchMode, expansion, panelCandidates, inferredMatches } =
+        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl);
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
-      state.push({ term, total, approved, records, matchMode, expansion, panelCandidates: panelCandidates || [], error: null });
+      state.push({
+        term, total, approved, records, matchMode, expansion,
+        panelCandidates: panelCandidates || [], inferredMatches: inferredMatches || [], error: null,
+      });
     } catch (e) {
       state.push({ term, total: 0, approved: 0, records: [], error: e.message || String(e) });
     }
@@ -1576,12 +1702,16 @@ function renderResults() {
     const panelTag = hasPanelCandidates
       ? ` <span class="mmtag" title="No confirmed FDA match, but ${s.panelCandidates.length} device(s) mention a plausibly related multi-antigen panel — expand to check manually.">${s.panelCandidates.length} possible panel match${s.panelCandidates.length === 1 ? '' : 'es'}</span>`
       : '';
+    const hasInferredMatches = s.inferredMatches && s.inferredMatches.length > 0;
+    const inferredTag = hasInferredMatches
+      ? ` <span class="mmtag" title="${s.inferredMatches.length} additional device(s), from the local index's predicate-chain crawl, cite an already-confirmed device as their FDA predicate — expand to check manually.">${s.inferredMatches.length} inferred via predicate</span>`
+      : '';
     const mainRow = document.createElement('tr');
     mainRow.className = 'rowmain';
     mainRow.dataset.idx = i;
     mainRow.innerHTML = `
       <td class="rankcell">${rank}</td>
-      <td><div class="biocell"><span class="chev">▸</span>${escapeHtml(s.term)}${expansionTag(s.expansion)}${matchModeTag(s.matchMode)}${panelTag}</div></td>
+      <td><div class="biocell"><span class="chev">▸</span>${escapeHtml(s.term)}${expansionTag(s.expansion)}${matchModeTag(s.matchMode)}${panelTag}${inferredTag}</div></td>
       <td>${s.total}</td>
       <td><span class="badge ${s.approved >= HIGH_APPROVAL_THRESHOLD ? 'high' : 'low'}">${s.approved}</span></td>
       <td>${uniqueApplicantCount(s.records)}</td>
@@ -1613,6 +1743,14 @@ function renderResults() {
         <table class="dtable">
           <thead><tr><th>Device Name</th><th>Submitted By</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
           <tbody>${buildRecordRows(s.panelCandidates, s.term)}</tbody>
+        </table>`;
+    }
+    if (hasInferredMatches) {
+      wrap.innerHTML += `
+        <div class="dnote" style="margin-top:10px"><strong>${s.inferredMatches.length} device(s) inferred via predicate chain</strong> — these cite an already-confirmed "${escapeHtml(s.term)}" device as their FDA predicate (from the local index's crawl of decision summary PDFs), but don't name "${escapeHtml(s.term)}" anywhere in FDA's structured data themselves. A cited predicate doesn't always mean an identical analyte panel, so treat these the same as possible panel matches — not counted above, verify manually.</div>
+        <table class="dtable">
+          <thead><tr><th>Device Name</th><th>Submitted By</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
+          <tbody>${buildInferredRows(s.inferredMatches, s.term)}</tbody>
         </table>`;
     }
     const td = document.createElement('td');
@@ -2192,6 +2330,21 @@ function exportToExcel() {
     (s.panelCandidates || []).forEach(r => {
       panelRows.push({
         Biomarker: s.term,
+        'Match Type': 'Panel keyword',
+        'Via K Number': '',
+        'Device Name': r.device_name || '',
+        'Submitted By': r.applicant || '',
+        Decision: r.decision_description || '',
+        'Approve Date': r.decision_date || '',
+        'K Number': r.k_number || '',
+        'Detail Link': r.k_number ? detailUrlFor(r.k_number) : ''
+      });
+    });
+    (s.inferredMatches || []).forEach(({ device: r, viaKNumber }) => {
+      panelRows.push({
+        Biomarker: s.term,
+        'Match Type': 'Predicate chain',
+        'Via K Number': viaKNumber || '',
         'Device Name': r.device_name || '',
         'Submitted By': r.applicant || '',
         Decision: r.decision_description || '',
@@ -2210,7 +2363,7 @@ function exportToExcel() {
   }
   XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(detailRows), [22, 40, 30, 20, 14, 12, 50]), 'Details');
   if (panelRows.length) {
-    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(panelRows), [22, 40, 30, 20, 14, 12, 50]), 'Possible Panel Matches');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(panelRows), [22, 16, 14, 40, 30, 20, 14, 12, 50]), 'Unconfirmed Matches');
   }
   if (crossState.length) {
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(crossState)), [8, 26, 16, 12, 20, 24]), 'LDT Cross-Check');
