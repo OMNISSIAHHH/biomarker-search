@@ -1,6 +1,6 @@
-"""SQLite index: devices (510k + PMA), their PDF text/measurand, the predicate
-citation graph, and the resulting biomarker matches (confirmed via the tiered
-text-matching pipeline, or inferred via predicate chain / panel-keyword tier).
+"""SQLite index: 510(k) devices, their PDF text/measurand, the predicate citation
+graph, and the resulting biomarker matches (confirmed via the tiered text-matching
+pipeline, or inferred via predicate chain / panel-keyword tier).
 """
 import json
 import sqlite3
@@ -11,7 +11,7 @@ DB_PATH = Path(__file__).parent.parent / "index.sqlite3"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
   k_number TEXT PRIMARY KEY,
-  source TEXT NOT NULL,              -- '510k' | 'pma'
+  source TEXT NOT NULL,              -- '510k' (kept generic for future 510(k)-adjacent sources)
   device_name TEXT,
   openfda_device_name TEXT,
   applicant TEXT,
@@ -63,31 +63,18 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def upsert_device(conn: sqlite3.Connection, record: dict, source: str) -> None:
-    k_number = record.get("k_number") or record.get("pma_number")
-    device_name = record.get("device_name") or record.get("trade_name")
+    k_number = record.get("k_number")
+    device_name = record.get("device_name")
     openfda = record.get("openfda") or {}
     openfda_device_name = openfda.get("device_name")
     if isinstance(openfda_device_name, list):
         openfda_device_name = "; ".join(openfda_device_name)
 
-    # PMA records use pma_number/trade_name instead of k_number/device_name, and have no
-    # decision_description (SE/NSE) field. The frontend's rendering code (detailUrlFor,
-    # buildRecordRows, the Check Measurand button, classify()) only knows the 510(k) field
-    # names — rather than special-case PMA throughout that code, normalize once here so every
-    # downstream consumer (the API, the frontend) sees the same shape regardless of source.
+    # `source` distinguishes which FDA dataset a device row came from (510k today; kept
+    # generic, not hardcoded to "510k" throughout, so a future additional 510(k)-adjacent
+    # source — e.g. GUDID or Registration & Listing — can reuse this same table/column).
     normalized = dict(record)
-    normalized.setdefault("k_number", k_number)
-    normalized.setdefault("device_name", device_name)
     normalized["source"] = source
-    if source == "pma":
-        # PMA has no "Substantially Equivalent" concept (that's 510(k)-specific) — it has its
-        # own decision_code (APPR/DENG/...). Labelled distinctly so it's visibly not a 510(k)
-        # SE decision, but classify() in the frontend still buckets "PMA Approval" alongside
-        # SE as "reached market", since that's what the approved-count badge represents to a
-        # user comparing competitive landscape, not a strict regulatory-pathway distinction.
-        code = record.get("decision_code")
-        pma_labels = {"APPR": "PMA Approval", "DENG": "PMA Denial"}
-        normalized.setdefault("decision_description", pma_labels.get(code, code))
 
     conn.execute(
         """INSERT INTO devices (k_number, source, device_name, openfda_device_name, applicant,

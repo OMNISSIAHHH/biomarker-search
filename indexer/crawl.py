@@ -1,7 +1,7 @@
 """Orchestrates the full indexer run:
 
   1. Confirmed matches: run the tiered text-matching pipeline (same logic as the live JS
-     tool) for every dictionary biomarker against 510k + PMA. Cheap JSON-only calls, not
+     tool) for every dictionary biomarker against 510(k). Cheap JSON-only calls, not
      bounded by scope — openFDA's own text search already narrows this.
   2. Populate the full scope population: every 510k device in ADVISORY_COMMITTEES, not just
      the ones step 1 already found by name — this is the point of the predicate crawl, to
@@ -22,7 +22,7 @@ from pathlib import Path
 import httpx
 
 from indexer import db, pdf_extract
-from indexer.matching import fetch_biomarker_matches, fetch_pma_matches
+from indexer.matching import fetch_biomarker_matches
 from indexer.openfda import DEVICE_510K, fetch_all_in_scope
 from indexer.predicate_graph import propagate_predicate_matches
 from indexer.scope import ADVISORY_COMMITTEES
@@ -48,15 +48,9 @@ async def crawl_confirmed_matches(client: httpx.AsyncClient, conn, dictionary: d
             db.upsert_device(conn, r, source="510k")
             db.insert_match(conn, r["k_number"], key, "panel-candidate", "inferred")
 
-        pma_result = await fetch_pma_matches(client, key, dictionary, api_key)
-        for r in pma_result["records"]:
-            db.upsert_device(conn, r, source="pma")
-            db.insert_match(conn, r["pma_number"], key, pma_result["match_mode"], "confirmed")
-
         conn.commit()
         print(
             f"  {key}: {len(result['records'])} 510k confirmed, "
-            f"{len(pma_result['records'])} PMA confirmed, "
             f"{len(result.get('panel_candidates', []))} panel candidates"
         )
 
@@ -125,7 +119,7 @@ async def run(committees: list[str], api_key: str | None = None) -> None:
     conn = db.connect()
     try:
         async with httpx.AsyncClient() as client:
-            print("Step 1/4: confirmed text-tier matches (510k + PMA)...")
+            print("Step 1/4: confirmed text-tier matches (510k)...")
             await crawl_confirmed_matches(client, conn, dictionary, api_key)
 
             print("Step 2/4: populating full scope device list...")
@@ -142,7 +136,7 @@ async def run(committees: list[str], api_key: str | None = None) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Crawl and index FDA 510k/PMA data for the biomarker search tool.")
+    parser = argparse.ArgumentParser(description="Crawl and index FDA 510(k) data for the biomarker search tool.")
     parser.add_argument("--api-key", default=None, help="openFDA API key (optional, raises rate limits).")
     parser.add_argument(
         "--committees", default=",".join(ADVISORY_COMMITTEES),

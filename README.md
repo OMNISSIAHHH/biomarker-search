@@ -246,10 +246,10 @@ frequently show up this way).
 ## Deeper cross-checked results (advanced, optional)
 
 Everything above works with no setup. This section is for a separate, optional add-on for
-anyone comfortable running Python — it finds approvals the sections above structurally can't:
+anyone comfortable running Python — it finds FDA 510(k) approvals the section above
+structurally can't, by reading every candidate device's decision-summary PDF, not just its
+searchable device-name text:
 
-- **PMA devices.** A second, separate FDA database (Premarket Approval, for higher-risk Class
-  III devices) that the FDA 510(k) search above never queries at all.
 - **Bundled panel reagents.** Some devices measure a biomarker as part of a multi-antigen panel
   kit, but never name that biomarker anywhere in FDA's own searchable device data — the only
   place it's stated is inside the device's own decision-summary PDF. This add-on reads every
@@ -258,6 +258,10 @@ anyone comfortable running Python — it finds approvals the sections above stru
   **"inferred via predicate"**, shown separately from confirmed results, same treatment as
   "possible panel match" above (not counted in the totals — a cited predicate is a strong hint,
   not proof of an identical panel, so it's still worth a manual check).
+
+This is 510(k)-only, same as the search above — it does not include PMA (Premarket Approval,
+for higher-risk Class III devices), which is a different FDA regulatory pathway outside this
+tool's scope.
 
 This requires fetching and reading thousands of PDF documents, which is too slow to do live
 during a search — so it's a separate one-time (well, periodic) crawl that builds a local

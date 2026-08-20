@@ -8,7 +8,7 @@ intentionally does not re-derive it, only reproduces the logic.
 """
 import re
 
-from indexer.openfda import DEVICE_PMA, run_query
+from indexer.openfda import run_query
 
 SEARCH_FIELDS = ["device_name", "statement_or_summary", "openfda.device_name"]
 
@@ -261,92 +261,3 @@ async def fetch_biomarker_matches(client, endpoint: str, term: str, dictionary: 
                 panel_candidates = panel["records"][:20]
 
     return {**exact, "match_mode": "exact", "expansion": expansion, "panel_candidates": panel_candidates}
-
-
-# PMA records don't share the 510(k) schema (trade_name/generic_name instead of device_name,
-# pma_number instead of k_number, no statement_or_summary flag) — rather than thread an extra
-# field-name parameter through every tier-1..5 helper above, PMA gets its own small matcher:
-# exact-phrase plus antigen-token matching only. PMA is a supplementary gap-filler source (891
-# Immunology records never queried before this indexer existed), not required to replicate the
-# full 5-tier pipeline the way 510(k) — the dictionary's primary, best-understood source — does.
-#
-# PMA spans every device category FDA regulates (pacemakers, hip implants, everything), not
-# just IVD tests — a much bigger collision surface than 510(k) for short/ambiguous dictionary
-# keys. Confirmed directly: a bare "cl" search matched a Biotronik pacemaker (P950037) purely
-# because its trade name string happens to end in "...PROTOS DR/CL". The 510(k) tiers avoid
-# this class of false positive via anti-prefix cross-field checks, which only fire when the
-# user typed "Anti-"/an Ig-suffix — a bare "cl" has neither, so the same checks wouldn't have
-# caught it there either. Restricting PMA queries to advisory committees already relevant to
-# this dictionary (same ADVISORY_COMMITTEES list the indexer's PDF crawl scope uses) is a much
-# more reliable filter here, since it's unrelated to how the term was typed: no cardiovascular
-# implant will ever carry an Immunology/Chemistry/Hematology/Microbiology/Pathology/Toxicology
-# advisory committee, regardless of what its trade name happens to contain.
-from indexer.scope import ADVISORY_COMMITTEES  # noqa: E402
-
-PMA_SEARCH_FIELDS = ["trade_name", "generic_name", "openfda.device_name"]
-
-
-def _pma_field_or(build) -> str:
-    return "(" + " OR ".join(build(f) for f in PMA_SEARCH_FIELDS) + ")"
-
-
-def _pma_committee_clause() -> str:
-    return "(" + " OR ".join(f'advisory_committee:"{c}"' for c in ADVISORY_COMMITTEES) + ")"
-
-
-def build_pma_exact_expr(term: str) -> str:
-    return f"({_pma_field_or(lambda f: f'{f}:\"{term}\"')} AND {_pma_committee_clause()})"
-
-
-def build_pma_antigen_expr(term: str) -> str | None:
-    mode = anti_requirement_mode(term)
-    antigen = strip_anti_prefix(strip_isotype_suffix(term)).strip()
-    if not antigen:
-        return None
-    tokens = split_tokens(antigen)
-    if len(tokens) > 1:
-        main_expr = _pma_field_or(lambda f: token_clause(f, tokens))
-    else:
-        main_expr = _pma_field_or(lambda f: f'{f}:"{antigen}"')
-    main_expr = f"({main_expr} AND {_pma_committee_clause()})"
-    return with_cross_field_anti(main_expr, mode)
-
-
-async def fetch_pma_matches(client, term: str, dictionary: dict, api_key: str | None = None) -> dict:
-    # Deliberately exact + antigen-only, no expansion tier: build_expansion_expr's cross-field
-    # clauses are written against the 510(k) field set (device_name/statement_or_summary),
-    # which don't exist on PMA records — reusing it here would silently only ever match via
-    # the one overlapping field (openfda.device_name), which isn't worth the inconsistency for
-    # a supplementary source. expansion is still looked up and returned for display purposes.
-    search_term = to_search_term(term)
-    expansion = lookup_expansion(search_term, dictionary)
-
-    # Bare short abbreviations collide too easily against PMA's much broader device corpus
-    # (every category FDA regulates, unlike 510(k)'s IVD-heavy dataset) — confirmed for "cl"
-    # (a pacemaker trade name ending "...PROTOS DR/CL", fixed by the committee-scope
-    # restriction above) and separately for "ana" (P110025, "ELECSYS ANTI-HBC IGM
-    # IMMUNOASSAY...MODULAR ANAYTICS E170 IMMUNOASSAY ANA" — a genuine Hepatitis B antibody
-    # assay, legitimately in-scope by committee, so that restriction alone doesn't help here).
-    # Requiring an antibody/anti co-occurrence wouldn't help either — it IS an antibody assay,
-    # just for a different antigen; the only real signal is the specific antigen name, and
-    # "ana" itself is too short/generic to require safely. Confirmed via curl that no genuine
-    # PMA-cleared ANA device exists under any phrasing (bare "ana", "Antinuclear", or
-    # "Antinuclear Antibody" all return 0 real hits) — consistent with ANA testing having
-    # always been Class II, cleared via 510(k), never PMA. pmaSkip is a narrow, per-entry,
-    # individually-verified override (same spirit as alwaysCheck elsewhere in this file), not
-    # a blanket short-abbreviation rule — "psa" is also 3 characters but has 462 real PMA
-    # matches findable only via the bare abbreviation, so this can't be automated by length.
-    if expansion and expansion.get("pmaSkip"):
-        return {"total": 0, "records": [], "match_mode": "exact", "expansion": expansion}
-
-    exact = await run_query(client, DEVICE_PMA, build_pma_exact_expr(search_term), api_key)
-    if exact["total"] > 0:
-        return {**exact, "match_mode": "exact", "expansion": expansion}
-
-    antigen_expr = build_pma_antigen_expr(search_term)
-    if antigen_expr and antigen_expr != build_pma_exact_expr(search_term):
-        antigen = await run_query(client, DEVICE_PMA, antigen_expr, api_key)
-        if antigen["total"] > 0:
-            return {**antigen, "match_mode": "antigen-only", "expansion": expansion}
-
-    return {**exact, "match_mode": "exact", "expansion": expansion}

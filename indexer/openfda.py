@@ -1,5 +1,5 @@
-"""openFDA HTTP client: 510(k) and PMA endpoints, with the same retry/backoff
-behavior as fetchOpenFdaWithRetry/runOpenFdaQuery in FDA510kBiomarkerSearch.html
+"""openFDA HTTP client: the 510(k) endpoint, with the same retry/backoff behavior
+as fetchOpenFdaWithRetry/runOpenFdaQuery in FDA510kBiomarkerSearch.html
 (exponential backoff on 429s and network errors, 3 retries, 100-record pages,
 300-record cap per query) so results stay consistent with the live JS tool.
 """
@@ -12,7 +12,6 @@ PAGE_LIMIT = 100
 MAX_RECORDS = 300
 
 DEVICE_510K = "https://api.fda.gov/device/510k.json"
-DEVICE_PMA = "https://api.fda.gov/device/pma.json"
 
 
 class OpenFdaError(Exception):
@@ -83,7 +82,7 @@ async def fetch_all_in_scope(client: httpx.AsyncClient, endpoint: str, committee
         expr = f'{committee_field}:"{committee}"'
         result = await run_query(client, endpoint, expr, api_key)
         for r in result["records"]:
-            k = r.get("k_number") or r.get("pma_number")
+            k = r.get("k_number")
             if k:
                 seen[k] = r
     return list(seen.values())

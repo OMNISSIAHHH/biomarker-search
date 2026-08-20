@@ -166,7 +166,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">Optional: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — PMA devices, and matches inferred by following a device's cited predicate back to an already-confirmed device, both of which the live search above can't do. Falls back to the live search automatically if this is blank or unreachable.</div>
+        <div class="sinfo">Optional: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — matches inferred by following a device's cited predicate back to an already-confirmed device, which the live search above can't do. Falls back to the live search automatically if this is blank or unreachable.</div>
         <input class="skey" id="localIndexUrl" placeholder="Local index server URL (optional, e.g. http://localhost:8000)">
       </div>
     </div>
@@ -293,13 +293,9 @@ const OPENFDA_BASE = 'https://api.fda.gov/device/510k.json';
 // returns nothing for a DEN number, so the link must switch to denovo.cfm instead.
 const PMN_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm?ID=';
 const DENOVO_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/denovo.cfm?ID=';
-// PMA (Premarket Approval, Class III devices) — a separate FDA database from 510(k)/De Novo,
-// only reachable via the local index (see indexer/openfda.py's DEVICE_PMA); its numbers
-// ("P######") need their own detail page, distinct from both bases above.
-const PMA_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfpma/pma.cfm?id=';
 function detailUrlFor(kNumber) {
   const num = kNumber || '';
-  const base = /^DEN/i.test(num) ? DENOVO_DETAIL_BASE : /^P\d{6}/i.test(num) ? PMA_DETAIL_BASE : PMN_DETAIL_BASE;
+  const base = /^DEN/i.test(num) ? DENOVO_DETAIL_BASE : PMN_DETAIL_BASE;
   return base + encodeURIComponent(num);
 }
 const PAGE_LIMIT = 100;
@@ -414,11 +410,6 @@ function classify(decisionDescription) {
   if (!d) return 'other';
   if (d.includes('not substantially equivalent')) return 'nse';
   if (d.includes('substantially equivalent')) return 'se';
-  // PMA Approval isn't a 510(k) SE decision, but it's the PMA pathway's equivalent "reached
-  // market" outcome — bucketed with SE so the approved-count badge reflects real competitive
-  // landscape regardless of which FDA pathway a device went through (see indexer/db.py).
-  if (d.includes('pma approval')) return 'se';
-  if (d.includes('pma denial')) return 'nse';
   return 'other';
 }
 
@@ -445,18 +436,11 @@ function sortRecordsByDateDesc(records) {
   return records.slice().sort((a, b) => (b.decision_date || '').localeCompare(a.decision_date || ''));
 }
 
-// PMA (Premarket Approval) records only ever reach the frontend via the local index — the
-// live tiers above never query that endpoint — so this badge only ever appears when that
-// opt-in source is in use, distinguishing it from the far more common 510(k)/De Novo devices.
-function sourceBadge(r) {
-  return r.source === 'pma' ? ' <span class="mmtag" title="Premarket Approval (Class III) — a separate FDA database from 510(k)/De Novo.">PMA</span>' : '';
-}
-
 function buildRecordRows(records, term) {
   const sorted = sortRecordsByDateDesc(records);
   return sorted.map(r => `
     <tr>
-      <td>${escapeHtml(r.device_name || '—')}${sourceBadge(r)}</td>
+      <td>${escapeHtml(r.device_name || '—')}</td>
       <td>${escapeHtml(r.applicant || '—')}</td>
       <td>${declBadge(r.decision_description)}</td>
       <td>${escapeHtml(r.decision_date || '—')}</td>
@@ -819,12 +803,7 @@ const ABBREVIATION_EXPANSIONS = {
   'iaa': { full: 'Insulin Autoantibody', panel: ['diabetes', 'islet'] },
   'ica': { full: 'Islet Cell Antibody', panel: ['diabetes', 'islet'] },
   'znt8a': { full: 'Zinc Transporter 8 Antibody', panel: ['diabetes', 'islet'] },
-  // pmaSkip: only consumed by the Python indexer's fetch_pma_matches (this live JS tool never
-  // queries PMA at all) — kept here too so dictionary.json and this inline copy stay in sync.
-  // Confirmed via curl: no genuine PMA-cleared ANA device exists under any phrasing, and the
-  // bare "ana" abbreviation collides with an unrelated Hepatitis B antibody assay (P110025)
-  // whose trade name happens to end in "...ANA" — see indexer/matching.py for the full story.
-  'ana': { full: 'Antinuclear Antibody', pmaSkip: true },
+  'ana': { full: 'Antinuclear Antibody' },
   'c1q': { full: 'Complement Component 1q' },
   'cenp-b': { full: 'Centromere Protein B', panel: ['connective tissue', 'ena'] },
   // Real device names split this several different ways — "dsDNA" fused as one word (which
@@ -1150,8 +1129,7 @@ function mergeQueryResults(a, b) {
 // chains back to an already-confirmed device to catch bundled panel reagents that never name
 // the analyte anywhere in openFDA's structured fields (confirmed case: K213403, "Aptiva CTD
 // Essential Reagent" — no "dsDNA" text anywhere in its record, only reachable by noting it
-// cites K152013, a confirmed dsDNA device, as its predicate). Also covers PMA devices, a
-// separate FDA database the live tiers below never query. Too slow/rate-limit-heavy to do
+// cites K152013, a confirmed dsDNA device, as its predicate). Too slow/rate-limit-heavy to do
 // live per search, so it's opt-in: set a URL in Settings, or leave blank to keep using the
 // live tiers unchanged.
 async function checkLocalIndexHealth(baseUrl) {
