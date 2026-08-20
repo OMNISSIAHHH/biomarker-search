@@ -4,7 +4,7 @@
   "iaa": { "full": "Insulin Autoantibody", "panel": ["diabetes", "islet"] },
   "ica": { "full": "Islet Cell Antibody", "panel": ["diabetes", "islet"] },
   "znt8a": { "full": "Zinc Transporter 8 Antibody", "panel": ["diabetes", "islet"] },
-  "ana": { "full": "Antinuclear Antibody" },
+  "ana": { "full": "Antinuclear Antibody", "pmaSkip": true },
   "c1q": { "full": "Complement Component 1q" },
   "cenp-b": { "full": "Centromere Protein B", "panel": ["connective tissue", "ena"] },
   "dsdna": { "full": "Double-Stranded DNA", "search": "Double-Stranded DNA/DS DNA", "alwaysCheck": true, "panel": ["connective tissue", "ena"] },

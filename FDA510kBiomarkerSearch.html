@@ -819,7 +819,12 @@ const ABBREVIATION_EXPANSIONS = {
   'iaa': { full: 'Insulin Autoantibody', panel: ['diabetes', 'islet'] },
   'ica': { full: 'Islet Cell Antibody', panel: ['diabetes', 'islet'] },
   'znt8a': { full: 'Zinc Transporter 8 Antibody', panel: ['diabetes', 'islet'] },
-  'ana': { full: 'Antinuclear Antibody' },
+  // pmaSkip: only consumed by the Python indexer's fetch_pma_matches (this live JS tool never
+  // queries PMA at all) — kept here too so dictionary.json and this inline copy stay in sync.
+  // Confirmed via curl: no genuine PMA-cleared ANA device exists under any phrasing, and the
+  // bare "ana" abbreviation collides with an unrelated Hepatitis B antibody assay (P110025)
+  // whose trade name happens to end in "...ANA" — see indexer/matching.py for the full story.
+  'ana': { full: 'Antinuclear Antibody', pmaSkip: true },
   'c1q': { full: 'Complement Component 1q' },
   'cenp-b': { full: 'Centromere Protein B', panel: ['connective tissue', 'ena'] },
   // Real device names split this several different ways — "dsDNA" fused as one word (which

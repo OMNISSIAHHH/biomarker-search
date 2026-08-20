@@ -321,6 +321,24 @@ async def fetch_pma_matches(client, term: str, dictionary: dict, api_key: str | 
     search_term = to_search_term(term)
     expansion = lookup_expansion(search_term, dictionary)
 
+    # Bare short abbreviations collide too easily against PMA's much broader device corpus
+    # (every category FDA regulates, unlike 510(k)'s IVD-heavy dataset) — confirmed for "cl"
+    # (a pacemaker trade name ending "...PROTOS DR/CL", fixed by the committee-scope
+    # restriction above) and separately for "ana" (P110025, "ELECSYS ANTI-HBC IGM
+    # IMMUNOASSAY...MODULAR ANAYTICS E170 IMMUNOASSAY ANA" — a genuine Hepatitis B antibody
+    # assay, legitimately in-scope by committee, so that restriction alone doesn't help here).
+    # Requiring an antibody/anti co-occurrence wouldn't help either — it IS an antibody assay,
+    # just for a different antigen; the only real signal is the specific antigen name, and
+    # "ana" itself is too short/generic to require safely. Confirmed via curl that no genuine
+    # PMA-cleared ANA device exists under any phrasing (bare "ana", "Antinuclear", or
+    # "Antinuclear Antibody" all return 0 real hits) — consistent with ANA testing having
+    # always been Class II, cleared via 510(k), never PMA. pmaSkip is a narrow, per-entry,
+    # individually-verified override (same spirit as alwaysCheck elsewhere in this file), not
+    # a blanket short-abbreviation rule — "psa" is also 3 characters but has 462 real PMA
+    # matches findable only via the bare abbreviation, so this can't be automated by length.
+    if expansion and expansion.get("pmaSkip"):
+        return {"total": 0, "records": [], "match_mode": "exact", "expansion": expansion}
+
     exact = await run_query(client, DEVICE_PMA, build_pma_exact_expr(search_term), api_key)
     if exact["total"] > 0:
         return {**exact, "match_mode": "exact", "expansion": expansion}
