@@ -279,7 +279,11 @@ tool's scope.
 
 This requires fetching and reading thousands of PDF documents, which is too slow to do live
 during a search — so it's a separate one-time (well, periodic) crawl that builds a local
-database file, which a small local server then answers searches from instantly.
+database file, which a small local server then answers searches from instantly. The crawl also
+precomputes the **alternate wordform match** and **found via device registry** results the
+live search above computes fresh every time — the local server answers all of it from the
+same local file, so search speed there doesn't depend on how many live FDA API calls a term
+happens to need.
 
 **Setup** (one-time, from the repo root, in a terminal):
 ```bash

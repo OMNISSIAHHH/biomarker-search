@@ -1,8 +1,9 @@
 """Local API server over the pre-built SQLite index (see indexer/). Serves
 /biomarker/{term} in a shape close to what fetchBiomarker() already returns in
-FDA510kBiomarkerSearch.html, plus a new inferredMatches array for predicate- and
-panel-candidate-derived hits, so the frontend's change is additive rather than a
-rewrite. Run from the repo root: `uvicorn server.main:app --reload`.
+FDA510kBiomarkerSearch.html, plus inferredMatches (predicate-chain/panel-candidate)
+and gudidMatches, precomputed by the indexer rather than fetched live, so the
+frontend's change is additive rather than a rewrite. Run from the repo root:
+`uvicorn server.main:app --reload`.
 """
 import json
 import sqlite3
@@ -68,6 +69,12 @@ def biomarker(term: str):
                WHERE bm.biomarker_key = ? AND bm.match_mode = 'predicate'""",
             (key,),
         ).fetchall()
+        gudid_rows = conn.execute(
+            """SELECT d.raw_json
+               FROM biomarker_matches bm JOIN devices d ON d.k_number = bm.k_number
+               WHERE bm.biomarker_key = ? AND bm.match_mode = 'gudid'""",
+            (key,),
+        ).fetchall()
     finally:
         conn.close()
 
@@ -85,4 +92,7 @@ def biomarker(term: str):
             {"device": record_from_row(r), "viaKNumber": r["via_k_number"], "reason": "predicate"}
             for r in predicate_rows
         ],
+        # Plain record objects, not wrapped like inferredMatches — matches the shape the live
+        # JS tool's own gudidMatches already uses (buildRecordRows expects raw records).
+        "gudidMatches": [record_from_row(r) for r in gudid_rows],
     }

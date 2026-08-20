@@ -1,15 +1,27 @@
 """Orchestrates the full indexer run:
 
   1. Confirmed matches: run the tiered text-matching pipeline (same logic as the live JS
-     tool) for every dictionary biomarker against 510(k). Cheap JSON-only calls, not
-     bounded by scope — openFDA's own text search already narrows this.
-  2. Populate the full scope population: every 510k device in ADVISORY_COMMITTEES, not just
+     tool, including the automatic wordform tier) for every dictionary biomarker against
+     510(k). Cheap JSON-only calls, not bounded by scope — openFDA's own text search
+     already narrows this.
+  2. GUDID cross-check: same live-tier logic as the JS tool's buildGudidExpr — a second,
+     free JSON-only source, no PDF fetching needed. Kept as a separate unconfirmed bucket,
+     not merged into confirmed matches (see indexer/gudid.py's own comment for why).
+  3. Populate the full scope population: every 510k device in ADVISORY_COMMITTEES, not just
      the ones step 1 already found by name — this is the point of the predicate crawl, to
      reach devices text search misses entirely.
-  3. PDF crawl: fetch + parse (Measurand + predicate table) every scope device not already
+  4. PDF crawl: fetch + parse (Measurand + predicate table) every scope device not already
      cached. The expensive step; skips anything already in pdf_text from a prior run.
-  4. Predicate-chain propagation: mark devices that cite an already-confirmed predicate as
+  5. Predicate-chain propagation: mark devices that cite an already-confirmed predicate as
      inferred matches for that biomarker.
+
+Steps 1-2 were originally live-only tiers in the JS tool (wordform folded into step 1's
+fetch_biomarker_matches, GUDID as step 2) — moved here because they're unconditional per-
+search network calls that measurably slowed down every live search (roughly 2-3x per
+biomarker, confirmed by direct timing), for value that's identical whether computed once
+during a periodic crawl or freshly on every search. Precomputing them here means anyone
+querying the local server gets the same results with none of that per-search cost; the live
+JS tool keeps its own copies of both for standalone use without the server running.
 
 Usage: python -m indexer.crawl [--api-key KEY] [--limit-committees IM,CH]
 """
@@ -21,9 +33,9 @@ from pathlib import Path
 
 import httpx
 
-from indexer import db, pdf_extract
+from indexer import db, gudid, pdf_extract
 from indexer.matching import fetch_biomarker_matches
-from indexer.openfda import DEVICE_510K, fetch_all_in_scope
+from indexer.openfda import DEVICE_510K, fetch_all_in_scope, run_query
 from indexer.predicate_graph import propagate_predicate_matches
 from indexer.scope import ADVISORY_COMMITTEES
 
@@ -53,6 +65,38 @@ async def crawl_confirmed_matches(client: httpx.AsyncClient, conn, dictionary: d
             f"  {key}: {len(result['records'])} 510k confirmed, "
             f"{len(result.get('panel_candidates', []))} panel candidates"
         )
+
+
+async def crawl_gudid_matches(client: httpx.AsyncClient, conn, dictionary: dict,
+                               api_key: str | None = None) -> None:
+    """GUDID cross-check (see indexer/gudid.py). Relies on crawl_confirmed_matches having
+    already cleared this key's rows for the run — inserts new 'gudid'/inferred rows on top,
+    deduped against whatever's already confirmed.
+    """
+    for key in dictionary:
+        expr = gudid.build_gudid_expr(key, dictionary.get(key))
+        if not expr:
+            continue
+        found = await gudid.fetch_gudid_k_numbers(client, expr, api_key)
+        if not found:
+            continue
+        already = {
+            row["k_number"]
+            for row in conn.execute(
+                "SELECT k_number FROM biomarker_matches WHERE biomarker_key = ? AND confidence = 'confirmed'",
+                (key,),
+            )
+        }
+        new_k_numbers = [k for k in found if k not in already]
+        if not new_k_numbers:
+            continue
+        k_expr = "(" + " OR ".join(f'k_number:"{k}"' for k in new_k_numbers) + ")"
+        result = await run_query(client, DEVICE_510K, k_expr, api_key)
+        for r in result["records"]:
+            db.upsert_device(conn, r, source="510k")
+            db.insert_match(conn, r["k_number"], key, "gudid", "inferred")
+        conn.commit()
+        print(f"  {key}: {len(result['records'])} found via GUDID device registry")
 
 
 async def populate_scope_devices(client: httpx.AsyncClient, conn, committees: list[str],
@@ -119,16 +163,19 @@ async def run(committees: list[str], api_key: str | None = None) -> None:
     conn = db.connect()
     try:
         async with httpx.AsyncClient() as client:
-            print("Step 1/4: confirmed text-tier matches (510k)...")
+            print("Step 1/5: confirmed text-tier matches (510k, incl. wordform)...")
             await crawl_confirmed_matches(client, conn, dictionary, api_key)
 
-            print("Step 2/4: populating full scope device list...")
+            print("Step 2/5: GUDID device-registry cross-check...")
+            await crawl_gudid_matches(client, conn, dictionary, api_key)
+
+            print("Step 3/5: populating full scope device list...")
             await populate_scope_devices(client, conn, committees, api_key)
 
-            print("Step 3/4: PDF crawl (Measurand + predicates) for devices in scope...")
+            print("Step 4/5: PDF crawl (Measurand + predicates) for devices in scope...")
             await crawl_pdfs_in_scope(client, conn, committees)
 
-        print("Step 4/4: predicate-chain propagation...")
+        print("Step 5/5: predicate-chain propagation...")
         propagate_all(conn, dictionary)
     finally:
         conn.close()

@@ -137,6 +137,56 @@ def build_fused_anti_expr(term: str) -> str | None:
     return cross_field_tokens_clause([fused])
 
 
+# Port of generateOrthographicVariants/buildWordformExpr in FDA510kBiomarkerSearch.html —
+# see that file's own comment for the full reasoning (generalizes the dsDNA/K041628 fix so it
+# doesn't need a human to notice each specific split/fused-word miss). Naturally stays out of
+# the short-abbreviation collision risk found elsewhere this project (PMA, then GUDID) since a
+# bare 2-3 letter term has no camelCase boundary/hyphen/space to transform in the first place.
+CAMEL_BOUNDARY_RE = re.compile(r"([a-z])([A-Z])")
+
+
+def generate_orthographic_variants(antigen: str) -> list[str]:
+    variants: list[str] = []
+    seen = {antigen}
+
+    camel_split = CAMEL_BOUNDARY_RE.sub(r"\1 \2", antigen)
+    if camel_split not in seen:
+        variants.append(camel_split)
+        seen.add(camel_split)
+
+    if "-" in antigen:
+        hyphen_to_space = antigen.replace("-", " ")
+        if hyphen_to_space not in seen:
+            variants.append(hyphen_to_space)
+            seen.add(hyphen_to_space)
+    if " " in antigen:
+        space_to_hyphen = re.sub(r"\s+", "-", antigen)
+        if space_to_hyphen not in seen:
+            variants.append(space_to_hyphen)
+            seen.add(space_to_hyphen)
+
+    fused = re.sub(r"[\s-]+", "", antigen)
+    if fused not in seen:
+        variants.append(fused)
+        seen.add(fused)
+
+    return variants
+
+
+def build_wordform_expr(term: str) -> str | None:
+    antigen = strip_anti_prefix(strip_isotype_suffix(term)).strip()
+    if not antigen:
+        return None
+    variants = generate_orthographic_variants(antigen)
+    if not variants:
+        return None
+    clauses = [cross_field_tokens_clause(split_tokens(v)) for v in variants]
+    clauses = [c for c in clauses if c]
+    if not clauses:
+        return None
+    return "(" + " OR ".join(clauses) + ")"
+
+
 def expansion_key(term: str) -> str:
     return strip_anti_prefix(strip_isotype_suffix(term)).strip().lower()
 
@@ -237,6 +287,16 @@ async def fetch_biomarker_matches(client, endpoint: str, term: str, dictionary: 
                 best = {**merged, "match_mode": best["match_mode"]}
             else:
                 best = {**fused, "match_mode": "fused-anti"}
+
+    wordform_expr = build_wordform_expr(search_term)
+    if wordform_expr:
+        wordform = await run_query(client, endpoint, wordform_expr, api_key)
+        if wordform["total"] > 0:
+            if best:
+                merged = merge_query_results(best, wordform)
+                best = {**merged, "match_mode": best["match_mode"]}
+            else:
+                best = {**wordform, "match_mode": "wordform"}
 
     if expansion:
         expansion_expr = build_expansion_expr(expansion, anti_requirement_mode(search_term))
