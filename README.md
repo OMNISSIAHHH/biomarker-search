@@ -24,7 +24,7 @@ runs entirely in your web browser (Chrome, Edge, Firefox, Safari — whatever yo
 - [Checking a specific device's paperwork ("Measurand")](#checking-a-specific-devices-paperwork-measurand)
 - [Searching lab-developed tests (LDT) in New York State](#searching-lab-developed-tests-ldt-in-new-york-state)
 - [If nothing turns up](#if-nothing-turns-up)
-- [Deeper cross-checked results (advanced, optional)](#deeper-cross-checked-results-advanced-optional)
+- [Deeper cross-checked results (recommended setup)](#deeper-cross-checked-results-recommended-setup)
 - [Things to keep in mind](#things-to-keep-in-mind)
 - [Glossary](#glossary)
 
@@ -39,6 +39,12 @@ runs entirely in your web browser (Chrome, Edge, Firefox, Safari — whatever yo
 
 That's it — there is no installation, no account to create, and no software to set up. Every
 time you want to use the tool again, just double-click that same file.
+
+**Before relying on results for real work**, set up
+[Deeper cross-checked results](#deeper-cross-checked-results-recommended-setup) — it's the
+recommended way to run this tool, not an optional extra. The plain search above misses real
+FDA approvals in ways that are structural, not occasional (bundled multi-antigen kits that
+never name the biomarker anywhere FDA's search can see), and the local add-on fixes that.
 
 ## Searching for a biomarker
 
@@ -257,11 +263,14 @@ LDT"** link appears, which opens a normal Google search in a new tab — this of
 actual lab offering it (national reference labs like ARUP, Mayo Clinic Laboratories, or LabCorp
 frequently show up this way).
 
-## Deeper cross-checked results (advanced, optional)
+## Deeper cross-checked results (recommended setup)
 
-Everything above works with no setup. This section is for a separate, optional add-on for
-anyone comfortable running Python — a background crawl that builds a local database file,
-which a small local server then answers searches from. It does two different kinds of things:
+The FDA 510(k) search above works with no setup at all, and remains fully usable on its own —
+useful for a quick first look, or if Python isn't an option for you. But for anything beyond a
+quick check, this local add-on is the recommended way to run this tool: it finds real
+approvals the plain search structurally cannot, and it's faster, not slower, once it's set up
+(see below). It's a background crawl that builds a local database file, which a small local
+server then answers searches from. It does two different kinds of things:
 
 **Finds results the live search above structurally can't**, by reading every candidate
 device's decision-summary PDF, not just its searchable device-name text:

@@ -74,10 +74,7 @@ async def crawl_gudid_matches(client: httpx.AsyncClient, conn, dictionary: dict,
     deduped against whatever's already confirmed.
     """
     for key in dictionary:
-        expr = gudid.build_gudid_expr(key, dictionary.get(key))
-        if not expr:
-            continue
-        found = await gudid.fetch_gudid_k_numbers(client, expr, api_key)
+        found = await gudid.fetch_gudid_k_numbers(client, key, dictionary.get(key), api_key)
         if not found:
             continue
         already = {

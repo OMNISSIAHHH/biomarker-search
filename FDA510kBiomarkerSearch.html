@@ -166,10 +166,19 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">Optional: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — matches inferred by following a device's cited predicate back to an already-confirmed device, which the live search above can't do. Falls back to the live search automatically if this is blank or unreachable.</div>
+        <div class="sinfo"><strong>Recommended</strong>, not just optional: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — matches inferred by following a device's cited predicate back to an already-confirmed device, which the live search below structurally can't do. Falls back to the live search automatically if this is blank or unreachable, so nothing breaks either way.</div>
         <input class="skey" id="localIndexUrl" placeholder="Local index server URL (optional, e.g. http://localhost:8000)">
       </div>
     </div>
+  </div>
+
+  <div id="localIndexNudge" style="display:none;max-width:1100px;margin:0 auto 14px;padding:10px 14px;border:1px solid #d9a441;border-radius:8px;background:#fdf6e8;color:#6b4e0a;font-size:13px">
+    <strong>Set up deeper cross-checked results</strong> for accurate results — the plain search
+    below misses real FDA approvals in ways that are structural, not occasional (bundled
+    multi-antigen kits that never name the biomarker anywhere it can see). Click the
+    <i class="ti ti-settings"></i> gear icon above and see <strong>README.md → "Deeper
+    cross-checked results"</strong> for setup. This notice goes away once a local index server
+    URL is set.
   </div>
 
   <div class="content">
@@ -354,11 +363,20 @@ $('localIndexUrl').addEventListener('change', (e) => {
   const url = normalizeProxyUrl(e.target.value);
   e.target.value = url;
   localStorage.setItem('local_index_url', url);
+  updateLocalIndexNudge();
 });
 
 function getLocalIndexUrl() {
   return normalizeProxyUrl($('localIndexUrl').value);
 }
+
+// Deeper cross-checked results is the recommended way to run this tool, not a buried optional
+// extra — this stays visible on every page load until a local index URL is actually set, since
+// that's the one thing that reliably indicates someone has gone through the setup.
+function updateLocalIndexNudge() {
+  $('localIndexNudge').style.display = getLocalIndexUrl() ? 'none' : 'block';
+}
+updateLocalIndexNudge();
 
 function getFdaPdfProxyUrl() {
   return normalizeProxyUrl($('fdaPdfProxyUrl').value);
@@ -1227,6 +1245,36 @@ function buildGudidExpr(term, expansion) {
 // device records, since GUDID's own record shape (brand_name/device_description) isn't what
 // the rest of this tool renders. Callers fetch the actual 510(k) records for these numbers
 // via a normal k_number query, same as any other tier.
+// Excludes a GUDID hit only when its OWN FDA-assigned classification (product_codes/
+// gmdn_terms) reads as bare hardware — an instrument/system/analyzer word present, and zero
+// antibody/antigen/reagent-type language anywhere. Confirmed via curl: a PCR instrument
+// ("Revogene", K222779) matched "dsDNA" purely through generic methodology text ("...specific
+// sequences of double stranded DNA, amplified from a biological source..."), while its
+// classification is pure hardware ("Real Time Nucleic Acid Amplification System") with no
+// reagent language at all. Deliberately narrow — NOT "does the classification name this exact
+// analyte": that stricter version was tried first and silently dropped confirmed genuine
+// matches too (K030929, "ANA Detect ELISA," whose own description explicitly lists "dsDNA" as
+// one of 8 profiled antigens) — FDA's product code for bundled ANA panels is generically
+// "Multiple antinuclear antibody (ANA)...," never naming individual antigens, so requiring
+// exact-analyte corroboration would exclude every bundled panel, which is exactly the category
+// GUDID's free-text description exists to catch in the first place.
+const GUDID_INSTRUMENT_SIGNAL_WORDS = ['system', 'instrument', 'analyzer', 'analyser', 'amplification', 'thermal cycler', 'sequencer', 'reader'];
+const GUDID_REAGENT_SIGNAL_WORDS = ['antibody', 'antibodies', 'antigen', 'reagent', 'elisa', 'immunoassay'];
+
+function gudidRecordIsBareInstrument(record) {
+  const parts = [];
+  for (const pc of (record.product_codes || [])) {
+    parts.push(pc.name || '', pc.openfda?.device_name || '');
+  }
+  for (const g of (record.gmdn_terms || [])) {
+    parts.push(g.name || '', g.definition || '');
+  }
+  const combined = parts.join(' ').toLowerCase();
+  const hasInstrumentSignal = GUDID_INSTRUMENT_SIGNAL_WORDS.some(w => combined.includes(w));
+  const hasReagentSignal = GUDID_REAGENT_SIGNAL_WORDS.some(w => combined.includes(w));
+  return hasInstrumentSignal && !hasReagentSignal;
+}
+
 async function fetchGudidKNumbers(expr, apiKey) {
   const kNumbers = new Set();
   let skip = 0, total = 0;
@@ -1242,6 +1290,7 @@ async function fetchGudidKNumbers(expr, apiKey) {
     }
     const data = await res.json();
     for (const r of (data.results || [])) {
+      if (gudidRecordIsBareInstrument(r)) continue;
       for (const sub of (r.premarket_submissions || [])) {
         const num = (sub.submission_number || '').toUpperCase();
         if (GUDID_KNUM_RE.test(num)) kNumbers.add(num);
