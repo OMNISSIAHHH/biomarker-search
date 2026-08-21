@@ -979,13 +979,32 @@ const ABBREVIATION_EXPANSIONS = {
   // Real devices (e.g. K771155 "Anti-Mitochondrial", K921183 "Diastat Anti-Mitochondrial
   // Antibody Kit") mostly just say "Anti-Mitochondrial" without ever stating the M2 subtype
   // in device_name, even though M2 is what's actually being measured clinically — requiring
-  // "M2" as a co-occurring token (as this used to) excluded them. Confirmed via curl: plain
-  // "Mitochondrial" alone finds 5 devices, all genuine anti-mitochondrial antibody tests, no
-  // false positives (spanning 1976-2002 — older than any decision-summary PDF, so this is the
-  // only way to find them; the local index's predicate-chain crawl separately recovers newer
-  // devices like K163133, which cites K982121 as its predicate without naming "mitochondrial"
-  // anywhere in its own device_name).
-  'ama-m2': { full: 'Anti-Mitochondrial Antibody, M2 Subtype', search: 'Mitochondrial', panel: ['liver', 'hepatitis'] },
+  // "M2" as a co-occurring token (as this used to) excluded them.
+  //
+  // Manual report (real devices cited: Quanta/Werfen, Euroimmun) found the "Mitochondrial"-only
+  // fix above still missed 9 more genuine devices, confirmed via a comprehensive curl sweep:
+  // (1) "Mitochondria" without the "-al" — a genuine word-FORM variant, not a spacing/hyphen
+  //     issue the automatic wordform tier handles (e.g. K933180 "Quanta Lite Mitochondria M2
+  //     Elisa", K940251 "Mitochondria EIA Test Kit", K950110 "Mardx Mitochondria EIA Test
+  //     System", K962452, K031308, K030238).
+  // (2) "Antimitochondrial" fused with "Anti" — some devices (Werfen/Inova's K052262 "Quanta
+  //     Lite M2 EP (Mit3) Elisa", K163525 "Quanta Flash M2 (Mit3)...", and Euroimmun's K092736
+  //     "Euroimmun Anti-M2-3E Elisa") have NO "mitochondria(l)" text anywhere in device_name at
+  //     all — only findable via their shared openfda.device_name classification, "Antimitochondrial
+  //     Antibody, Indirect Immunofluorescent, Antigen, Control" (fused, one word). Added as an
+  //     anti-exempt alternate (starts with "anti", so groupImpliesAnti lets it bypass the
+  //     cross-field anti-requirement regardless of how the user typed the term) — same pattern
+  //     as cardiolipin's "Cardiolipin/Anticardiolipin".
+  // Confirmed via curl: this combined classification-code search returns 27 hits site-wide, all
+  // genuinely real antimitochondrial-antibody-class devices (sharing FDA's own classification
+  // code, not a coincidental text collision the way "cl"/pacemaker or "ana"/spinal-implant
+  // were) — no false positives found. Total confirmed matches went from 5 to 31.
+  //
+  // Investigated but could NOT find any FDA 510(k) record for a Trinity Biotech AMA-M2 product
+  // despite checking their direct filings, their MarDx Diagnostics subsidiary, and GUDID cross-
+  // references — noting this rather than forcing a match; it may be marketed under a name/
+  // pathway not reflected in openFDA's 510(k) data at all.
+  'ama-m2': { full: 'Anti-Mitochondrial Antibody, M2 Subtype', search: 'Mitochondria/Mitochondrial/Antimitochondrial', panel: ['liver', 'hepatitis'] },
   'gp210': { full: 'Glycoprotein 210', panel: ['liver', 'hepatitis'] },
   'lc-1': { full: 'Liver Cytosol Type 1', panel: ['liver', 'hepatitis'] },
   'lkm-1': { full: 'Liver Kidney Microsomal Type 1', panel: ['liver', 'hepatitis'] },
@@ -1022,7 +1041,12 @@ const ABBREVIATION_EXPANSIONS = {
 // Search, this same-origin fetch of a few KB has long since resolved.
 (async () => {
   try {
-    const res = await fetch('dictionary.json');
+    // no-cache (not no-store): still lets the browser reuse a cached copy after revalidating
+    // with the server, it just refuses to skip that revalidation step — a real gap otherwise,
+    // confirmed while testing a dictionary fix: a browser that had already fetched this once
+    // kept serving the old copy indefinitely across page loads, invisible to the user, since
+    // nothing here previously told it to check for updates.
+    const res = await fetch('dictionary.json', { cache: 'no-cache' });
     if (!res.ok) return;
     const fresh = await res.json();
     for (const key of Object.keys(ABBREVIATION_EXPANSIONS)) delete ABBREVIATION_EXPANSIONS[key];
