@@ -329,6 +329,26 @@ generated guess, not a database entry, so it deserves more skepticism than a UML
 match: a wrong answer from a model can sound exactly as confident as a right one. Always worth
 a sanity check, e.g. via **Check Measurand**, before trusting it.
 
+**Running Ollama on a different PC than the one you use the tool from:** `http://localhost:11434`
+only works when Ollama and the browser tool (or backend server) are on the *same* machine.
+Across machines on the same network:
+1. On the Ollama PC, set the environment variable `OLLAMA_HOST=0.0.0.0:11434` and restart
+   Ollama — by default it only listens on `localhost` and refuses connections from elsewhere.
+2. Allow inbound traffic on port 11434 through its firewall, e.g. on Windows:
+   ```powershell
+   New-NetFirewallRule -DisplayName "Ollama" -Direction Inbound -LocalPort 11434 -Protocol TCP -Action Allow
+   ```
+3. Find that PC's LAN IP (`ipconfig` on Windows, `ifconfig`/`ip addr` on Mac/Linux) and use
+   `http://<that-ip>:11434` as the Local LLM URL / `LOCAL_LLM_URL` instead of `localhost`.
+4. Test reachability first from the other machine, e.g.
+   `Invoke-WebRequest http://<that-ip>:11434/api/tags` (PowerShell) or
+   `curl http://<that-ip>:11434/api/tags` — it should return a 200 with a JSON list of models,
+   the same as it does locally.
+
+If the two machines aren't on the same network (e.g. one is remote/cloud), reaching Ollama
+needs something more than a firewall rule — a VPN or port-forwarding — which is outside the
+scope of this guide.
+
 These two Settings fields configure the browser tool's own last-resort lookup, used only when
 the exact/broad/antigen-only tiers above found nothing. The cross-check backend (see
 [Setup](#setup)) uses the same two engines for every search, not just as a last resort — but
