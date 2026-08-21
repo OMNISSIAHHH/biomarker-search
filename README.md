@@ -79,6 +79,13 @@ This is 510(k)-only, same as the browser search — it does not include PMA (Pre
 for higher-risk Class III devices), which is a different FDA regulatory pathway outside this
 tool's scope.
 
+The crawl only pre-builds results for the biomarkers already listed in `dictionary.json` —
+searching anything else (a biomarker you haven't added there) still works, the local server
+just queries FDA live for it on the spot instead of answering from its precomputed file, so
+that search is a normal live search rather than a false "nothing found." Only the predicate-chain
+panel-reagent finds above are unavailable for a term outside that list, since those need the
+full PDF crawl to have already run against it.
+
 Fetching and reading thousands of PDF documents for the predicate-chain part is what makes this
 too slow to do live during a search — so the whole thing runs as a separate one-time (well,
 periodic) crawl instead.
