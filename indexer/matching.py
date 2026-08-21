@@ -191,10 +191,6 @@ def expansion_key(term: str) -> str:
     return strip_anti_prefix(strip_isotype_suffix(term)).strip().lower()
 
 
-def lookup_expansion(term: str, dictionary: dict) -> dict | None:
-    return dictionary.get(expansion_key(term))
-
-
 EXPANSION_STOPWORDS = {"anti", "antibody"}
 
 
@@ -226,21 +222,6 @@ def build_expansion_expr(expansion: dict, mode: str) -> str | None:
     return "(" + " OR ".join(parts) + ")"
 
 
-PANEL_INDICATOR_WORDS = ["profile", "panel", "blot", "multiplex", "euroline", "screen", "essential"]
-
-
-def build_panel_expr(category_words: list[str]) -> str | None:
-    if not category_words:
-        return None
-    words = category_words
-    if "connective tissue" in words and "ctd" not in words:
-        words = [*words, "ctd"]
-    fields = ["device_name", "openfda.device_name"]  # statement_or_summary is just a flag, not real text
-    panel_clause = lambda f: "(" + " OR ".join(f'{f}:"{w}"' for w in PANEL_INDICATOR_WORDS) + ")"
-    category_clause = lambda f: "(" + " OR ".join(f'{f}:"{w}"' for w in words) + ")"
-    return "(" + " OR ".join(f"({panel_clause(f)} AND {category_clause(f)})" for f in fields) + ")"
-
-
 def merge_query_results(a: dict, b: dict) -> dict:
     by_k = {r["k_number"]: r for r in a["records"]}
     by_k.update({r["k_number"]: r for r in b["records"]})
@@ -249,15 +230,15 @@ def merge_query_results(a: dict, b: dict) -> dict:
     return {"total": total, "records": records}
 
 
-async def fetch_biomarker_matches(client, endpoint: str, term: str, dictionary: dict,
+async def fetch_biomarker_matches(client, endpoint: str, term: str, expansion: dict | None,
                                    api_key: str | None = None) -> dict:
-    """Python port of fetchBiomarker (JS), tiers 1-5, minus the UMLS tier (tier 4b) — the
-    indexer only ever looks up dictionary-known biomarkers, so there's no "zero dictionary
-    entry" case for UMLS to handle here. Returns the same shape: total, records, match_mode,
-    expansion, panel_candidates.
+    """Python port of fetchBiomarker (JS), tiers 1-5. `expansion` is resolved by the caller
+    (indexer/lookup.py, via ai_expansion.resolve_expansion + its cache) before this is called —
+    this function treats it as an opaque {full, search} dict, same as the browser tool's
+    ABBREVIATION_EXPANSIONS entries used to be. Returns the same shape: total, records,
+    match_mode, expansion.
     """
     search_term = to_search_term(term)
-    expansion = lookup_expansion(search_term, dictionary)
     best = None
 
     exact = await run_query(client, endpoint, build_exact_expr(search_term), api_key)
@@ -298,9 +279,13 @@ async def fetch_biomarker_matches(client, endpoint: str, term: str, dictionary: 
             else:
                 best = {**wordform, "match_mode": "wordform"}
 
+    # Always merged in when an expansion resolved, regardless of whether an earlier tier already
+    # matched — no per-entry alwaysCheck opt-in anymore (that was a curated-dictionary concept).
+    # Same reasoning build_fused_anti_expr already relies on to run unconditionally: a multi-word
+    # synonym/full-name phrase, not a bare token, makes an accidental cross-match unlikely.
     if expansion:
         expansion_expr = build_expansion_expr(expansion, anti_requirement_mode(search_term))
-        if expansion_expr and (not best or expansion.get("alwaysCheck")):
+        if expansion_expr:
             exp = await run_query(client, endpoint, expansion_expr, api_key)
             if exp["total"] > 0:
                 if best:
@@ -310,14 +295,6 @@ async def fetch_biomarker_matches(client, endpoint: str, term: str, dictionary: 
                     best = {**exp, "match_mode": "expansion"}
 
     if best:
-        return {**best, "expansion": expansion, "panel_candidates": []}
+        return {**best, "expansion": expansion}
 
-    panel_candidates: list[dict] = []
-    if expansion and expansion.get("panel"):
-        panel_expr = build_panel_expr(expansion["panel"])
-        if panel_expr:
-            panel = await run_query(client, endpoint, panel_expr, api_key)
-            if panel["total"] > 0:
-                panel_candidates = panel["records"][:20]
-
-    return {**exact, "match_mode": "exact", "expansion": expansion, "panel_candidates": panel_candidates}
+    return {**exact, "match_mode": "exact", "expansion": expansion}

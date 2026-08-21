@@ -43,8 +43,11 @@ CREATE TABLE IF NOT EXISTS predicates (
 CREATE TABLE IF NOT EXISTS biomarker_matches (
   k_number TEXT NOT NULL,
   biomarker_key TEXT NOT NULL,
-  match_mode TEXT NOT NULL,          -- 'exact'|'broad'|'antigen-only'|'fused-anti'|'expansion'
-                                      -- |'predicate'|'panel-candidate'
+  match_mode TEXT NOT NULL,          -- 'exact'|'broad'|'antigen-only'|'fused-anti'|'wordform'
+                                      -- |'ai-suggested'|'umls'|'predicate'|'gudid' — 'expansion'
+                                      -- (matching.py's raw tier tag) is relabeled to
+                                      -- 'ai-suggested'/'umls' before being stored here, per the
+                                      -- AI engine that actually resolved it (indexer/lookup.py)
   confidence TEXT NOT NULL,          -- 'confirmed' | 'inferred'
   via_k_number TEXT,
   PRIMARY KEY (k_number, biomarker_key, match_mode)
@@ -52,6 +55,26 @@ CREATE TABLE IF NOT EXISTS biomarker_matches (
 
 CREATE INDEX IF NOT EXISTS idx_matches_biomarker ON biomarker_matches(biomarker_key, confidence);
 CREATE INDEX IF NOT EXISTS idx_predicates_device ON predicates(device_k);
+
+-- AI-resolved {full, search} per term, keyed by expansion_key(term) — see indexer/ai_expansion.py.
+-- Replaces the old hand-curated dictionary.json; caching this is what makes searching hundreds
+-- of biomarkers practical without re-asking the AI for a term it's already answered.
+CREATE TABLE IF NOT EXISTS expansion_cache (
+  term_key TEXT PRIMARY KEY,
+  full TEXT,
+  search TEXT,
+  source TEXT,                       -- 'local-llm' | 'umls' | 'none'
+  generated_at TEXT
+);
+
+-- Whether a term's full lookup pipeline (confirmed tiers + GUDID + predicate propagation) has
+-- already run, at least once. Needed because zero rows in biomarker_matches for a key is
+-- ambiguous without a static dictionary to consult — it could mean "never searched" or
+-- "searched, genuinely zero matches." This table is the only thing that disambiguates the two.
+CREATE TABLE IF NOT EXISTS searched_terms (
+  term_key TEXT PRIMARY KEY,
+  searched_at TEXT
+);
 """
 
 
@@ -138,3 +161,48 @@ def insert_match(conn: sqlite3.Connection, k_number: str, biomarker_key: str, ma
 
 def clear_matches_for_biomarker(conn: sqlite3.Connection, biomarker_key: str) -> None:
     conn.execute("DELETE FROM biomarker_matches WHERE biomarker_key = ?", (biomarker_key,))
+
+
+def get_expansion_cache_entry(conn: sqlite3.Connection, term_key: str) -> tuple[dict | None, str] | None:
+    """Returns (expansion, source) if this term has been asked of the AI before, or None if it
+    hasn't been cached at all yet. `expansion` is None (with source='none') when the AI was
+    already asked and genuinely found nothing — distinct from "never asked," which is what the
+    None-return case means; callers use this distinction to avoid re-asking a hard term on every
+    single search while still resolving a genuinely new one.
+    """
+    row = conn.execute(
+        "SELECT full, search, source FROM expansion_cache WHERE term_key = ?", (term_key,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row["source"] == "none":
+        return None, "none"
+    expansion = {"full": row["full"]}
+    if row["search"]:
+        expansion["search"] = row["search"]
+    return expansion, row["source"]
+
+
+def upsert_expansion_cache(conn: sqlite3.Connection, term_key: str, expansion: dict | None,
+                            source: str, generated_at: str) -> None:
+    conn.execute(
+        """INSERT INTO expansion_cache (term_key, full, search, source, generated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(term_key) DO UPDATE SET
+             full=excluded.full, search=excluded.search, source=excluded.source,
+             generated_at=excluded.generated_at""",
+        (term_key, (expansion or {}).get("full"), (expansion or {}).get("search"), source, generated_at),
+    )
+
+
+def already_searched(conn: sqlite3.Connection, term_key: str) -> bool:
+    row = conn.execute("SELECT 1 FROM searched_terms WHERE term_key = ?", (term_key,)).fetchone()
+    return row is not None
+
+
+def mark_searched(conn: sqlite3.Connection, term_key: str, searched_at: str) -> None:
+    conn.execute(
+        """INSERT INTO searched_terms (term_key, searched_at) VALUES (?, ?)
+           ON CONFLICT(term_key) DO UPDATE SET searched_at=excluded.searched_at""",
+        (term_key, searched_at),
+    )

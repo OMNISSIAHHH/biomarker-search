@@ -49,9 +49,12 @@ This is the default, intended way to run this tool — not an advanced add-on fo
 Part 1 alone is a reduced/fallback mode: it works with no setup at all, which is genuinely
 useful for a fast first look or when Python isn't available, but it misses real approvals in
 ways that are structural, not edge cases (see below). This local backend is what makes results
-reliable, and it's faster, not slower, once it's set up. It's a background crawl that builds a
-local database file, which a small local server then answers searches from. It does two
-different kinds of things:
+reliable, and it's faster, not slower, once it's set up. There is no list anywhere of "which
+biomarkers this tool knows about" — every term you search is resolved automatically (by AI,
+same idea as [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
+below) and its results are cached, so a repeat search is instant and a first-time search for
+*any* biomarker — one at a time or hundreds pasted in at once — just works, no list to maintain
+first. It does two different kinds of things:
 
 **Finds results Part 1 structurally can't**, by reading every candidate device's
 decision-summary PDF, not just its searchable device-name text:
@@ -61,9 +64,8 @@ decision-summary PDF, not just its searchable device-name text:
   place it's stated is inside the device's own decision-summary PDF. This backend reads every
   device's cited "predicate" (the earlier device it claims to be equivalent to) out of that PDF,
   and if a device cites an already-confirmed match as its predicate, it's surfaced too — tagged
-  **"inferred via predicate"**, shown separately from confirmed results, same treatment as
-  "possible panel match" (see [Reading your results](#reading-your-results)) — not counted in
-  the totals, since a cited predicate is a strong hint, not proof of an identical panel, so it's
+  **"inferred via predicate"**, shown separately from confirmed results and not counted in the
+  totals, since a cited predicate is a strong hint, not proof of an identical panel, so it's
   still worth a manual check.
 
 **Precomputes results Part 1 already finds, just faster.** The **alternate wordform match** and
@@ -79,16 +81,13 @@ This is 510(k)-only, same as the browser search — it does not include PMA (Pre
 for higher-risk Class III devices), which is a different FDA regulatory pathway outside this
 tool's scope.
 
-The crawl only pre-builds results for the biomarkers already listed in `dictionary.json` —
-searching anything else (a biomarker you haven't added there) still works, the local server
-just queries FDA live for it on the spot instead of answering from its precomputed file, so
-that search is a normal live search rather than a false "nothing found." Only the predicate-chain
-panel-reagent finds above are unavailable for a term outside that list, since those need the
-full PDF crawl to have already run against it.
-
-Fetching and reading thousands of PDF documents for the predicate-chain part is what makes this
-too slow to do live during a search — so the whole thing runs as a separate one-time (well,
-periodic) crawl instead.
+**Confirmed-match and device-registry results work immediately for any biomarker, with nothing
+to crawl first.** The one thing that does need a one-time (well, periodic) crawl is the
+predicate-chain panel-reagent tier above, since it depends on having already read every scope
+device's decision-summary PDF — fetching and reading thousands of PDFs is too slow to do live
+during a search. Running that crawl doesn't need to know which biomarkers you care about either
+— it just builds the general device+PDF corpus (bounded to a handful of relevant FDA review
+panels) that the predicate-chain lookup then draws on for whatever you end up searching.
 
 **Setup** (one-time, from the repo root, in a terminal):
 ```bash
@@ -96,16 +95,27 @@ pip install -r indexer/requirements.txt
 pip install -r server/requirements.txt
 python -m indexer.crawl
 ```
-The crawl can take a while the first time (it's reading real PDFs one at a time, politely
-rate-limited) — it prints progress as it goes. **Re-run it whenever you pull an update to this
-repo** (it skips PDFs it's already fetched, so a re-run is fast) — the crawled database only
-reflects whatever dictionary/matching code was running when it was last built, so a stale crawl
-silently shows older, less complete results than the current code actually finds. Add
-`--api-key YOUR_OPENFDA_KEY` to go faster.
+This step is what unlocks the predicate-chain ("inferred via predicate") tier — searching
+confirmed matches and the device registry already works even before this finishes. The crawl
+can take a while the first time (it's reading real PDFs one at a time, politely rate-limited) —
+it prints progress as it goes. **Re-run it periodically** to pick up newly-cleared devices (it
+skips PDFs it's already fetched, so a re-run is fast). Add `--api-key YOUR_OPENFDA_KEY` to go
+faster.
 
 **Running it:**
 ```bash
 uvicorn server.main:app --reload
+```
+The server resolves each biomarker's full name/synonyms automatically via AI, the same as
+[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model) below —
+but since this is a separate background process, it can't read the browser's Settings, so
+configure it with environment variables instead, e.g.:
+```bash
+LOCAL_LLM_URL=http://localhost:11434 LOCAL_LLM_MODEL=qwen3:4b uvicorn server.main:app --reload
+```
+or, using UMLS instead:
+```bash
+UMLS_API_KEY=your-key-here uvicorn server.main:app --reload
 ```
 Then open **Settings** (gear icon) in the tool itself and enter the server's address (e.g.
 `http://localhost:8000`) in **Local index server URL**. From then on, searches automatically use
@@ -170,21 +180,14 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
 - **Broad match** — no exact match was found, so the tool searched more loosely (ignoring word
   order)
 - **Antigen-only match** — same as above, but it also ignored the antibody class (IgG/IgA/IgM)
-- **Expanded-name match** — the abbreviation itself wasn't found, so the tool searched using
-  the full spelled-out name instead
-- **N possible panel matches** — no confirmed match, but the tool found device(s) that mention
-  a bundle/panel of tests in a related area. These are *not* counted in the numbers above
-  because the FDA's own records don't spell out which individual biomarkers are inside the
-  bundle — you'd need to open the device's paperwork to check by hand (the **Check Measurand**
-  button on that device can help)
-- **UMLS-resolved match** — the abbreviation wasn't recognized by this tool's own built-in list
-  at all, so its spelled-out medical name was looked up automatically instead (see
+- **UMLS-resolved match** — none of the above found anything either, so the abbreviation's
+  spelled-out medical name was looked up automatically instead (see
   [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
   below)
-- **AI-suggested match** — same situation as above (an unrecognized abbreviation), but resolved
-  by a local AI model instead of UMLS. This is a *generated guess*, not a database lookup — a
-  wrong answer can look just as confident as a right one, so treat this one with more
-  skepticism than a UMLS-resolved match and double-check it, e.g. via **Check Measurand**
+- **AI-suggested match** — same situation as above, but resolved by a local AI model instead of
+  UMLS. This is a *generated guess*, not a database lookup — a wrong answer can look just as
+  confident as a right one, so treat this one with more skepticism than a UMLS-resolved match
+  and double-check it, e.g. via **Check Measurand**
 - **Fused-word match** — FDA sometimes writes "Anti" and the antigen as one run-together word
   with no space or hyphen (e.g. "Anticardiolipin"). The tool automatically tries that fused
   form for any antibody-style search, so this can show up even for terms with no special
@@ -203,7 +206,7 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
   only that something under its clearance does. Worth a manual check.
 
 None of these tags mean the result is wrong — they just tell you how confident the match is,
-so an exact match is more reliable than an "expanded-name match" or a "UMLS-resolved match."
+so an exact match is more reliable than a "UMLS-resolved match" or an "AI-suggested match."
 
 ## Sorting your results
 
@@ -266,10 +269,10 @@ between. It contains:
   by hand.
 - **Details** — one row per confirmed individual device found, across every biomarker you
   searched.
-- **Unconfirmed Matches** — every unconfirmed candidate from the tags above (possible panel
-  matches, devices found via the cross-check backend's predicate-chain crawl, and devices found
-  via the device registry), each labeled with its own Match Type column, kept in their own
-  sheet so they're never mistaken for a confirmed result.
+- **Unconfirmed Matches** — every unconfirmed candidate (devices found via the cross-check
+  backend's predicate-chain crawl, and devices found via the device registry), each labeled with
+  its own Match Type column, kept in their own sheet so they're never mistaken for a confirmed
+  result.
 
 If you ran the LDT cross-check (see below), two more sheets are added with those results —
 there's also a second **Export to Excel** button at the bottom of that table specifically, in
@@ -300,11 +303,11 @@ extra layer of confirmation.
 
 ## Automatic abbreviation lookup (UMLS or a local AI model)
 
-This tool keeps its own small, hand-checked list mapping common lab-shorthand abbreviations
-(like "GADA" or "cTnT") to the full medical name FDA paperwork actually uses. But that list
-can't cover everything — if you search an abbreviation it doesn't recognize, two different
-optional ways exist to look up its full name automatically instead of just returning nothing.
-Both are opt-in, and if neither is set up, searches work exactly as before.
+There is no built-in, hand-curated list of biomarker abbreviations — every term's full medical
+name and synonyms (needed when the abbreviation itself, like "GADA" or "cTnT," doesn't appear
+verbatim in FDA paperwork) are resolved automatically instead. Two optional ways exist to do
+this; if neither is set up, the tool still finds whatever the exact/broad/antigen-only tiers
+above can on their own, just without an alternate name to fall back on.
 
 **Option 1 — UMLS** (a real database, slower to set up): go to
 **[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in with an
@@ -314,9 +317,8 @@ hand and it can take **up to 3 business days** before your account is approved. 
 sign in, open your profile, and generate an API key. Paste that key into **Settings** (gear
 icon) → **UMLS API key**. Unlike the LDT and Measurand features, this one needs no separate
 Worker setup — paste the key and it works. A match found this way is flagged
-**UMLS-resolved match** because, unlike every entry in the tool's own list, nobody has manually
-confirmed the looked-up name is correct — worth a quick sanity check, e.g. via
-**Check Measurand**.
+**UMLS-resolved match** since nobody has manually confirmed the looked-up name is correct —
+worth a quick sanity check, e.g. via **Check Measurand**.
 
 **Option 2 — a local AI model** (no license or waiting, but a guess instead of a lookup):
 install [Ollama](https://ollama.com), pull a small model (e.g. `ollama pull qwen3:4b`), and
@@ -326,6 +328,12 @@ the local model is tried first. A match found this way is flagged **AI-suggested
 generated guess, not a database entry, so it deserves more skepticism than a UMLS-resolved
 match: a wrong answer from a model can sound exactly as confident as a right one. Always worth
 a sanity check, e.g. via **Check Measurand**, before trusting it.
+
+These two Settings fields configure the browser tool's own last-resort lookup, used only when
+the exact/broad/antigen-only tiers above found nothing. The cross-check backend (see
+[Setup](#setup)) uses the same two engines for every search, not just as a last resort — but
+since it's a separate background process with no access to the browser's Settings, it's
+configured with environment variables instead when you start it.
 
 ## Searching lab-developed tests (LDT) in New York State
 

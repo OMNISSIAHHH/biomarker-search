@@ -162,7 +162,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="fdaPdfProxyUrl" placeholder="FDA PDF proxy Worker URL">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">Optional: when a biomarker abbreviation isn't in this tool's own built-in dictionary, an <a href="https://uts.nlm.nih.gov/uts/license" target="_blank" rel="noopener">NLM UMLS Terminology Services</a> API key lets it look up the spelled-out medical name automatically instead of returning nothing. Free, but NLM manually reviews each request — allow up to 3 business days after signing up before the key works. No proxy Worker needed for this one.</div>
+        <div class="sinfo">Optional: when an exact/broad/antigen-only search finds nothing, an <a href="https://uts.nlm.nih.gov/uts/license" target="_blank" rel="noopener">NLM UMLS Terminology Services</a> API key lets it look up the spelled-out medical name automatically instead of returning nothing. Free, but NLM manually reviews each request — allow up to 3 business days after signing up before the key works. No proxy Worker needed for this one.</div>
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
@@ -204,8 +204,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
           <li>Greek letters (α, β, …) are automatically spelled out (alpha, beta, …).</li>
           <li>If an exact phrase finds nothing, the search automatically widens — first dropping word order, then the Ig-class suffix — and flags the result as <span class="mmtag" style="cursor:default">Broad match</span> / <span class="mmtag" style="cursor:default">Antigen-only match</span> so you know it's less precise.</li>
           <li>"Anti-" is never dropped when the term has it — it distinguishes an antibody test from the antigen itself, so a real match must still contain it, though not necessarily the literal word "anti" ("antibody", "antibodies", "autoantibody", "autoantibodies", and "AB" all count too), and not necessarily in the same field as the antigen name — FDA splits one device's info across several fields, and it's common for the antigen abbreviation to appear in one and the antibody wording in another.</li>
-          <li>For antigens known to appear in named multi-antigen panel kits (autoimmune liver, ANA/ENA, celiac, and similar profiles), 0 confirmed results also triggers a search for plausibly related panel devices, shown separately as <span class="mmtag" style="cursor:default">N possible panel matches</span> — these aren't confirmed (panels rarely name each individual antigen in FDA's structured data), so verify manually, e.g. via Check Measurand.</li>
-          <li>If an abbreviation isn't in this tool's own dictionary, and a UMLS API key is set in Settings, its spelled-out medical name is looked up automatically instead of returning nothing — flagged as <span class="mmtag" style="cursor:default">UMLS-resolved match</span> since that name hasn't been manually verified the way the built-in dictionary has.</li>
+          <li>If an exact/broad/antigen-only search finds nothing, a local AI model or a UMLS API key (set in Settings) can look up the term's spelled-out medical name automatically instead of returning nothing — flagged as <span class="mmtag" style="cursor:default">AI-suggested match</span> or <span class="mmtag" style="cursor:default">UMLS-resolved match</span> since that name hasn't been manually verified.</li>
         </ul>
         <ul class="hint" id="hintLdt" style="display:none">
           <li>Terms are matched against the analyte/test name in the NY State Wadsworth Center CLEP "Approved Laboratory Developed Tests" database (any-word match, same as the site's own default).</li>
@@ -874,194 +873,19 @@ function buildWordformExpr(term) {
   return '(' + clauses.join(' OR ') + ')';
 }
 
-// Reference list of common biomarker abbreviations -> full name, keyed by the term with
-// "Anti-"/Ig-class stripped and lowercased (so "GADA", "Anti-GADA", "Anti-GADA IgG" all
-// resolve the same way). Best-effort, not exhaustive. `search` overrides the phrase used
-// for tier 4 below when the fully-spelled-out name doesn't actually appear in FDA text but
-// a shorter form does (e.g. IA-2A's product literature says "IA-2", not "Insulinoma-
-// Associated Protein 2") — display always shows `full`.
-// `panel` (optional): search words for the tier-5 "possible panel match" fallback below —
-// generic multi-antigen kits (e.g. an "8Ag" autoimmune liver panel) often bundle this exact
-// antigen without ever naming it in openFDA's structured fields, so a plain field search can
-// never find them no matter how it's built. Populated only for antigens known to commonly
-// appear in named multiplex panels; deliberately not exhaustive.
-const ABBREVIATION_EXPANSIONS = {
-  'gada': { full: 'Glutamic Acid Decarboxylase Antibody', panel: ['diabetes', 'islet'] },
-  'ia-2a': { full: 'Insulinoma-Associated Protein 2 Antibody', search: 'IA-2', panel: ['diabetes', 'islet'] },
-  'iaa': { full: 'Insulin Autoantibody', panel: ['diabetes', 'islet'] },
-  'ica': { full: 'Islet Cell Antibody', panel: ['diabetes', 'islet'] },
-  'znt8a': { full: 'Zinc Transporter 8 Antibody', panel: ['diabetes', 'islet'] },
-  'ana': { full: 'Antinuclear Antibody' },
-  'c1q': { full: 'Complement Component 1q' },
-  'cenp-b': { full: 'Centromere Protein B', panel: ['connective tissue', 'ena'] },
-  // Real device names split this several different ways — "dsDNA" fused as one word (which
-  // tier 1's exact-phrase search already catches directly), "Double-Stranded DNA" hyphenated,
-  // and (confirmed via curl for K041628, "AESKULISA DS DNA G") "DS DNA" as two plain
-  // space-separated words, which none of the other tiers' tokenization of a fused "dsDNA"
-  // input would ever produce. alwaysCheck matters here specifically because tier 1 already
-  // finds 37 *other* real dsDNA devices for the common "dsDNA" input, so this would otherwise
-  // never even run for that case. Confirmed via curl the "DS"+"DNA" cross-field pair is clean
-  // (14 results, all genuine anti-dsDNA devices, no false positives).
-  // gudidSearch: "Double-Stranded DNA" is unsafe against GUDID specifically — see
-  // buildGudidExpr's own comment (it collided with a PCR instrument's generic "double stranded
-  // DNA" methodology description, a real semantic ambiguity). "DS DNA" alone tested clean.
-  // gudidRawTermSafe: the one dictionary entry individually verified safe to also search its
-  // raw fused form ("dsDNA") against GUDID — see buildGudidExpr's own comment for why this is
-  // opt-in, not the default, for every other entry.
-  'dsdna': { full: 'Double-Stranded DNA', search: 'Double-Stranded DNA/DS DNA', gudidSearch: 'DS DNA', gudidRawTermSafe: true, alwaysCheck: true, panel: ['connective tissue', 'ena'] },
-  'his': { full: 'Histone' },
-  'jo-1': { full: 'Histidyl-tRNA Synthetase', panel: ['connective tissue', 'myositis'] },
-  'nrnp/sm': { full: 'Nuclear Ribonucleoprotein / Smith Antigen', panel: ['connective tissue', 'ena'] },
-  // "Nuc" is ambiguous lab shorthand — it can mean "Nucleosome" (a distinct ENA-panel
-  // autoantibody) or, as used here, informal shorthand for "Antinuclear" (ANA). Confirmed via
-  // curl that "Nucleosome" alone has zero matches anywhere in openFDA's 510k data — no FDA-
-  // cleared device names it at all — while "Antinuclear" correctly finds 457 real matches,
-  // including K150155 (NOVA Lite DAPI ANA Kit), the real device a user searching "Anti-Nuc
-  // IgG" expected. Resolving to "Antinuclear" makes this behave the same as the separate
-  // 'ana' entry below, since in practice that's what "Nuc" means when it actually matters.
-  'nuc': { full: 'Antinuclear Antibody', search: 'Antinuclear', panel: ['connective tissue', 'ena'] },
-  'pcna': { full: 'Proliferating Cell Nuclear Antigen', panel: ['connective tissue', 'ena'] },
-  'pm-scl': { full: 'Polymyositis-Scleroderma Antigen', panel: ['connective tissue', 'myositis'] },
-  'rib p': { full: 'Ribosomal P Protein', panel: ['connective tissue', 'ena'] },
-  'ro-52': { full: 'Ro52 / TRIM21', search: 'Ro52', panel: ['connective tissue', 'ena'] },
-  'scl-70': { full: 'Topoisomerase I', panel: ['connective tissue', 'ena'] },
-  'sm': { full: 'Smith Antigen', panel: ['connective tissue', 'ena'] },
-  'ss-a/ro': { full: "Sjogren's Syndrome Antigen A / Ro", panel: ['connective tissue', 'ena'] },
-  'ss-b': { full: "Sjogren's Syndrome Antigen B / La", panel: ['connective tissue', 'ena'] },
-  'u1rnp': { full: 'U1 Ribonucleoprotein', panel: ['connective tissue', 'ena'] },
-  'achr': { full: 'Acetylcholine Receptor' },
-  'aqp4': { full: 'Aquaporin-4' },
-  'nmdar': { full: 'N-Methyl-D-Aspartate Receptor' },
-  'bp180': { full: 'Bullous Pemphigoid 180', panel: ['bullous', 'pemphigoid'] },
-  'bp230': { full: 'Bullous Pemphigoid 230', panel: ['bullous', 'pemphigoid'] },
-  'dsg1': { full: 'Desmoglein 1', panel: ['pemphigus'] },
-  'dsg3': { full: 'Desmoglein 3', panel: ['pemphigus'] },
-  'if': { full: 'Intrinsic Factor' },
-  'pca': { full: 'Parietal Cell Antibody' },
-  // openFDA's openfda.device_name classification text sometimes writes this as one fused,
-  // hyphen-less word "Anticardiolipin" (e.g. K223093's classification is "System, Test,
-  // Anticardiolipin Immunological", while its actual device_name has no "cardiolipin" text at
-  // all) — a form the "anti" + antigen tokenization the other tiers do would never produce.
-  // "/" tries both forms as alternates (confirmed via curl neither is a strict subset of the
-  // other: plain "Cardiolipin" alone finds 67 devices via device_name text, "Anticardiolipin"
-  // finds 94 via openfda.device_name, together 98 unique).
-  'cl': { full: 'Cardiolipin', search: 'Cardiolipin/Anticardiolipin', alwaysCheck: true, panel: ['phospholipid'] },
-  // Dictionary lookup is keyed by whatever the user actually typed after stripping "Anti-"/Ig
-  // suffix — someone typing the spelled-out word ("Anti-cardiolipin IgG") produces the lookup
-  // key "cardiolipin", which is a different string than the abbreviation key "cl" above and
-  // would otherwise miss this entry (and the Anticardiolipin fix) entirely. Same entry, just
-  // reachable both ways.
-  'cardiolipin': { full: 'Cardiolipin', search: 'Cardiolipin/Anticardiolipin', alwaysCheck: true, panel: ['phospholipid'] },
-  // "aCL" (lowercase a = "anti") is the actual common lab shorthand for this antibody — the
-  // "a" doesn't match hasAntiPrefix's literal "anti" check, so this needs its own key too;
-  // stripAntiPrefix/stripIsotypeSuffix leave it as "acl" after lowercasing.
-  'acl': { full: 'Cardiolipin', search: 'Cardiolipin/Anticardiolipin', alwaysCheck: true, panel: ['phospholipid'] },
-  'ps/pt': { full: 'Phosphatidylserine / Prothrombin', panel: ['phospholipid'] },
-  // FDA's own openfda.device_name classification text calls this antigen literally "B2"
-  // (not "Beta2"/"β2") — e.g. K141274: 'System,Test,Antibodies,B2 - Glycoprotein I (B2 - Gpi)'.
-  // Its device_name is separately corrupted by a mojibake artifact ("¿2GP1-DOMAIN1" where
-  // β/ß should be), so `search` must target FDA's classification wording, not our own
-  // transliteration convention, to find it at all.
-  'beta2-gp1': { full: 'Beta-2 Glycoprotein 1', search: 'B2 Glycoprotein', panel: ['phospholipid'] },
-  // "Domain1" only ever appears in device_name, never alongside "B2"/"Glycoprotein" in the
-  // same field (those live in openfda.device_name) — crossFieldTokensClause (see
-  // buildExpansionExpr) is what makes this findable at all.
-  'beta2-gp1-domain1': { full: 'Beta-2 Glycoprotein 1, Domain 1', search: 'B2 Glycoprotein Domain1', panel: ['phospholipid'] },
-  'ccp': { full: 'Cyclic Citrullinated Peptide' },
-  'ra33': { full: 'Rheumatoid Arthritis Antigen 33 (hnRNP-A2)', panel: ['connective tissue', 'ena'] },
-  'mcv': { full: 'Mutated Citrullinated Vimentin' },
-  'mmp-3': { full: 'Matrix Metalloproteinase-3' },
-  'rf': { full: 'Rheumatoid Factor' },
-  'ttg': { full: 'Tissue Transglutaminase', panel: ['celiac', 'gliadin'] },
-  'dgp': { full: 'Deamidated Gliadin Peptide', panel: ['celiac', 'gliadin'] },
-  'asca': { full: 'Anti-Saccharomyces Cerevisiae Antibody', search: 'Saccharomyces Cerevisiae' },
-  'pla2r': { full: 'Phospholipase A2 Receptor' },
-  // Real devices (e.g. K771155 "Anti-Mitochondrial", K921183 "Diastat Anti-Mitochondrial
-  // Antibody Kit") mostly just say "Anti-Mitochondrial" without ever stating the M2 subtype
-  // in device_name, even though M2 is what's actually being measured clinically — requiring
-  // "M2" as a co-occurring token (as this used to) excluded them.
-  //
-  // Manual report (real devices cited: Quanta/Werfen, Euroimmun) found the "Mitochondrial"-only
-  // fix above still missed 9 more genuine devices, confirmed via a comprehensive curl sweep:
-  // (1) "Mitochondria" without the "-al" — a genuine word-FORM variant, not a spacing/hyphen
-  //     issue the automatic wordform tier handles (e.g. K933180 "Quanta Lite Mitochondria M2
-  //     Elisa", K940251 "Mitochondria EIA Test Kit", K950110 "Mardx Mitochondria EIA Test
-  //     System", K962452, K031308, K030238).
-  // (2) "Antimitochondrial" fused with "Anti" — some devices (Werfen/Inova's K052262 "Quanta
-  //     Lite M2 EP (Mit3) Elisa", K163525 "Quanta Flash M2 (Mit3)...", and Euroimmun's K092736
-  //     "Euroimmun Anti-M2-3E Elisa") have NO "mitochondria(l)" text anywhere in device_name at
-  //     all — only findable via their shared openfda.device_name classification, "Antimitochondrial
-  //     Antibody, Indirect Immunofluorescent, Antigen, Control" (fused, one word). Added as an
-  //     anti-exempt alternate (starts with "anti", so groupImpliesAnti lets it bypass the
-  //     cross-field anti-requirement regardless of how the user typed the term) — same pattern
-  //     as cardiolipin's "Cardiolipin/Anticardiolipin".
-  // Confirmed via curl: this combined classification-code search returns 27 hits site-wide, all
-  // genuinely real antimitochondrial-antibody-class devices (sharing FDA's own classification
-  // code, not a coincidental text collision the way "cl"/pacemaker or "ana"/spinal-implant
-  // were) — no false positives found. Total confirmed matches went from 5 to 31.
-  //
-  // Investigated but could NOT find any FDA 510(k) record for a Trinity Biotech AMA-M2 product
-  // despite checking their direct filings, their MarDx Diagnostics subsidiary, and GUDID cross-
-  // references — noting this rather than forcing a match; it may be marketed under a name/
-  // pathway not reflected in openFDA's 510(k) data at all.
-  'ama-m2': { full: 'Anti-Mitochondrial Antibody, M2 Subtype', search: 'Mitochondria/Mitochondrial/Antimitochondrial', panel: ['liver', 'hepatitis'] },
-  'gp210': { full: 'Glycoprotein 210', panel: ['liver', 'hepatitis'] },
-  'lc-1': { full: 'Liver Cytosol Type 1', panel: ['liver', 'hepatitis'] },
-  'lkm-1': { full: 'Liver Kidney Microsomal Type 1', panel: ['liver', 'hepatitis'] },
-  'sla/lp': { full: 'Soluble Liver Antigen / Liver Pancreas', panel: ['liver', 'hepatitis'] },
-  'sp100': { full: 'Sp100 Nuclear Antigen', panel: ['liver', 'hepatitis'] },
-  'asma': { full: 'Anti-Smooth Muscle Antibody' },
-  'gbm': { full: 'Glomerular Basement Membrane', panel: ['vasculitis'] },
-  'mpo': { full: 'Myeloperoxidase', panel: ['vasculitis'] },
-  'pr3': { full: 'Proteinase 3', panel: ['vasculitis'] },
-  'kl-6': { full: 'Krebs von den Lungen-6' },
-  'psa': { full: 'Prostate-Specific Antigen' },
-  // "cTnT" never appears verbatim in FDA text — Roche's Elecsys line and others always spell
-  // out "Troponin T" in full, so it needs the expansion tier to be found at all (confirmed via
-  // curl: Roche's K201441 "Elecsys Troponin T Gen 5" and 14 others). "cTnI" does appear
-  // literally in some device names ("DIMENSION VISTA CTNI...") so tier 1 already finds a
-  // handful of those directly — this entry mainly serves terms typed with a space/hyphen that
-  // tier 1 won't catch verbatim. `search` omits "Cardiac" since several real devices (e.g.
-  // "ELECSYS TROPONIN T STAT TEST") don't include that word at all; requiring it would have
-  // excluded them.
-  'ctnt': { full: 'Cardiac Troponin T', search: 'Troponin T' },
-  'ctni': { full: 'Cardiac Troponin I', search: 'Troponin I' },
-  'bnp': { full: 'Brain Natriuretic Peptide' },
-  'hba1c': { full: 'Hemoglobin A1c' },
-  'crp': { full: 'C-Reactive Protein' },
-  'tsh': { full: 'Thyroid-Stimulating Hormone' }
-};
-
-// dictionary.json (repo root) is the single source of truth shared with the Python indexer
-// (see indexer/matching.py) — this inline copy above only exists as a working fallback for
-// when the file can't be fetched (opened via file:// with no server, or the file's missing).
-// Mutates the existing object in place, not a reassignment, so every reference elsewhere in
-// this file (all through the same ABBREVIATION_EXPANSIONS binding) picks up the fresh data
-// without needing to change from const or await anything — by the time a user can click
-// Search, this same-origin fetch of a few KB has long since resolved.
-(async () => {
-  try {
-    // no-cache (not no-store): still lets the browser reuse a cached copy after revalidating
-    // with the server, it just refuses to skip that revalidation step — a real gap otherwise,
-    // confirmed while testing a dictionary fix: a browser that had already fetched this once
-    // kept serving the old copy indefinitely across page loads, invisible to the user, since
-    // nothing here previously told it to check for updates.
-    const res = await fetch('dictionary.json', { cache: 'no-cache' });
-    if (!res.ok) return;
-    const fresh = await res.json();
-    for (const key of Object.keys(ABBREVIATION_EXPANSIONS)) delete ABBREVIATION_EXPANSIONS[key];
-    Object.assign(ABBREVIATION_EXPANSIONS, fresh);
-  } catch {
-    // Keep the inline copy above — better a possibly-stale dictionary than a broken tool.
-  }
-})();
-
+// There is no curated abbreviation dictionary anymore (removed along with dictionary.json and
+// its Python-side equivalent) — every term's full name/synonyms are resolved automatically
+// instead, by the local index server's on-demand AI lookup (indexer/ai_expansion.py) when a
+// backend is configured, or the last-resort UMLS/local-LLM tier below when it isn't. This
+// function always returns null so every `if (expansion)` branch downstream (the expansion tier,
+// the panel-candidate fallback) falls through cleanly, and the `!best && !expansion` gate on
+// that last-resort tier below is always eligible whenever `!best`.
 function expansionKey(term) {
   return stripAntiPrefix(stripIsotypeSuffix(term)).trim().toLowerCase();
 }
 
 function lookupExpansion(term) {
-  return ABBREVIATION_EXPANSIONS[expansionKey(term)] || null;
+  return null;
 }
 
 const EXPANSION_STOPWORDS = new Set(['anti', 'antibody']);
@@ -1113,12 +937,11 @@ function buildExpansionExpr(expansion, mode) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// Tier 4b: for a term with no entry in our own hand-curated ABBREVIATION_EXPANSIONS (tier 4
-// above), ask NLM's UMLS Metathesaurus what the abbreviation's spelled-out medical name is,
-// instead of giving up. UMLS aggregates from many source vocabularies (SNOMED CT, LOINC,
-// MeSH, etc.) that between them know a huge number of lab-shorthand terms our own list simply
-// hasn't been taught yet — this is what would have found "cTnT" -> "Troponin T" automatically,
-// without needing a manually-added dictionary entry first.
+// Last resort for any term the exact/broad/antigen/fused-anti/wordform tiers above couldn't
+// match on their own: ask NLM's UMLS Metathesaurus what the abbreviation's spelled-out medical
+// name is, instead of giving up. UMLS aggregates from many source vocabularies (SNOMED CT,
+// LOINC, MeSH, etc.) that between them know a huge number of lab-shorthand terms — this is what
+// finds "cTnT" -> "Troponin T" automatically, with no dictionary/curation involved at all.
 //
 // Unlike the LDT and FDA-PDF sites, UMLS's REST API sends Access-Control-Allow-Origin: *, so
 // this can be called directly from the browser — no proxy Worker needed.
@@ -1127,9 +950,8 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // known synonym/atom exactly) and only falls back to the looser default ("words": every word
 // in the search string must appear in the candidate name) if that finds nothing — same
 // most-precise-first philosophy as the openFDA tiers above. A concept resolved this way is
-// unverified (nobody has manually confirmed the match is right, unlike every entry in
-// ABBREVIATION_EXPANSIONS), so callers must label it as such rather than treating it as
-// equivalent to a curated entry.
+// unverified — nobody has manually confirmed the match is right — so callers must label it as
+// such rather than treating it as equivalent to a hand-checked entry.
 const UMLS_SEARCH_BASE = 'https://uts-ws.nlm.nih.gov/rest/search/current';
 
 async function lookupUmlsExpansion(term, umlsApiKey) {
@@ -1145,14 +967,14 @@ async function lookupUmlsExpansion(term, umlsApiKey) {
       if (hit) return { full: hit.name };
     } catch {
       // Network failure, CORS block if a key is somehow malformed, etc. — fall through to the
-      // next searchType, and ultimately to the caller's own fallback (panel candidates or a
-      // plain 0-result return), rather than breaking the whole biomarker search.
+      // next searchType, and ultimately to the caller's own plain 0-result return, rather than
+      // breaking the whole biomarker search.
     }
   }
   return null;
 }
 
-// Alternative to UMLS above for the same "term isn't in the dictionary" gap, no NLM license or
+// Alternative to UMLS above for the same "couldn't resolve this term" gap, no NLM license or
 // multi-day wait required — a locally-running Ollama instance suggests the name instead. This
 // is a fundamentally different kind of unverified: UMLS returns an actual database lookup
 // (still automatic/unverified, but a real entry existed to find); an LLM GENERATES a plausible-
@@ -1260,13 +1082,10 @@ async function runOpenFdaQuery(expr, apiKey) {
 //
 // GUDID covers every medical device category FDA regulates, not just IVD tests — a bigger
 // collision surface than the 510(k) tiers above for short/bare abbreviations (confirmed: bare
-// "ana" matches an unrelated spinal implant system via a packaging-code fragment). Uses the
-// dictionary's spelled-out full name (or search override) instead of the bare typed term
-// whenever a dictionary entry exists, for the same reason a bare-abbreviation false positive
-// had to be fixed by preferring the full name elsewhere in this tool's history — length alone
-// isn't a safe signal (e.g. "psa" is also short but needs the bare abbreviation to find real
-// matches), so this can't be a blanket rule, only "prefer the safer alternative when one
-// exists."
+// "ana" matches an unrelated spinal implant system via a packaging-code fragment). Only ever
+// searched using a resolved expansion's spelled-out full name/synonyms, never the bare typed
+// term (see buildGudidExpr below) — the same reason a bare-abbreviation false positive had to
+// be fixed by preferring the full name elsewhere in this tool's history.
 const GUDID_ENDPOINT = 'https://api.fda.gov/device/udi.json';
 const GUDID_FIELDS = ['device_description', 'brand_name'];
 const GUDID_KNUM_RE = /^(K\d{6}|DEN\d{6})$/i;
@@ -1279,48 +1098,20 @@ function gudidTokenGroupClause(tokens) {
   return '(' + tokens.map(tok => gudidFieldOr(f => `${f}:"${tok}"`)).join(' AND ') + ')';
 }
 
-function buildGudidExpr(term, expansion) {
-  // Raw dictionary-key-length abbreviations default to EXCLUDED here, opt-in only via
-  // gudidRawTermSafe — the opposite polarity from every other tier in this tool, and
-  // deliberately so: confirmed via curl that bare "cl" against GUDID's device_description
-  // pulls in dental porcelain shade codes, a spinal implant system, dental handpieces, and a
-  // chemistry analyzer calibration standard — GUDID spans every device category FDA regulates
-  // (unlike 510(k)'s more IVD-skewed corpus this tool has relied on all along), so a bare
-  // 2-3 letter abbreviation is far more likely to collide with an unrelated product code or
-  // spec fragment than to be safe. Opt-in (rather than the per-entry opt-out this started as)
-  // because opt-out only protects entries someone happens to have already tested — the "cl"
-  // collision above was found by accident, not by design, which is exactly the failure mode
-  // an opt-out default can't catch for the dictionary's other 50+ untested entries.
-  // gudidRawTermSafe is verified true today only for 'dsdna': K213403's real GUDID description
-  // says fused "dsDNA", which neither dictionary alternate ("Double-Stranded DNA"/"DS DNA")
-  // would match on its own, so relying on the dictionary phrase alone silently lost this exact
-  // match — and "dsDNA" itself, a fused 5-character compound word, doesn't read as a generic
-  // product code/spec fragment the way "cl"/"ana"/"sm" do, confirmed via curl to be clean.
+function buildGudidExpr(expansion) {
+  // GUDID is only ever searched using an AI-resolved expansion's full name/synonyms — never
+  // the bare/raw typed term. This used to default to "search the raw term" whenever no
+  // dictionary entry existed for it — confirmed via curl that this exact fallback is what let
+  // bare "cl" collide with dental porcelain shade codes, a spinal implant system, dental
+  // handpieces, and a chemistry analyzer calibration standard in GUDID's device_description,
+  // which spans every device category FDA regulates, not just IVD. Now that there's no
+  // dictionary to occasionally suppress that fallback by merely existing, it's removed
+  // entirely rather than kept as a default: a term with no resolved expansion just isn't
+  // searched against GUDID at all (fail closed, not fail open).
+  if (!expansion) return null;
   const groups = [];
-  if (expansion && expansion.gudidRawTermSafe) {
-    const antigen = stripAntiPrefix(stripIsotypeSuffix(term)).trim();
-    if (antigen) groups.push(...antigen.split('/').map(splitExpansionTokens).filter(g => g.length));
-  } else if (!expansion) {
-    // No dictionary entry at all for this term — nothing safer to fall back to, so still try
-    // the raw term, same last-resort posture the 510(k) tiers already take for undictionaried
-    // terms. A smaller, more self-limiting risk surface than the dictionary's own short keys,
-    // since it only applies to whatever a user actually typed, not a curated abbreviation list.
-    const antigen = stripAntiPrefix(stripIsotypeSuffix(term)).trim();
-    if (antigen) groups.push(...antigen.split('/').map(splitExpansionTokens).filter(g => g.length));
-  }
-  if (expansion) {
-    // gudidSearch overrides search/full for GUDID specifically, when the shared alternate
-    // wording is unsafe against GUDID's much broader (non-IVD) corpus in a way it isn't
-    // against 510(k)'s. Confirmed via curl: 'dsdna's normal "Double-Stranded DNA" alternate
-    // matched K222779 ("Revogene", a PCR molecular-diagnostics instrument) purely because its
-    // generic description explains that PCR amplifies "double stranded DNA" — a real semantic
-    // collision (the same three words mean the SLE autoantigen in serology and the ordinary
-    // PCR substrate in molecular biology), not a token/abbreviation coincidence, so none of
-    // this tool's other cross-field safeguards catch it. "DS DNA" alone tested clean (5/5
-    // genuine, including K041628) and is what gudidSearch keeps here instead.
-    const phrase = expansion.gudidSearch || expansion.search || expansion.full;
-    if (phrase) groups.push(...phrase.split('/').map(splitExpansionTokens).filter(g => g.length));
-  }
+  const phrase = expansion.search || expansion.full;
+  if (phrase) groups.push(...phrase.split('/').map(splitExpansionTokens).filter(g => g.length));
   if (!groups.length) return null;
   const seen = new Set();
   const uniqueGroups = groups.filter(g => {
@@ -1393,27 +1184,15 @@ async function fetchGudidKNumbers(expr, apiKey) {
   return kNumbers;
 }
 
-// Tier 5 (last resort, unconfirmed): some antigens are only ever cleared bundled inside a
-// generic multi-antigen panel kit (e.g. an "8Ag" autoimmune liver profile), and FDA's
-// structured fields never name each individual antigen in a panel — only the actual summary
-// document does. No amount of field-search restructuring can find that, since the word
-// genuinely isn't in device_name/openfda.device_name/statement_or_summary at all. Instead of
-// claiming a match, surface plausible panel devices (a generic panel/profile word plus a
-// disease-category word from the biomarker's dictionary entry) as unconfirmed candidates for
-// the user to verify manually, e.g. via Check Measurand.
-const PANEL_INDICATOR_WORDS = ['profile', 'panel', 'blot', 'multiplex', 'euroline'];
+// The panel-candidate fallback tier that used to live here depended on each dictionary entry's
+// curated `panel` category tags (disease-category keywords like "connective tissue"/"ena") to
+// build its search — those tags don't exist anymore now that the dictionary is gone, and having
+// the AI guess a clinical category is a fuzzier, more hallucination-prone task than resolving a
+// full name/synonyms, so this tier isn't automatically replaced.
 
-function buildPanelExpr(categoryWords) {
-  if (!categoryWords || !categoryWords.length) return null;
-  const panelClause = (f) => '(' + PANEL_INDICATOR_WORDS.map(w => `${f}:"${w}"`).join(' OR ') + ')';
-  const categoryClause = (f) => '(' + categoryWords.map(w => `${f}:"${w}"`).join(' OR ') + ')';
-  const fields = ['device_name', 'openfda.device_name']; // statement_or_summary is just a flag, not real text
-  return '(' + fields.map(f => `(${panelClause(f)} AND ${categoryClause(f)})`).join(' OR ') + ')';
-}
-
-// Combines two query results into one, deduplicated by k_number. Used to UNION a
-// dictionary-verified alternate wording's matches into whatever an earlier, less-complete
-// tier already found, rather than discarding them — see the comment in fetchBiomarker below
+// Combines two query results into one, deduplicated by k_number. Used to UNION an alternate
+// wording's matches (fused-word, wordform, or a resolved expansion) into whatever an earlier,
+// less-complete tier already found, rather than discarding them — see the comment in fetchBiomarker below
 // for why that matters. total uses the deduplicated record count as a floor: correct
 // whenever neither individual query hit the MAX_RECORDS cap (records.length === total for
 // each), which is true for the large majority of real searches; if one did hit the cap, this
@@ -1469,7 +1248,7 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, localLlmU
     try {
       return await fetchFromLocalIndex(localIndexUrl, term);
     } catch (e) {
-      // Any local-index failure (server down mid-search, term not in its dictionary, etc.)
+      // Any local-index failure (server down mid-search, AI expansion lookup failed, etc.)
       // falls through to the live tiers below rather than failing the whole search.
     }
   }
@@ -1532,38 +1311,19 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, localLlmU
   // not the default, because doing it universally resurfaces a *different*, pre-existing
   // weakness for some entries: confirmed via curl that 'bp180' ("Bullous Pemphigoid 180") also
   // matches K193115, a real device that only tests BP230 — its openfda.device_name is a
-  // classification string shared verbatim by every device under that product code
-  // ("...Bullous Pemphigoid 180 And Bullous Pemphigoid 230"), regardless of which one a given
-  // submission actually covers, so a token/phrase match against that field alone can't tell
-  // the siblings apart. That risk already existed before this tier ever ran for 'bp180' — the
-  // old "stop at the first success" design just never exercised it, since the antigen-only
-  // tier already found something. alwaysCheck is reserved for entries individually verified to
-  // be safe here: confirmed for 'cl'/'cardiolipin', where K223093, a real cleared
-  // Anticardiolipin IgG/IgM device, has no "cardiolipin" text anywhere in device_name (it just
-  // says "Aptiva APS IgG Reagent...") — its only searchable evidence is the fused, hyphen-less
-  // classification word "Anticardiolipin," a form no earlier tier's tokenization of the user's
-  // typed term would ever produce, and not one shared with any other distinct antigen.
-  if (expansion) {
-    const expansionExpr = buildExpansionExpr(expansion, antiRequirementMode(searchTerm));
-    if (expansionExpr && (!best || expansion.alwaysCheck)) {
-      await sleep(150);
-      const exp = await runOpenFdaQuery(expansionExpr, apiKey);
-      if (exp.total > 0) {
-        best = best ? { ...mergeQueryResults(best, exp), matchMode: best.matchMode } : { ...exp, matchMode: 'expansion' };
-      }
-    }
-  }
+  // The dictionary-driven expansion tier that used to run here (with a per-entry alwaysCheck
+  // opt-in to merge it in even when an earlier tier already matched) is gone along with the
+  // dictionary itself — `expansion` is always null now (see lookupExpansion above), so the only
+  // remaining source of an alternate full-name/synonym search is the AI last-resort tier below.
 
-  // Only reached for terms with no entry in our own curated dictionary at all — an existing
-  // (even if unhelpful) local entry is trusted over an unverified external lookup. Kept as a
-  // last resort only (not unioned into an already-successful earlier tier, unlike alwaysCheck
-  // dictionary entries above): neither a UMLS-resolved nor an AI-suggested name is manually
-  // verified against real openFDA data the way every ABBREVIATION_EXPANSIONS entry is, so
-  // neither carries the same basis for trusting it enough to broaden an already-confirmed
-  // match. Local LLM tried first when configured — it's the one a user chose specifically to
-  // skip UMLS's licensing wait, so prefer it over falling through to UMLS by default; either
-  // way, only one is used per search, not both.
-  if (!best && !expansion) {
+  // Tried for every term now, not just ones missing a dictionary entry (there's no dictionary
+  // left to have an entry in) — but still only as a last resort, not unioned into an
+  // already-successful earlier tier: neither a UMLS-resolved nor an AI-suggested name is
+  // manually verified against real openFDA data, so neither carries the same basis for trusting
+  // it enough to broaden an already-confirmed match. Local LLM tried first when configured —
+  // it's the one a user chose specifically to skip UMLS's licensing wait, so prefer it over
+  // falling through to UMLS by default; either way, only one is used per search, not both.
+  if (!best) {
     let resolvedExpansion = null;
     let resolvedMode = null;
 
@@ -1605,7 +1365,13 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, localLlmU
   // silently into the count. Failures here shouldn't fail the whole search.
   let gudidMatches = [];
   try {
-    const gudidExpr = buildGudidExpr(searchTerm, expansion);
+    // No curated dictionary expansion exists anymore to search GUDID with regardless of
+    // whether an earlier tier already matched — only resultExpansion (the AI-resolved name,
+    // set above when the last-resort tier succeeds) is available here now. This means GUDID's
+    // cross-check no longer runs for a term that already matched via an earlier tier without
+    // needing AI help — an accepted narrowing for this standalone browser mode (see README);
+    // the backend-connected mode resolves and caches an expansion for every term regardless.
+    const gudidExpr = buildGudidExpr(resultExpansion);
     if (gudidExpr) {
       await sleep(150);
       const found = await fetchGudidKNumbers(gudidExpr, apiKey);
@@ -1624,16 +1390,7 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, localLlmU
 
   if (best) return { ...best, expansion: resultExpansion, gudidMatches };
 
-  if (expansion && expansion.panel) {
-    const panelExpr = buildPanelExpr(expansion.panel);
-    if (panelExpr) {
-      await sleep(150);
-      const panel = await runOpenFdaQuery(panelExpr, apiKey);
-      if (panel.total > 0) return { ...exact, matchMode: 'exact', expansion, panelCandidates: panel.records.slice(0, 20), gudidMatches };
-    }
-  }
-
-  return { ...exact, matchMode: 'exact', expansion, gudidMatches };
+  return { ...exact, matchMode: 'exact', expansion: resultExpansion, gudidMatches };
 }
 
 // --- LDT (NY State CLEP) search ---------------------------------------------------------
@@ -1757,7 +1514,6 @@ const HIGH_APPROVAL_THRESHOLD = 10;
 const MATCH_MODE_LABEL = {
   broad: 'Broad match',
   'antigen-only': 'Antigen-only match',
-  expansion: 'Expanded-name match',
   umls: 'UMLS-resolved match',
   'ai-suggested': 'AI-suggested match',
   'fused-anti': 'Fused-word match',
@@ -1766,9 +1522,8 @@ const MATCH_MODE_LABEL = {
 const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
   'antigen-only': 'No match including the Ig-class (IgG/IgA/IgM) — matched on the antigen name alone, since many FDA device names omit the isotype. The count may include products that are not isotype-specific.',
-  expansion: 'No match on the abbreviation itself — matched by searching its spelled-out full name instead, since some FDA device names use the full term rather than the shorthand.',
-  umls: 'This abbreviation isn\'t in this tool\'s own built-in dictionary — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
-  'ai-suggested': 'This abbreviation isn\'t in this tool\'s own built-in dictionary — the name searched instead was GENERATED by a local AI model, not looked up from a database. Unlike a UMLS-resolved match, this is a guess that can sound confident while being wrong. Verify this one carefully, e.g. via Check Measurand.',
+  umls: 'No match on the abbreviation itself — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
+  'ai-suggested': 'No match on the abbreviation itself — the name searched instead was GENERATED by a local AI model, not looked up from a database. Unlike a UMLS-resolved match, this is a guess that can sound confident while being wrong. Verify this one carefully, e.g. via Check Measurand.',
   'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
   wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.'
 };

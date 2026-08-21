@@ -1,45 +1,40 @@
 """Python port of the GUDID cross-check (buildGudidExpr/fetchGudidKNumbers) in
-FDA510kBiomarkerSearch.html — see that file's own comment for the full story,
-including the precision corrections found during testing:
+FDA510kBiomarkerSearch.html.
 
-1. gudidRawTermSafe is opt-in, not opt-out: a bare short dictionary key (e.g. "cl")
-   collides badly against GUDID's device_description, which spans every device
-   category FDA regulates, not just IVD (confirmed: dental porcelain, a spinal
-   implant, dental handpieces, a chemistry calibrator). Only 'dsdna' is currently
-   verified safe to search by its raw fused form.
-2. gudidSearch overrides search/full for GUDID specifically, when the dictionary's
-   normal alternate wording is unsafe there in a way it isn't against 510(k) (e.g.
-   'dsdna's "Double-Stranded DNA" collided with a PCR instrument's generic
-   methodology text — a real semantic ambiguity, not a token coincidence).
-3. Bare-instrument exclusion: confirmed via curl that a PCR instrument ("Revogene",
-   K222779) matches "dsDNA" purely through generic methodology text ("...specific
-   sequences of double stranded DNA, amplified from a biological source...") — its
-   product_codes/gmdn_terms are pure hardware classification ("Real Time Nucleic
-   Acid Amplification System"), with no antibody/antigen/reagent language anywhere
-   in the record. Excludes a hit only when its classification data reads as bare
-   instrumentation with zero reagent-type language — deliberately narrow, not "does
-   the classification name this exact analyte": an earlier, stricter version of
-   this check (requiring the classification to name the specific analyte) also
-   silently dropped confirmed genuine matches like K030929 ("ANA Detect ELISA",
-   whose own device_description explicitly lists "dsDNA" as one of 8 profiled
-   antigens) — FDA's product code for bundled ANA panels is generically "Multiple
-   antinuclear antibody (ANA)..., " never naming individual antigens, so requiring
-   exact-analyte corroboration would exclude every bundled panel, which is exactly
-   the category GUDID's free-text description exists to catch in the first place.
+GUDID is only ever searched using an AI-resolved expansion's full name/synonyms — never the
+bare/raw term a user typed. This used to be a curated, opt-in exception (gudidRawTermSafe) for
+one dictionary entry ('dsdna'); every other entry was safe from raw-term search only as a side
+effect of merely existing in the dictionary at all (a term with no entry fell into a raw-term
+search branch by default). Confirmed via testing that raw-term search is what caused "cl" to
+collide with dental porcelain, a spinal implant, and dental handpieces in GUDID's free-text
+device_description, which spans every device category FDA regulates, not just IVD. Now that
+there's no curated dictionary to accidentally provide that protection, raw-term search is
+removed entirely rather than re-implemented as a default — a term with no resolved expansion
+simply isn't searched against GUDID at all (fail closed, not fail open).
 
-Treated as an UNCONFIRMED source in the caller (indexer/crawl.py), not merged into
-confirmed matches — found via testing that some 510(k) clearances cover a whole
-product family (e.g. Abaxis's Piccolo panel discs), so a GUDID link to a K-number
-doesn't always mean the specific device shown contains the analyte, only that
-something under its clearance does.
+Bare-instrument exclusion (_record_is_bare_instrument, below) is the other precision fix, and is
+unrelated to the above — confirmed via curl that a PCR instrument ("Revogene", K222779) matches
+"dsDNA" purely through generic methodology text ("...specific sequences of double stranded DNA,
+amplified from a biological source...") — its product_codes/gmdn_terms are pure hardware
+classification ("Real Time Nucleic Acid Amplification System"), with no antibody/antigen/reagent
+language anywhere in the record. Excludes a hit only when its classification data reads as bare
+instrumentation with zero reagent-type language — deliberately narrow, not "does the
+classification name this exact analyte": an earlier, stricter version of this check (requiring
+the classification to name the specific analyte) also silently dropped confirmed genuine matches
+like K030929 ("ANA Detect ELISA", whose own device_description explicitly lists "dsDNA" as one
+of 8 profiled antigens) — FDA's product code for bundled ANA panels is generically "Multiple
+antinuclear antibody (ANA)...," never naming individual antigens, so requiring exact-analyte
+corroboration would exclude every bundled panel, which is exactly the category GUDID's free-text
+description exists to catch in the first place.
+
+Treated as an UNCONFIRMED source in the caller (indexer/lookup.py), not merged into confirmed
+matches — found via testing that some 510(k) clearances cover a whole product family (e.g.
+Abaxis's Piccolo panel discs), so a GUDID link to a K-number doesn't always mean the specific
+device shown contains the analyte, only that something under its clearance does.
 """
 import re
 
-from indexer.matching import (
-    split_tokens,
-    strip_anti_prefix,
-    strip_isotype_suffix,
-)
+from indexer.matching import split_tokens
 from indexer.openfda import MAX_RECORDS, PAGE_LIMIT, fetch_with_retry
 
 GUDID_ENDPOINT = "https://api.fda.gov/device/udi.json"
@@ -50,22 +45,13 @@ INSTRUMENT_SIGNAL_WORDS = {"system", "instrument", "analyzer", "analyser", "ampl
 REAGENT_SIGNAL_WORDS = {"antibody", "antibodies", "antigen", "reagent", "elisa", "immunoassay"}
 
 
-def _search_token_groups(term: str, expansion: dict | None) -> list[list[str]]:
-    groups: list[list[str]] = []
-
-    if expansion and expansion.get("gudidRawTermSafe"):
-        antigen = strip_anti_prefix(strip_isotype_suffix(term)).strip()
-        if antigen:
-            groups.extend(g for g in (split_tokens(p) for p in antigen.split("/")) if g)
-    elif not expansion:
-        antigen = strip_anti_prefix(strip_isotype_suffix(term)).strip()
-        if antigen:
-            groups.extend(g for g in (split_tokens(p) for p in antigen.split("/")) if g)
-
-    if expansion:
-        phrase = expansion.get("gudidSearch") or expansion.get("search") or expansion.get("full")
-        if phrase:
-            groups.extend(g for g in (split_tokens(p) for p in phrase.split("/")) if g)
+def _search_token_groups(expansion: dict | None) -> list[list[str]]:
+    if not expansion:
+        return []
+    phrase = expansion.get("search") or expansion.get("full")
+    if not phrase:
+        return []
+    groups = [g for g in (split_tokens(p) for p in phrase.split("/")) if g]
 
     seen = set()
     unique_groups = []
@@ -86,8 +72,8 @@ def _gudid_token_group_clause(tokens: list[str]) -> str:
     return "(" + " AND ".join(_gudid_field_or(lambda f, tok=tok: f'{f}:"{tok}"') for tok in tokens) + ")"
 
 
-def build_gudid_expr(term: str, expansion: dict | None) -> str | None:
-    groups = _search_token_groups(term, expansion)
+def build_gudid_expr(expansion: dict | None) -> str | None:
+    groups = _search_token_groups(expansion)
     if not groups:
         return None
     return "(" + " OR ".join(_gudid_token_group_clause(g) for g in groups) + ")"
@@ -112,13 +98,13 @@ def _record_is_bare_instrument(record: dict) -> bool:
     return has_instrument_signal and not has_reagent_signal
 
 
-async def fetch_gudid_k_numbers(client, term: str, expansion: dict | None,
+async def fetch_gudid_k_numbers(client, expansion: dict | None,
                                  api_key: str | None = None) -> set[str]:
     """Returns the set of K/DEN-numbers found via GUDID's premarket_submissions link, after the
     classification-corroboration check above — not full device records, since the caller fetches
     the actual 510(k) records for these numbers via a normal k_number query.
     """
-    expr = build_gudid_expr(term, expansion)
+    expr = build_gudid_expr(expansion)
     if not expr:
         return set()
 
