@@ -17,6 +17,17 @@ import httpx
 
 UMLS_SEARCH_BASE = "https://uts-ws.nlm.nih.gov/rest/search/current"
 UNKNOWN_RE = re.compile(r"^UNKNOWN\b", re.IGNORECASE)
+THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+# Hybrid-reasoning models (Qwen3, DeepSeek-R1, QwQ, etc.) generate a long internal chain-of-
+# thought before their final answer by default — confirmed directly against qwen3:4b, which
+# took well over 20s just to decide how to say "hello" in one word. That reasoning phase, not
+# model/network failure, is what was silently timing out and getting cached as "AI found
+# nothing" here. `think: False` asks Ollama to skip it for models that support the option; the
+# THINK_BLOCK_RE strip below is a defensive fallback for any model/version that emits a
+# <think>...</think> block in `response` regardless. Timeout is raised well past the old 20s to
+# leave real margin for slow CPU inference even with reasoning disabled.
+LOCAL_LLM_TIMEOUT = 90.0
 
 
 async def lookup_umls_expansion(client: httpx.AsyncClient, term: str,
@@ -59,13 +70,13 @@ async def lookup_local_llm_expansion(client: httpx.AsyncClient, term: str, base_
     try:
         res = await client.post(
             f"{base_url}/api/generate",
-            json={"model": model, "prompt": local_llm_prompt(term), "stream": False},
-            timeout=20.0,
+            json={"model": model, "prompt": local_llm_prompt(term), "stream": False, "think": False},
+            timeout=LOCAL_LLM_TIMEOUT,
         )
         if res.status_code != 200:
             return None
         data = res.json()
-        text = (data.get("response") or "").strip()
+        text = THINK_BLOCK_RE.sub("", data.get("response") or "").strip()
         if not text or UNKNOWN_RE.match(text):
             return None
         lines = [line.strip() for line in text.split("\n") if line.strip()]

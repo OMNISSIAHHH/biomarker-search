@@ -989,18 +989,26 @@ Line 2 (optional, only if you know one or more): up to 3 common alternate names 
 If you do not know this specific term with real confidence, respond with exactly this and nothing else: UNKNOWN`;
 }
 
+// Hybrid-reasoning models (Qwen3, DeepSeek-R1, QwQ, etc.) generate a long internal chain-of-
+// thought before their final answer by default — confirmed directly against qwen3:4b, which
+// took well over 20s just to decide how to say "hello" in one word. That reasoning phase, not
+// a model/network failure, is what was silently timing out and getting treated as "no match"
+// here. `think: false` asks Ollama to skip it for models that support the option; the
+// <think>...</think> strip below is a defensive fallback for any model/version that emits one
+// in `response` regardless. Timeout is raised well past the old 20s for real margin on slow
+// CPU inference even with reasoning disabled.
 async function lookupLocalLlmExpansion(term, baseUrl, model) {
   if (!baseUrl || !model) return null;
   try {
     const res = await fetch(`${baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt: localLlmPrompt(term), stream: false }),
-      signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({ model, prompt: localLlmPrompt(term), stream: false, think: false }),
+      signal: AbortSignal.timeout(90000),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const text = (data.response || '').trim();
+    const text = (data.response || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     if (!text || /^UNKNOWN\b/i.test(text)) return null;
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
     const full = lines[0];
