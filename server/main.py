@@ -49,7 +49,13 @@ def get_conn() -> sqlite3.Connection:
 
 @app.get("/health")
 def health():
-    return {"status": "ok" if DB_PATH.exists() else "no-index", "db_path": str(DB_PATH)}
+    # Always "ok" once this endpoint is reachable at all: /biomarker/{term} no longer requires
+    # a pre-built index (it creates index.sqlite3 lazily on first use, per indexer/lookup.py),
+    # so a missing file on a fresh setup isn't actually a reason to distrust this server — the
+    # old "no-index" status was a leftover from the previous crawl-first design and, left in
+    # place, made the browser tool wrongly skip this server on every fresh setup with no prior
+    # searches yet.
+    return {"status": "ok", "db_path": str(DB_PATH)}
 
 
 @app.get("/biomarker/{term}")
