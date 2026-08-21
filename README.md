@@ -9,8 +9,7 @@ gauge whether a biomarker is a crowded space (lots of existing tests) or an open
 This has two parts: a browser interface (no install, no coding) and a local cross-check backend
 (a one-time Python setup). **Running both together is the default, intended way to use this
 tool** — not an optional add-on layered on top. The backend finds real FDA approvals that the
-browser interface structurally cannot see on its own (see
-[Deeper cross-checked results](#deeper-cross-checked-results-default-workflow)). The browser
+browser interface structurally cannot see on its own (see [Setup](#setup) below). The browser
 interface also works entirely on its own with zero setup, which is genuinely useful for a fast
 first look or when Python isn't available — but treat that as the reduced/fallback mode, not
 the normal way to run this.
@@ -20,23 +19,21 @@ the normal way to run this.
 
 ## Contents
 
-- [Getting started](#getting-started)
+- [Setup](#setup)
 - [Searching for a biomarker](#searching-for-a-biomarker)
 - [Reading your results](#reading-your-results)
-- [Automatic abbreviation lookup (UMLS or a local AI model)](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
 - [Sorting your results](#sorting-your-results)
 - [Filtering and narrowing your results](#filtering-and-narrowing-your-results)
 - [Exporting to Excel](#exporting-to-excel)
 - [Checking a specific device's paperwork ("Measurand")](#checking-a-specific-devices-paperwork-measurand)
+- [Automatic abbreviation lookup (UMLS or a local AI model)](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
 - [Searching lab-developed tests (LDT) in New York State](#searching-lab-developed-tests-ldt-in-new-york-state)
-- [If nothing turns up](#if-nothing-turns-up)
-- [Deeper cross-checked results (default workflow)](#deeper-cross-checked-results-default-workflow)
 - [Things to keep in mind](#things-to-keep-in-mind)
 - [Glossary](#glossary)
 
-## Getting started
+## Setup
 
-**Part 1 — the browser interface** (always needed, no install):
+### Part 1 — the browser interface (always needed, no install)
 
 1. Go to the top of this page and click the green **Code** button, then **Download ZIP**.
    (If someone already sent you a folder with these files instead, skip this step.)
@@ -46,14 +43,82 @@ the normal way to run this.
    in your default web browser. Every time you want to use the tool again, just double-click
    that same file.
 
-**Part 2 — the cross-check backend** (default workflow — do this next, not "later"):
+### Part 2 — the cross-check backend (default workflow — do this next, not "later")
 
-Follow [Deeper cross-checked results](#deeper-cross-checked-results-default-workflow) now, as
-part of this same setup. It's a one-time Python install plus a background crawl, and it's what
-makes the results in Part 1 actually reliable — the plain browser search misses real FDA
-approvals in ways that are structural, not occasional (bundled multi-antigen kits that never
-name the biomarker anywhere it can see). Skip it only if you just want a fast, no-install first
-look and understand the results will be less complete.
+This is the default, intended way to run this tool — not an advanced add-on for power users.
+Part 1 alone is a reduced/fallback mode: it works with no setup at all, which is genuinely
+useful for a fast first look or when Python isn't available, but it misses real approvals in
+ways that are structural, not edge cases (see below). This local backend is what makes results
+reliable, and it's faster, not slower, once it's set up. It's a background crawl that builds a
+local database file, which a small local server then answers searches from. It does two
+different kinds of things:
+
+**Finds results Part 1 structurally can't**, by reading every candidate device's
+decision-summary PDF, not just its searchable device-name text:
+
+- **Bundled panel reagents.** Some devices measure a biomarker as part of a multi-antigen panel
+  kit, but never name that biomarker anywhere in FDA's own searchable device data — the only
+  place it's stated is inside the device's own decision-summary PDF. This backend reads every
+  device's cited "predicate" (the earlier device it claims to be equivalent to) out of that PDF,
+  and if a device cites an already-confirmed match as its predicate, it's surfaced too — tagged
+  **"inferred via predicate"**, shown separately from confirmed results, same treatment as
+  "possible panel match" (see [Reading your results](#reading-your-results)) — not counted in
+  the totals, since a cited predicate is a strong hint, not proof of an identical panel, so it's
+  still worth a manual check.
+
+**Precomputes results Part 1 already finds, just faster.** The **alternate wordform match** and
+**found via device registry** checks (see [Reading your results](#reading-your-results)) don't
+need any PDF reading — they're identical logic to the plain browser search, just run once
+during the crawl instead of fresh on every search. Without this backend running, the browser
+has to make several extra network calls per biomarker to compute these on the spot, which
+measurably slows it down (roughly 2-3x per biomarker in testing); the local server instead
+reads the already-computed answer straight from its local file, so search speed there doesn't
+depend on how many live FDA API calls a term happens to need.
+
+This is 510(k)-only, same as the browser search — it does not include PMA (Premarket Approval,
+for higher-risk Class III devices), which is a different FDA regulatory pathway outside this
+tool's scope.
+
+Fetching and reading thousands of PDF documents for the predicate-chain part is what makes this
+too slow to do live during a search — so the whole thing runs as a separate one-time (well,
+periodic) crawl instead.
+
+**Setup** (one-time, from the repo root, in a terminal):
+```bash
+pip install -r indexer/requirements.txt
+pip install -r server/requirements.txt
+python -m indexer.crawl
+```
+The crawl can take a while the first time (it's reading real PDFs one at a time, politely
+rate-limited) — it prints progress as it goes. **Re-run it whenever you pull an update to this
+repo** (it skips PDFs it's already fetched, so a re-run is fast) — the crawled database only
+reflects whatever dictionary/matching code was running when it was last built, so a stale crawl
+silently shows older, less complete results than the current code actually finds. Add
+`--api-key YOUR_OPENFDA_KEY` to go faster.
+
+**Running it:**
+```bash
+uvicorn server.main:app --reload
+```
+Then open **Settings** (gear icon) in the tool itself and enter the server's address (e.g.
+`http://localhost:8000`) in **Local index server URL**. From then on, searches automatically use
+the cross-checked results when the server is running, and fall back to the plain browser search
+whenever it's blank or not running — nothing else changes. A banner in the tool itself says
+"Running in fallback mode" until this is set.
+
+### Part 3 — optional extras
+
+Everything below is opt-in on top of Parts 1 and 2, each with its own short setup, covered in
+full later in this guide:
+
+- **[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)** —
+  look up the full name of a biomarker abbreviation this tool doesn't already recognize, via
+  either UMLS (a real medical terminology database, slower to set up) or a local AI model (no
+  license or waiting, but a guess instead of a lookup).
+- **["Check Measurand"](#checking-a-specific-devices-paperwork-measurand)** — confirm what a
+  specific device actually measures by reading its official FDA paperwork, not just its name.
+- **[LDT search](#searching-lab-developed-tests-ldt-in-new-york-state)** — check New York
+  State's separate database of lab-developed tests, for biomarkers with 0 FDA-cleared devices.
 
 ## Searching for a biomarker
 
@@ -133,35 +198,6 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
 None of these tags mean the result is wrong — they just tell you how confident the match is,
 so an exact match is more reliable than an "expanded-name match" or a "UMLS-resolved match."
 
-## Automatic abbreviation lookup (UMLS or a local AI model)
-
-This tool keeps its own small, hand-checked list mapping common lab-shorthand abbreviations
-(like "GADA" or "cTnT") to the full medical name FDA paperwork actually uses. But that list
-can't cover everything — if you search an abbreviation it doesn't recognize, two different
-optional ways exist to look up its full name automatically instead of just returning nothing.
-Both are opt-in, and if neither is set up, searches work exactly as before.
-
-**Option 1 — UMLS** (a real database, slower to set up): go to
-**[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in with an
-identity provider (Login.gov works if you don't have one already), and agree to the license
-terms — this is a real license request, so the National Library of Medicine reviews it by
-hand and it can take **up to 3 business days** before your account is approved. Once approved,
-sign in, open your profile, and generate an API key. Paste that key into **Settings** (gear
-icon) → **UMLS API key**. Unlike the LDT and Measurand features, this one needs no separate
-Worker setup — paste the key and it works. A match found this way is flagged
-**UMLS-resolved match** because, unlike every entry in the tool's own list, nobody has manually
-confirmed the looked-up name is correct — worth a quick sanity check, e.g. via
-**Check Measurand**.
-
-**Option 2 — a local AI model** (no license or waiting, but a guess instead of a lookup):
-install [Ollama](https://ollama.com), pull a small model (e.g. `ollama pull qwen3:4b`), and
-paste its address into **Settings** → **Local LLM URL** (usually `http://localhost:11434`) and
-the exact model name into **Local LLM model**. When both UMLS and a local model are configured,
-the local model is tried first. A match found this way is flagged **AI-suggested match** — a
-generated guess, not a database entry, so it deserves more skepticism than a UMLS-resolved
-match: a wrong answer from a model can sound exactly as confident as a right one. Always worth
-a sanity check, e.g. via **Check Measurand**, before trusting it.
-
 ## Sorting your results
 
 Above the table, there are two buttons:
@@ -224,9 +260,9 @@ between. It contains:
 - **Details** — one row per confirmed individual device found, across every biomarker you
   searched.
 - **Unconfirmed Matches** — every unconfirmed candidate from the tags above (possible panel
-  matches, devices found via the local index's predicate-chain crawl, and devices found via
-  the device registry), each labeled with its own Match Type column, kept in their own sheet
-  so they're never mistaken for a confirmed result.
+  matches, devices found via the cross-check backend's predicate-chain crawl, and devices found
+  via the device registry), each labeled with its own Match Type column, kept in their own
+  sheet so they're never mistaken for a confirmed result.
 
 If you ran the LDT cross-check (see below), two more sheets are added with those results —
 there's also a second **Export to Excel** button at the bottom of that table specifically, in
@@ -254,6 +290,35 @@ either, clicking **Check Measurand** will tell you it needs a Worker URL in Sett
 
 If you skip this setup, every other part of the tool still works fine — this is an optional
 extra layer of confirmation.
+
+## Automatic abbreviation lookup (UMLS or a local AI model)
+
+This tool keeps its own small, hand-checked list mapping common lab-shorthand abbreviations
+(like "GADA" or "cTnT") to the full medical name FDA paperwork actually uses. But that list
+can't cover everything — if you search an abbreviation it doesn't recognize, two different
+optional ways exist to look up its full name automatically instead of just returning nothing.
+Both are opt-in, and if neither is set up, searches work exactly as before.
+
+**Option 1 — UMLS** (a real database, slower to set up): go to
+**[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in with an
+identity provider (Login.gov works if you don't have one already), and agree to the license
+terms — this is a real license request, so the National Library of Medicine reviews it by
+hand and it can take **up to 3 business days** before your account is approved. Once approved,
+sign in, open your profile, and generate an API key. Paste that key into **Settings** (gear
+icon) → **UMLS API key**. Unlike the LDT and Measurand features, this one needs no separate
+Worker setup — paste the key and it works. A match found this way is flagged
+**UMLS-resolved match** because, unlike every entry in the tool's own list, nobody has manually
+confirmed the looked-up name is correct — worth a quick sanity check, e.g. via
+**Check Measurand**.
+
+**Option 2 — a local AI model** (no license or waiting, but a guess instead of a lookup):
+install [Ollama](https://ollama.com), pull a small model (e.g. `ollama pull qwen3:4b`), and
+paste its address into **Settings** → **Local LLM URL** (usually `http://localhost:11434`) and
+the exact model name into **Local LLM model**. When both UMLS and a local model are configured,
+the local model is tried first. A match found this way is flagged **AI-suggested match** — a
+generated guess, not a database entry, so it deserves more skepticism than a UMLS-resolved
+match: a wrong answer from a model can sound exactly as confident as a right one. Always worth
+a sanity check, e.g. via **Check Measurand**, before trusting it.
 
 ## Searching lab-developed tests (LDT) in New York State
 
@@ -284,63 +349,6 @@ LDT"** link appears, which opens a normal Google search in a new tab — this of
 actual lab offering it (national reference labs like ARUP, Mayo Clinic Laboratories, or LabCorp
 frequently show up this way).
 
-## Deeper cross-checked results (default workflow)
-
-This is the default, intended way to run this tool — not an advanced add-on for power users.
-The FDA 510(k) search by itself is a reduced/fallback mode: it works with no setup at all,
-which is genuinely useful for a fast first look or when Python isn't available, but it misses
-real approvals in ways that are structural, not edge cases (see below). This local backend is
-what makes results reliable, and it's faster, not slower, once it's set up (see below). It's a
-background crawl that builds a local database file, which a small local server then answers
-searches from. It does two different kinds of things:
-
-**Finds results the live search above structurally can't**, by reading every candidate
-device's decision-summary PDF, not just its searchable device-name text:
-
-- **Bundled panel reagents.** Some devices measure a biomarker as part of a multi-antigen panel
-  kit, but never name that biomarker anywhere in FDA's own searchable device data — the only
-  place it's stated is inside the device's own decision-summary PDF. This add-on reads every
-  device's cited "predicate" (the earlier device it claims to be equivalent to) out of that PDF,
-  and if a device cites an already-confirmed match as its predicate, it's surfaced too — tagged
-  **"inferred via predicate"**, shown separately from confirmed results, same treatment as
-  "possible panel match" above (not counted in the totals — a cited predicate is a strong hint,
-  not proof of an identical panel, so it's still worth a manual check).
-
-**Precomputes results the live search above already finds, just faster.** The **alternate
-wordform match** and **found via device registry** checks don't need any PDF reading — they're
-identical logic to the live search above, just run once during the crawl instead of fresh on
-every search. The live tool has to make several extra network calls per biomarker to compute
-these on the spot, which measurably slows it down (roughly 2-3x per biomarker in testing); the
-local server instead reads the already-computed answer straight from its local file, so search
-speed there doesn't depend on how many live FDA API calls a term happens to need.
-
-This is 510(k)-only, same as the search above — it does not include PMA (Premarket Approval,
-for higher-risk Class III devices), which is a different FDA regulatory pathway outside this
-tool's scope.
-
-Fetching and reading thousands of PDF documents for the predicate-chain part is what makes this
-too slow to do live during a search — so the whole thing runs as a separate one-time (well,
-periodic) crawl instead.
-
-**Setup** (one-time, from the repo root, in a terminal):
-```bash
-pip install -r indexer/requirements.txt
-pip install -r server/requirements.txt
-python -m indexer.crawl
-```
-The crawl can take a while the first time (it's reading real PDFs one at a time, politely
-rate-limited) — it prints progress as it goes, and is safe to re-run later to pick up new FDA
-filings (it skips PDFs it's already fetched). Add `--api-key YOUR_OPENFDA_KEY` to go faster.
-
-**Running it:**
-```bash
-uvicorn server.main:app --reload
-```
-Then open **Settings** (gear icon) in the tool itself and enter the server's address (e.g.
-`http://localhost:8000`) in **Local index server URL**. From then on, searches automatically use
-the deeper cross-checked results when the server is running, and fall back to the normal live
-search above whenever it's blank or not running — nothing else changes.
-
 ## Things to keep in mind
 
 - **"Cleared"** here always means the FDA's "Substantially Equivalent" decision — the normal
@@ -353,8 +361,8 @@ search above whenever it's blank or not running — nothing else changes.
   [FDA's own website](https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm).
 - Everything you type and any settings you enter (like a Worker URL or API key) are saved only
   inside your own browser, on your own computer — nothing is sent anywhere except directly to
-  the FDA (and, if you set them up, to New York's site, the FDA paperwork site, and NLM's UMLS
-  database).
+  the FDA (and, if you set them up, to New York's site, the FDA paperwork site, NLM's UMLS
+  database, and your own local backend/AI model).
 
 ## Glossary
 
@@ -379,7 +387,8 @@ Plain HTML/CSS/JS, no build tooling, no dependencies to install. Uses
 [Chart.js](https://www.chartjs.org/) for the chart and [SheetJS](https://sheetjs.com/) for
 Excel export, both loaded from a CDN. See [worker/README.md](worker/README.md) for the two
 optional Cloudflare Worker proxies. The UMLS lookup needs no proxy — its API sends CORS headers
-that allow calling it directly from the browser.
+that allow calling it directly from the browser. The cross-check backend (`indexer/` + `server/`)
+is a separate Python project — see [Setup](#setup) above.
 
 ## License
 
