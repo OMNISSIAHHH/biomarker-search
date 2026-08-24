@@ -258,9 +258,63 @@ def _extract_predicates(line_text: str) -> list[dict]:
     return []
 
 
+# --- OCR fallback for scanned (no text layer) PDFs ------------------------------------------
+# pypdf's extract_text() returns empty/near-empty output for pages that are pure page images —
+# a scanned paper document, common among older 510(k) submissions — since there's simply no
+# text layer to pull from, regardless of how good the extraction regex is. This only runs when
+# normal extraction comes back essentially empty, so it never adds latency for the large
+# majority of PDFs, which do have a real text layer.
+#
+# Optional: needs the Tesseract OCR engine installed as a separate system binary, not just a
+# pip package (see README.md for OS-specific install steps). If it isn't installed,
+# _ocr_available() returns False and this whole path is skipped silently — behavior is
+# identical to before this feature existed. This is a bonus path, never a requirement.
+MIN_TEXT_LENGTH_BEFORE_OCR = 50
+MAX_OCR_PAGES = 15  # bounds worst-case latency against a pathologically long scanned document
+OCR_RENDER_DPI = 200  # FDA scans are typically clean black-on-white text; enough for Tesseract
+                       # without the multi-second-per-page cost much higher DPI would add
+
+
+def _ocr_available() -> bool:
+    try:
+        import pytesseract
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
+def _ocr_pdf_pages(pdf_bytes: bytes) -> list[str]:
+    import io as _io
+
+    import pymupdf  # pure pip install, no separate system binary needed for rendering
+    import pytesseract
+    from PIL import Image
+
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        texts = []
+        for page in doc[:MAX_OCR_PAGES]:
+            pix = page.get_pixmap(dpi=OCR_RENDER_DPI)
+            img = Image.open(_io.BytesIO(pix.tobytes("png")))
+            texts.append(pytesseract.image_to_string(img))
+        return texts
+    finally:
+        doc.close()
+
+
 def extract_pdf(pdf_bytes: bytes) -> ExtractedPdf:
     reader = PdfReader(BytesIO(pdf_bytes))
     page_texts = [p.extract_text() or "" for p in reader.pages]
+
+    if len("".join(page_texts).strip()) < MIN_TEXT_LENGTH_BEFORE_OCR and _ocr_available():
+        try:
+            ocr_texts = _ocr_pdf_pages(pdf_bytes)
+            if len("".join(ocr_texts).strip()) >= MIN_TEXT_LENGTH_BEFORE_OCR:
+                page_texts = ocr_texts
+        except Exception:
+            pass  # OCR is a bonus path — never let a failure here break normal extraction
+
     line_text = "\n".join(page_texts)
     flattened = " ".join(line_text.split())
 

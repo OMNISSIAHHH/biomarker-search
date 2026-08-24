@@ -1,2 +1,5 @@
 httpx
 pypdf
+pymupdf
+pytesseract
+Pillow

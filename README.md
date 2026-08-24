@@ -101,6 +101,22 @@ it prints progress as it goes. **Re-run it periodically** to pick up newly-clear
 skips PDFs it's already fetched, so a re-run is fast). Add `--api-key YOUR_OPENFDA_KEY` to go
 faster.
 
+**Optional: OCR for scanned decision summaries.** Some older 510(k) submissions were scanned
+paper documents with no real text layer at all — no amount of parsing finds a Measurand or
+predicate table in an image. Install the free, open-source [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
+OCR engine and the crawl automatically falls back to it for exactly those documents (and only
+those — PDFs with a normal text layer are unaffected, so this adds no extra time for the large
+majority of devices):
+- **Windows**: download and run the installer from the
+  [UB-Mannheim Tesseract page](https://github.com/UB-Mannheim/tesseract/wiki), then make sure
+  its install folder (containing `tesseract.exe`, usually
+  `C:\Program Files\Tesseract-OCR`) is on your `PATH`.
+- **Mac**: `brew install tesseract`
+- **Linux**: `sudo apt install tesseract-ocr` (or your distro's equivalent)
+
+This is entirely optional — if Tesseract isn't installed, the crawl behaves exactly as it does
+today, just without recovering text from scanned documents.
+
 **Running it:**
 ```bash
 uvicorn server.main:app --reload
