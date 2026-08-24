@@ -11,27 +11,29 @@ and caches the result for next time. Only predicate-chain ("inferred via predica
 depend on the separate, biomarker-agnostic scope+PDF crawl (`python -m indexer.crawl`) having
 already been run — confirmed results work immediately either way.
 
-Run from the repo root: `uvicorn server.main:app --reload`. Set UMLS_API_KEY to enable automatic
-abbreviation resolution via UMLS:
-  UMLS_API_KEY=your-key-here uvicorn server.main:app --reload
-Or, for the Tavily+local-LLM crosscheck (see indexer/ai_expansion.py for why this is grounded in
-search results rather than the model's own recall), set all three of TAVILY_API_KEY,
-LOCAL_LLM_URL, and LOCAL_LLM_MODEL:
-  TAVILY_API_KEY=tvly-... LOCAL_LLM_URL=http://localhost:11434 LOCAL_LLM_MODEL=llama3.2:3b uvicorn server.main:app --reload
-Both can be set together — UMLS is tried first, Tavily+local-LLM is the fallback for whatever
-UMLS doesn't cover. Without either, searches still work for anything the exact/broad/antigen-
-only/fused-anti/wordform tiers can find on their own — just without an alternate name to fall
-back on.
+Run from the repo root: `uvicorn server.main:app --reload`. Configure via a .env file (copy
+.env.example to .env, fill in whichever keys you're using — .env is gitignored, so real values
+never get committed) or plain environment variables, either way: UMLS_API_KEY for UMLS lookup,
+or TAVILY_API_KEY + LOCAL_LLM_URL + LOCAL_LLM_MODEL for the Tavily+local-LLM crosscheck fallback
+(see indexer/ai_expansion.py for why this is grounded in search results rather than the model's
+own recall). Both can be set together — UMLS is tried first, Tavily+local-LLM is the fallback
+for whatever UMLS doesn't cover. Without either, searches still work for anything the exact/
+broad/antigen-only/fused-anti/wordform tiers can find on their own — just without an alternate
+name to fall back on.
 """
 import os
 import sqlite3
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from indexer.db import DB_PATH, connect
 from indexer.lookup import compute_and_cache_result, try_cached_result
+
+load_dotenv()  # loads a .env file in the repo root if present; a no-op otherwise (real env
+                # vars set another way still work fine without one)
 
 app = FastAPI(title="Biomarker Search Local Index")
 app.add_middleware(

@@ -16,16 +16,22 @@ per-term through indexer/lookup.py, called by the local server on each /biomarke
 resolved live on first search either way.
 
 Usage: python -m indexer.crawl [--api-key KEY] [--committees IM,CH]
+--api-key defaults to OPENFDA_API_KEY from a .env file (copy .env.example to .env) or the
+environment, if set.
 """
 import argparse
 import asyncio
+import os
 from datetime import datetime, timezone
 
 import httpx
+from dotenv import load_dotenv
 
 from indexer import db, pdf_extract
 from indexer.openfda import DEVICE_510K, fetch_all_in_scope
 from indexer.scope import ADVISORY_COMMITTEES
+
+load_dotenv()  # loads a .env file in the repo root if present; a no-op otherwise
 
 
 async def populate_scope_devices(client: httpx.AsyncClient, conn, committees: list[str],
@@ -96,7 +102,11 @@ async def run(committees: list[str], api_key: str | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Crawl and index FDA 510(k) data for the biomarker search tool.")
-    parser.add_argument("--api-key", default=None, help="openFDA API key (optional, raises rate limits).")
+    parser.add_argument(
+        "--api-key", default=os.environ.get("OPENFDA_API_KEY"),
+        help="openFDA API key (optional, raises rate limits). Defaults to OPENFDA_API_KEY from "
+             "the environment or a .env file.",
+    )
     parser.add_argument(
         "--committees", default=",".join(ADVISORY_COMMITTEES),
         help=f"Comma-separated advisory committee codes to crawl (default: {','.join(ADVISORY_COMMITTEES)}).",
