@@ -155,7 +155,8 @@ full later in this guide:
 - **["Check Measurand"](#checking-a-specific-devices-paperwork-measurand)** — confirm what a
   specific device actually measures by reading its official FDA paperwork, not just its name.
 - **[LDT search](#searching-lab-developed-tests-ldt-in-new-york-state)** — check New York
-  State's separate database of lab-developed tests, for biomarkers with 0 FDA-cleared devices.
+  State's separate database of lab-developed tests, for biomarkers with few or no FDA-cleared
+  devices.
 
 ## Searching for a biomarker
 
@@ -377,9 +378,10 @@ it too.
 
 **To search it directly:** click the **LDT** tab (next to FDA 510(k)) and search the same way.
 
-**To check automatically after an FDA search:** if any of your biomarkers showed 0 FDA-cleared
-devices, a button appears below the FDA results offering to check all of them against New
-York's list in one pass.
+**To check automatically after an FDA search:** if any of your biomarkers showed 2 or fewer
+FDA-cleared devices, a button appears below the FDA results offering to check all of them
+against New York's list in one pass — a low-but-nonzero count can still point to a real
+LDT-only opportunity, not just a strict zero.
 
 **One-time setup required:** same reason as the Measurand feature above — New York's website
 needs a small free Worker set up once before this will work. See

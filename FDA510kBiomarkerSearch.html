@@ -271,8 +271,8 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
 
     <div class="card" id="crossCard" style="display:none">
       <span class="captag">Table 2</span>
-      <div class="stitle">LDT cross-check — biomarkers with 0 FDA approvals</div>
-      <div class="hint" style="margin:-6px 0 12px">Same NY State LDT search as above, run automatically for every biomarker that showed 0 cleared FDA products.</div>
+      <div class="stitle">LDT cross-check — biomarkers with 2 or fewer FDA approvals</div>
+      <div class="hint" style="margin:-6px 0 12px">Same NY State LDT search as above, run automatically for every biomarker that showed 2 or fewer cleared FDA products.</div>
       <table class="sumtable">
         <thead><tr>
           <th style="width:44px">Rank</th>
@@ -1272,14 +1272,23 @@ async function runFdaSearch() {
   $('exportBtn').disabled = false;
   renderResults();
 
-  const zeroApproval = state.filter(s => !s.error && s.approved === 0);
-  if (zeroApproval.length) {
-    $('crossCheckBtn').textContent = `Check LDT database for ${zeroApproval.length} biomarker${zeroApproval.length === 1 ? '' : 's'} with 0 FDA approvals`;
+  const ldtCandidates = state.filter(isLdtCrossCheckCandidate);
+  if (ldtCandidates.length) {
+    $('crossCheckBtn').textContent = `Check LDT database for ${ldtCandidates.length} biomarker${ldtCandidates.length === 1 ? '' : 's'} with ${LDT_CROSSCHECK_MAX_APPROVALS} or fewer FDA approvals`;
     $('crossCheckPrompt').style.display = 'block';
   }
 }
 
 const HIGH_APPROVAL_THRESHOLD = 10;
+
+// A biomarker with a handful of FDA approvals, not just zero, can still be a real LDT-only
+// opportunity — a low-but-nonzero count doesn't rule that out, so the automatic LDT cross-check
+// offer isn't limited to a strict "0 approvals" cutoff.
+const LDT_CROSSCHECK_MAX_APPROVALS = 2;
+
+function isLdtCrossCheckCandidate(s) {
+  return !s.error && s.approved <= LDT_CROSSCHECK_MAX_APPROVALS;
+}
 
 const MATCH_MODE_LABEL = {
   broad: 'Broad match',
@@ -1775,7 +1784,7 @@ function renderChart(valid) {
         x: {
           stacked: true,
           grid: { color: 'rgba(10,40,70,.08)' },
-          ticks: { color: (ctx) => (valid[ctx.index] && valid[ctx.index].approved === 0) ? '#0066B3' : '#4A5A68' }
+          ticks: { color: (ctx) => (valid[ctx.index] && isLdtCrossCheckCandidate(valid[ctx.index])) ? '#0066B3' : '#4A5A68' }
         },
         y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(10,40,70,.08)' } }
       },
@@ -2011,7 +2020,7 @@ let crossState = [];
 
 $('crossCheckBtn').addEventListener('click', async () => {
   if (!getLdtProxyUrl()) { alert('Add your LDT proxy Worker URL in Settings (gear icon) first.'); return; }
-  const terms = state.filter(s => !s.error && s.approved === 0).map(s => s.term);
+  const terms = state.filter(isLdtCrossCheckCandidate).map(s => s.term);
   if (!terms.length) return;
 
   $('crossCheckBtn').disabled = true;
