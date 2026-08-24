@@ -8,7 +8,7 @@ name/synonyms via UMLS (configured below via an environment variable, since this
 access to the browser's Settings/localStorage), runs the tiered match pipeline, and caches the
 result for next time. Only predicate-chain ("inferred via predicate") results depend on the
 separate, biomarker-agnostic scope+PDF crawl (`python -m indexer.crawl`) having already been
-run — confirmed and GUDID results work immediately either way.
+run — confirmed results work immediately either way.
 
 Run from the repo root: `uvicorn server.main:app --reload`. Set UMLS_API_KEY to enable automatic
 abbreviation resolution, e.g.:

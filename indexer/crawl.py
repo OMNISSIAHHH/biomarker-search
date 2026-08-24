@@ -8,12 +8,12 @@ it's run periodically (independent of what's being searched), not per-term.
   2. PDF crawl: fetch + parse (Measurand + predicate table) every scope device not already
      cached. The expensive step; skips anything already in pdf_text from a prior run.
 
-Actual biomarker lookups (confirmed-match tiers, GUDID cross-check, predicate-chain
-propagation) happen lazily and per-term through indexer/lookup.py, called by the local server on
-each /biomarker/{term} request — there is no dictionary/biomarker list here or anywhere else;
-whatever's searched gets resolved (and cached) on the spot. Run this crawl once before searching
-if you want predicate-chain ("inferred via predicate") results available immediately; confirmed
-and GUDID results work without it, resolved live on first search either way.
+Actual biomarker lookups (confirmed-match tiers, predicate-chain propagation) happen lazily and
+per-term through indexer/lookup.py, called by the local server on each /biomarker/{term} request
+— there is no dictionary/biomarker list here or anywhere else; whatever's searched gets resolved
+(and cached) on the spot. Run this crawl once before searching if you want predicate-chain
+("inferred via predicate") results available immediately; confirmed results work without it,
+resolved live on first search either way.
 
 Usage: python -m indexer.crawl [--api-key KEY] [--committees IM,CH]
 """

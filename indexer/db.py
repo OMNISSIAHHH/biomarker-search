@@ -44,8 +44,8 @@ CREATE TABLE IF NOT EXISTS biomarker_matches (
   k_number TEXT NOT NULL,
   biomarker_key TEXT NOT NULL,
   match_mode TEXT NOT NULL,          -- 'exact'|'broad'|'antigen-only'|'fused-anti'|'wordform'
-                                      -- |'umls'|'predicate'|'gudid' — 'expansion' (matching.py's
-                                      -- raw tier tag) is relabeled to 'umls' before being stored
+                                      -- |'umls'|'predicate' — 'expansion' (matching.py's raw
+                                      -- tier tag) is relabeled to 'umls' before being stored
                                       -- here (indexer/lookup.py)
   confidence TEXT NOT NULL,          -- 'confirmed' | 'inferred'
   via_k_number TEXT,
@@ -62,11 +62,11 @@ CREATE TABLE IF NOT EXISTS expansion_cache (
   term_key TEXT PRIMARY KEY,
   full TEXT,
   search TEXT,
-  source TEXT,                       -- 'local-llm' | 'umls' | 'none'
+  source TEXT,                       -- 'umls' | 'none'
   generated_at TEXT
 );
 
--- Whether a term's full lookup pipeline (confirmed tiers + GUDID + predicate propagation) has
+-- Whether a term's full lookup pipeline (confirmed tiers + predicate propagation) has
 -- already run, at least once. Needed because zero rows in biomarker_matches for a key is
 -- ambiguous without a static dictionary to consult — it could mean "never searched" or
 -- "searched, genuinely zero matches." This table is the only thing that disambiguates the two.
@@ -92,9 +92,8 @@ def upsert_device(conn: sqlite3.Connection, record: dict, source: str) -> None:
     if isinstance(openfda_device_name, list):
         openfda_device_name = "; ".join(openfda_device_name)
 
-    # `source` distinguishes which FDA dataset a device row came from (510k today; kept
-    # generic, not hardcoded to "510k" throughout, so a future additional 510(k)-adjacent
-    # source — e.g. GUDID or Registration & Listing — can reuse this same table/column).
+    # `source` distinguishes which FDA dataset a device row came from — always "510k" today,
+    # this tool's only data source.
     normalized = dict(record)
     normalized["source"] = source
 

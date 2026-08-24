@@ -1,7 +1,7 @@
 """The on-demand, cached per-term biomarker lookup pipeline — replaces what used to be a batch
-crawl over dictionary.json's fixed key list (crawl_confirmed_matches + crawl_gudid_matches +
-the per-key predicate-propagation loop). There is no file anywhere enumerating "which biomarkers
-this tool knows about": whatever term is asked for gets its expansion resolved via UMLS (see
+crawl over dictionary.json's fixed key list (crawl_confirmed_matches + the per-key predicate-
+propagation loop). There is no file anywhere enumerating "which biomarkers this tool knows
+about": whatever term is asked for gets its expansion resolved via UMLS (see
 indexer/ai_expansion.py), is run through the tiered match pipeline, and is cached — so a repeat
 search for the same term is a pure local read, while a first-time search for any term (whether
 one of hundreds pasted into the browser tool at once, or typed one at a time) works immediately,
@@ -10,14 +10,16 @@ no pre-crawl required.
 Only the predicate-chain ("inferred via predicate") tier depends on the separate, biomarker-
 agnostic scope+PDF crawl (indexer/crawl.py) having already been run — if it hasn't,
 propagate_predicate_matches simply finds nothing yet (harmless no-op), same degraded-but-safe
-posture the confirmed/GUDID tiers already have when the AI itself has nothing to offer.
+posture the confirmed tier already has when UMLS itself has nothing to offer.
+
+510(k) only — this tool doesn't cross-check against GUDID/UDI device-registration data.
 """
 import json
 from datetime import datetime, timezone
 
-from indexer import ai_expansion, db, gudid
+from indexer import ai_expansion, db
 from indexer.matching import expansion_key, fetch_biomarker_matches
-from indexer.openfda import DEVICE_510K, run_query
+from indexer.openfda import DEVICE_510K
 from indexer.predicate_graph import propagate_predicate_matches
 
 
@@ -39,12 +41,6 @@ def read_biomarker_result(conn, key: str, term: str, expansion: dict | None) -> 
            WHERE bm.biomarker_key = ? AND bm.match_mode = 'predicate'""",
         (key,),
     ).fetchall()
-    gudid_rows = conn.execute(
-        """SELECT d.raw_json
-           FROM biomarker_matches bm JOIN devices d ON d.k_number = bm.k_number
-           WHERE bm.biomarker_key = ? AND bm.match_mode = 'gudid'""",
-        (key,),
-    ).fetchall()
 
     records = [_record_from_row(r) for r in confirmed_rows]
     match_mode = confirmed_rows[0]["match_mode"] if confirmed_rows else "exact"
@@ -60,9 +56,6 @@ def read_biomarker_result(conn, key: str, term: str, expansion: dict | None) -> 
             {"device": _record_from_row(r), "viaKNumber": r["via_k_number"], "reason": "predicate"}
             for r in predicate_rows
         ],
-        # Plain record objects, not wrapped like inferredMatches — matches the shape the browser
-        # tool's own gudidMatches already uses (buildRecordRows expects raw records).
-        "gudidMatches": [_record_from_row(r) for r in gudid_rows],
     }
 
 
@@ -95,7 +88,7 @@ def try_cached_result(conn, term: str) -> dict | None:
 async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
                                     api_key: str | None = None, force_refresh: bool = False) -> dict:
     """The network-needing path: resolve (or re-resolve) the term's expansion, run the tiered
-    match + GUDID + predicate-propagation pipeline, cache everything, and return the result.
+    match + predicate-propagation pipeline, cache everything, and return the result.
     """
     key = expansion_key(term)
     expansion, _source = await _resolve_and_cache_expansion(conn, client, term, key, ai_config, force_refresh)
@@ -110,17 +103,6 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
     for r in result["records"]:
         db.upsert_device(conn, r, source="510k")
         db.insert_match(conn, r["k_number"], key, match_mode, "confirmed")
-
-    found = await gudid.fetch_gudid_k_numbers(client, expansion, api_key)
-    if found:
-        already = {r["k_number"] for r in result["records"]}
-        new_k_numbers = [k for k in found if k not in already]
-        if new_k_numbers:
-            k_expr = "(" + " OR ".join(f'k_number:"{k}"' for k in new_k_numbers) + ")"
-            gudid_result = await run_query(client, DEVICE_510K, k_expr, api_key)
-            for r in gudid_result["records"]:
-                db.upsert_device(conn, r, source="510k")
-                db.insert_match(conn, r["k_number"], key, "gudid", "inferred")
 
     propagate_predicate_matches(conn, key)  # local join over already-crawled predicates/devices,
                                              # no network call — safe to run synchronously here

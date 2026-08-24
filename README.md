@@ -68,26 +68,25 @@ decision-summary PDF, not just its searchable device-name text:
   totals, since a cited predicate is a strong hint, not proof of an identical panel, so it's
   still worth a manual check.
 
-**Precomputes results Part 1 already finds, just faster.** The **alternate wordform match** and
-**found via device registry** checks (see [Reading your results](#reading-your-results)) don't
-need any PDF reading — they're identical logic to the plain browser search, just run once
-during the crawl instead of fresh on every search. Without this backend running, the browser
-has to make several extra network calls per biomarker to compute these on the spot, which
-measurably slows it down (roughly 2-3x per biomarker in testing); the local server instead
+**Precomputes results Part 1 already finds, just faster.** The **alternate wordform match**
+check (see [Reading your results](#reading-your-results)) doesn't need any PDF reading — it's
+identical logic to the plain browser search, just run once during the crawl instead of fresh on
+every search. Without this backend running, the browser has to make an extra network call per
+biomarker to compute this on the spot, which measurably slows it down; the local server instead
 reads the already-computed answer straight from its local file, so search speed there doesn't
 depend on how many live FDA API calls a term happens to need.
 
-This is 510(k)-only, same as the browser search — it does not include PMA (Premarket Approval,
-for higher-risk Class III devices), which is a different FDA regulatory pathway outside this
-tool's scope.
+This is 510(k)-only, same as the browser search — it does not cross-check GUDID/UDI device-
+registration data, and does not include PMA (Premarket Approval, for higher-risk Class III
+devices), which is a different FDA regulatory pathway outside this tool's scope.
 
-**Confirmed-match and device-registry results work immediately for any biomarker, with nothing
-to crawl first.** The one thing that does need a one-time (well, periodic) crawl is the
-predicate-chain panel-reagent tier above, since it depends on having already read every scope
-device's decision-summary PDF — fetching and reading thousands of PDFs is too slow to do live
-during a search. Running that crawl doesn't need to know which biomarkers you care about either
-— it just builds the general device+PDF corpus (bounded to a handful of relevant FDA review
-panels) that the predicate-chain lookup then draws on for whatever you end up searching.
+**Confirmed-match results work immediately for any biomarker, with nothing to crawl first.**
+The one thing that does need a one-time (well, periodic) crawl is the predicate-chain
+panel-reagent tier above, since it depends on having already read every scope device's
+decision-summary PDF — fetching and reading thousands of PDFs is too slow to do live during a
+search. Running that crawl doesn't need to know which biomarkers you care about either — it
+just builds the general device+PDF corpus (bounded to a handful of relevant FDA review panels)
+that the predicate-chain lookup then draws on for whatever you end up searching.
 
 **Setup** (one-time, from the repo root, in a terminal):
 ```bash
@@ -96,8 +95,8 @@ pip install -r server/requirements.txt
 python -m indexer.crawl
 ```
 This step is what unlocks the predicate-chain ("inferred via predicate") tier — searching
-confirmed matches and the device registry already works even before this finishes. The crawl
-can take a while the first time (it's reading real PDFs one at a time, politely rate-limited) —
+confirmed matches already works even before this finishes. The crawl can take a while the
+first time (it's reading real PDFs one at a time, politely rate-limited) —
 it prints progress as it goes. **Re-run it periodically** to pick up newly-cleared devices (it
 skips PDFs it's already fetched, so a re-run is fast). Add `--api-key YOUR_OPENFDA_KEY` to go
 faster.
@@ -190,13 +189,6 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
   tool automatically tries splitting apart fused words, swapping hyphens for spaces (and back),
   and fully fusing multi-word terms — for any search, not just ones with special handling
   built in ahead of time
-- **N found via device registry** — the tool also checks FDA's separate UDI/GUDID
-  device-registration database, whose free-text device descriptions are sometimes far more
-  detailed than a 510(k) record's own device name (bundled multi-antigen kits often list every
-  component antigen there, even when the 510(k) record never names them). Not counted in the
-  numbers above — a single 510(k) clearance can cover a whole family of related products, so a
-  device showing up this way doesn't always mean *that exact device* contains the biomarker,
-  only that something under its clearance does. Worth a manual check.
 
 None of these tags mean the result is wrong — they just tell you how confident the match is,
 so an exact match is more reliable than a "UMLS-resolved match."
@@ -263,9 +255,8 @@ between. It contains:
 - **Details** — one row per confirmed individual device found, across every biomarker you
   searched.
 - **Unconfirmed Matches** — every unconfirmed candidate (devices found via the cross-check
-  backend's predicate-chain crawl, and devices found via the device registry), each labeled with
-  its own Match Type column, kept in their own sheet so they're never mistaken for a confirmed
-  result.
+  backend's predicate-chain crawl), each labeled with its own Match Type column, kept in its
+  own sheet so it's never mistaken for a confirmed result.
 
 If you ran the LDT cross-check (see below), two more sheets are added with those results —
 there's also a second **Export to Excel** button at the bottom of that table specifically, in
