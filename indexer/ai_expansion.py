@@ -88,10 +88,17 @@ async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: st
     if not tavily_api_key:
         return None
     try:
+        # Confirmed live: a bare-term search for "GADA" surfaces "Gada (mace)" — an unrelated
+        # Hindi/Sanskrit word for a weapon — as its top result; "GADA biomarker" returns
+        # correctly on-topic results (Glutamate decarboxylase autoantibodies, Type 1 diabetes).
+        # The grounding-verification guard below only checks that the model's answer traces
+        # back to whatever got retrieved — it can't fix a search that retrieved the wrong
+        # domain's content in the first place, so the domain hint has to go in the query itself.
         res = await client.post(
             TAVILY_SEARCH_URL,
             headers={"Authorization": f"Bearer {tavily_api_key}"},
-            json={"query": term, "search_depth": "basic", "max_results": 5, "include_answer": True},
+            json={"query": f"{term} biomarker", "search_depth": "basic", "max_results": 5,
+                  "include_answer": True},
             timeout=20.0,
         )
         if res.status_code != 200:
