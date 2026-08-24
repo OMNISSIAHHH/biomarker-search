@@ -36,6 +36,23 @@ TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 UNKNOWN_RE = re.compile(r"^UNKNOWN\b", re.IGNORECASE)
 STOPWORDS = {"the", "a", "an", "of", "and", "or", "in", "for", "to", "with", "is", "are"}
 
+# Confirmed live: llama3.2:3b takes the crosscheck prompt's "Line 1: ...", "Line 2: ..." format
+# description too literally and echoes the labels themselves into its answer (e.g. responding
+# "Line 1: Antimitochondrial Antibody, IgG, M2" instead of just the name) — polluting the
+# search with literal tokens like "Line"/"1:" that no real FDA document contains, silently
+# breaking the search even though the underlying extraction was actually correct. Stripped
+# defensively rather than relied on prompt wording alone, since prompt-following varies enough
+# across models that the parsing needs to tolerate it regardless (the whole lesson of this
+# project's local-LLM experiments so far).
+LINE_PREFIX_RE = re.compile(r"^(?:line\s*\d+\s*[:)]|\d+[.)])\s*", re.IGNORECASE)
+# Matches a line-2 placeholder for "no synonyms" so it isn't treated as a literal synonym —
+# also confirmed live: "Line 2:  (none specified)" from the same response.
+NO_ANSWER_RE = re.compile(r"^\(?\s*(?:none(?:\s+specified)?|n/?a)\s*\)?$", re.IGNORECASE)
+
+
+def _clean_extracted_line(line: str) -> str:
+    return LINE_PREFIX_RE.sub("", line).strip()
+
 # Hybrid-reasoning models (Qwen3, DeepSeek-R1, QwQ, etc.) generate a long internal chain-of-
 # thought before their final answer by default — confirmed directly against qwen3:4b, which took
 # well over 20s just to decide how to say "hello" in one word. `think: False` asks Ollama to skip
@@ -105,13 +122,14 @@ def crosscheck_prompt(term: str, tavily_response: dict) -> str:
     lines += [
         "",
         f'Based ONLY on the search results above, what is "{term}"\'s full spelled-out',
-        "scientific/medical name? Respond with ONLY the following and nothing else — no",
-        "explanation, no extra commentary:",
-        "Line 1: its full spelled-out scientific/medical name",
-        "Line 2 (optional, only if you know one or more): up to 4 common alternate names or "
-        "synonyms, comma-separated",
+        "scientific/medical name? Reply with exactly two lines and nothing else — no labels, "
+        "no explanation, no extra commentary, no words like \"Line 1\" or \"Line 2\":",
+        "- First line: just the full spelled-out scientific/medical name, nothing else on that "
+        "line",
+        "- Second line (only include this line if you know at least one): up to 4 common "
+        "alternate names or synonyms, comma-separated",
         "If the search results above do not clearly indicate a specific medical/laboratory "
-        "meaning, respond with exactly this and nothing else: UNKNOWN",
+        "meaning, reply with exactly one word and nothing else: UNKNOWN",
     ]
     return "\n".join(lines)
 
@@ -156,7 +174,8 @@ async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavil
         raw = (data.get("response") or "").split("</think>", 1)[-1].strip()
         if not raw or UNKNOWN_RE.match(raw):
             return None
-        lines = [line.strip() for line in raw.split("\n") if line.strip()]
+        lines = [_clean_extracted_line(line) for line in raw.split("\n") if line.strip()]
+        lines = [line for line in lines if line]  # drop any that became empty after cleaning
         if not lines:
             return None
         full = lines[0]
@@ -164,7 +183,11 @@ async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavil
             return None
         if not _grounded_in_snippets(full, tavily_response):
             return None
-        synonyms = [s.strip() for s in lines[1].split(",") if s.strip()] if len(lines) > 1 else []
+        synonyms = (
+            [s.strip() for s in lines[1].split(",") if s.strip()]
+            if len(lines) > 1 and not NO_ANSWER_RE.match(lines[1])
+            else []
+        )
         return {"full": full, "search": "/".join([full, *synonyms])} if synonyms else {"full": full}
     except httpx.HTTPError:
         return None  # model not pulled, server down, timeout — never fail the whole search over this
