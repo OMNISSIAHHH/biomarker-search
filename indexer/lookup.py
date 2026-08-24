@@ -1,16 +1,16 @@
 """The on-demand, cached per-term biomarker lookup pipeline — replaces what used to be a batch
 crawl over dictionary.json's fixed key list (crawl_confirmed_matches + the per-key predicate-
 propagation loop). There is no file anywhere enumerating "which biomarkers this tool knows
-about": whatever term is asked for gets its expansion resolved via UMLS (see
-indexer/ai_expansion.py), is run through the tiered match pipeline, and is cached — so a repeat
-search for the same term is a pure local read, while a first-time search for any term (whether
-one of hundreds pasted into the browser tool at once, or typed one at a time) works immediately,
-no pre-crawl required.
+about": whatever term is asked for gets its expansion resolved via UMLS or, failing that, a
+Tavily-search-grounded AI crosscheck (see indexer/ai_expansion.py), is run through the tiered
+match pipeline, and is cached — so a repeat search for the same term is a pure local read, while
+a first-time search for any term (whether one of hundreds pasted into the browser tool at once,
+or typed one at a time) works immediately, no pre-crawl required.
 
 Only the predicate-chain ("inferred via predicate") tier depends on the separate, biomarker-
 agnostic scope+PDF crawl (indexer/crawl.py) having already been run — if it hasn't,
 propagate_predicate_matches simply finds nothing yet (harmless no-op), same degraded-but-safe
-posture the confirmed tier already has when UMLS itself has nothing to offer.
+posture the confirmed tier already has when neither expansion source has anything to offer.
 
 510(k) only — this tool doesn't cross-check against GUDID/UDI device-registration data.
 """
@@ -59,6 +59,9 @@ def read_biomarker_result(conn, key: str, term: str, expansion: dict | None) -> 
     }
 
 
+EXPANSION_SOURCE_MATCH_MODE = {"umls": "umls", "search-ai": "ai-suggested"}
+
+
 async def _resolve_and_cache_expansion(conn, client, term: str, key: str, ai_config: dict,
                                         force_refresh: bool) -> tuple[dict | None, str]:
     if not force_refresh:
@@ -66,7 +69,10 @@ async def _resolve_and_cache_expansion(conn, client, term: str, key: str, ai_con
         if cached is not None:
             return cached  # (expansion, source) — including (None, "none") if already-tried-and-failed
 
-    expansion, source = await ai_expansion.resolve_expansion(client, term, ai_config.get("umls_api_key"))
+    expansion, source = await ai_expansion.resolve_expansion(
+        client, term, ai_config.get("umls_api_key"),
+        ai_config.get("tavily_api_key"), ai_config.get("local_llm_url"), ai_config.get("local_llm_model"),
+    )
     db.upsert_expansion_cache(conn, key, expansion, source, datetime.now(timezone.utc).isoformat())
     return expansion, source
 
@@ -91,15 +97,19 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
     match + predicate-propagation pipeline, cache everything, and return the result.
     """
     key = expansion_key(term)
-    expansion, _source = await _resolve_and_cache_expansion(conn, client, term, key, ai_config, force_refresh)
+    expansion, source = await _resolve_and_cache_expansion(conn, client, term, key, ai_config, force_refresh)
 
     db.clear_matches_for_biomarker(conn, key)
     result = await fetch_biomarker_matches(client, DEVICE_510K, term, expansion, api_key)
     # matching.py's 'expansion' tier tag means "nothing else matched, only the resolved name/
-    # synonyms did" — relabeled to 'umls' (the only source that can ever produce a resolved
-    # expansion now) so the tag correctly conveys it's an unverified database lookup, not a
-    # curated dictionary match. Every other tier already describes itself accurately.
-    match_mode = "umls" if result["match_mode"] == "expansion" else result["match_mode"]
+    # synonyms did" — relabeled per the source that actually resolved it, so the tag correctly
+    # conveys whether this was an unverified database lookup ('umls') or a search-grounded AI
+    # extraction ('search-ai' -> 'ai-suggested', kept more cautious since it's generated, not
+    # looked up). Every other tier already describes itself accurately.
+    if result["match_mode"] == "expansion":
+        match_mode = EXPANSION_SOURCE_MATCH_MODE.get(source, "umls")
+    else:
+        match_mode = result["match_mode"]
     for r in result["records"]:
         db.upsert_device(conn, r, source="510k")
         db.insert_match(conn, r["k_number"], key, match_mode, "confirmed")

@@ -4,17 +4,24 @@ fetchBiomarker() returns in FDA510kBiomarkerSearch.html.
 Every term is resolved on demand and cached — there is no dictionary/biomarker list anywhere.
 indexer/lookup.py's compute_and_cache_result does the actual work: a repeat search for an
 already-searched term is a pure local SQLite read; a first-time search resolves the term's full
-name/synonyms via UMLS (configured below via an environment variable, since this process has no
-access to the browser's Settings/localStorage), runs the tiered match pipeline, and caches the
-result for next time. Only predicate-chain ("inferred via predicate") results depend on the
-separate, biomarker-agnostic scope+PDF crawl (`python -m indexer.crawl`) having already been
-run — confirmed results work immediately either way.
+name/synonyms via UMLS, falling back to a Tavily-search-grounded local-LLM crosscheck if UMLS
+isn't configured or doesn't know the term (configured below via environment variables, since this
+process has no access to the browser's Settings/localStorage), runs the tiered match pipeline,
+and caches the result for next time. Only predicate-chain ("inferred via predicate") results
+depend on the separate, biomarker-agnostic scope+PDF crawl (`python -m indexer.crawl`) having
+already been run — confirmed results work immediately either way.
 
 Run from the repo root: `uvicorn server.main:app --reload`. Set UMLS_API_KEY to enable automatic
-abbreviation resolution, e.g.:
+abbreviation resolution via UMLS:
   UMLS_API_KEY=your-key-here uvicorn server.main:app --reload
-Without it, searches still work for anything the exact/broad/antigen-only/fused-anti/wordform
-tiers can find on their own — just without an alternate name to fall back on.
+Or, for the Tavily+local-LLM crosscheck (see indexer/ai_expansion.py for why this is grounded in
+search results rather than the model's own recall), set all three of TAVILY_API_KEY,
+LOCAL_LLM_URL, and LOCAL_LLM_MODEL:
+  TAVILY_API_KEY=tvly-... LOCAL_LLM_URL=http://localhost:11434 LOCAL_LLM_MODEL=llama3.2:3b uvicorn server.main:app --reload
+Both can be set together — UMLS is tried first, Tavily+local-LLM is the fallback for whatever
+UMLS doesn't cover. Without either, searches still work for anything the exact/broad/antigen-
+only/fused-anti/wordform tiers can find on their own — just without an alternate name to fall
+back on.
 """
 import os
 import sqlite3
@@ -34,7 +41,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-AI_CONFIG = {"umls_api_key": os.environ.get("UMLS_API_KEY")}
+AI_CONFIG = {
+    "umls_api_key": os.environ.get("UMLS_API_KEY"),
+    "tavily_api_key": os.environ.get("TAVILY_API_KEY"),
+    "local_llm_url": os.environ.get("LOCAL_LLM_URL"),
+    "local_llm_model": os.environ.get("LOCAL_LLM_MODEL"),
+}
 OPENFDA_API_KEY = os.environ.get("OPENFDA_API_KEY")
 
 

@@ -26,7 +26,7 @@ the normal way to run this.
 - [Filtering and narrowing your results](#filtering-and-narrowing-your-results)
 - [Exporting to Excel](#exporting-to-excel)
 - [Checking a specific device's paperwork ("Measurand")](#checking-a-specific-devices-paperwork-measurand)
-- [Automatic abbreviation lookup (UMLS)](#automatic-abbreviation-lookup-umls)
+- [Automatic abbreviation lookup (UMLS and AI crosscheck)](#automatic-abbreviation-lookup-umls-and-ai-crosscheck)
 - [Searching lab-developed tests (LDT) in New York State](#searching-lab-developed-tests-ldt-in-new-york-state)
 - [Things to keep in mind](#things-to-keep-in-mind)
 - [Glossary](#glossary)
@@ -51,7 +51,7 @@ useful for a fast first look or when Python isn't available, but it misses real 
 ways that are structural, not edge cases (see below). This local backend is what makes results
 reliable, and it's faster, not slower, once it's set up. There is no list anywhere of "which
 biomarkers this tool knows about" — every term you search is resolved automatically (by AI,
-same idea as [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
+same idea as [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck)
 below) and its results are cached, so a repeat search is instant and a first-time search for
 *any* biomarker — one at a time or hundreds pasted in at once — just works, no list to maintain
 first. It does two different kinds of things:
@@ -105,15 +105,21 @@ faster.
 ```bash
 uvicorn server.main:app --reload
 ```
-The server resolves each biomarker's full name/synonyms automatically via UMLS, the same as
-[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls) below — but since this is a
-separate background process, it can't read the browser's Settings, so configure it with an
-environment variable instead:
+The server resolves each biomarker's full name/synonyms automatically via UMLS, falling back to
+a search-grounded AI crosscheck for whatever UMLS doesn't cover — see
+[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck) below for
+what each does. Since this is a separate background process, it can't read the browser's
+Settings, so configure it with environment variables instead:
 ```bash
 UMLS_API_KEY=your-key-here uvicorn server.main:app --reload
 ```
-Without it, searches still work for anything the exact/broad/antigen-only/fused-anti/wordform
-tiers can find on their own — just without an alternate name to fall back on.
+or, adding the AI crosscheck fallback:
+```bash
+TAVILY_API_KEY=tvly-... LOCAL_LLM_URL=http://localhost:11434 LOCAL_LLM_MODEL=llama3.2:3b uvicorn server.main:app --reload
+```
+Both can be set together. Without either, searches still work for anything the exact/broad/
+antigen-only/fused-anti/wordform tiers can find on their own — just without an alternate name to
+fall back on.
 
 Then open **Settings** (gear icon) in the tool itself and enter the server's address (e.g.
 `http://localhost:8000`) in **Local index server URL**. From then on, searches automatically use
@@ -126,9 +132,10 @@ whenever it's blank or not running — nothing else changes. A banner in the too
 Everything below is opt-in on top of Parts 1 and 2, each with its own short setup, covered in
 full later in this guide:
 
-- **[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls)** — look up the full
-  name of a biomarker abbreviation this tool doesn't already recognize, via UMLS (a real medical
-  terminology database).
+- **[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck)** —
+  look up the full name of a biomarker abbreviation this tool doesn't already recognize, via
+  UMLS (a real medical terminology database) and, backend-only, a search-grounded AI crosscheck
+  fallback for whatever UMLS doesn't cover.
 - **["Check Measurand"](#checking-a-specific-devices-paperwork-measurand)** — confirm what a
   specific device actually measures by reading its official FDA paperwork, not just its name.
 - **[LDT search](#searching-lab-developed-tests-ldt-in-new-york-state)** — check New York
@@ -179,7 +186,13 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
 - **Antigen-only match** — same as above, but it also ignored the antibody class (IgG/IgA/IgM)
 - **UMLS-resolved match** — none of the above found anything either, so the abbreviation's
   spelled-out medical name was looked up automatically instead (see
-  [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls) below)
+  [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck) below)
+- **AI-suggested match** — same situation as above, but UMLS didn't know the term either, so the
+  cross-check backend searched the web for it and had a local AI model extract the full name
+  from those search results. More grounded than a cold guess (see
+  [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck) below),
+  but still a generated extraction, not a database entry — worth a sanity check, e.g. via
+  **Check Measurand**
 - **Fused-word match** — FDA sometimes writes "Anti" and the antigen as one run-together word
   with no space or hyphen (e.g. "Anticardiolipin"). The tool automatically tries that fused
   form for any antibody-style search, so this can show up even for terms with no special
@@ -191,7 +204,7 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
   built in ahead of time
 
 None of these tags mean the result is wrong — they just tell you how confident the match is,
-so an exact match is more reliable than a "UMLS-resolved match."
+so an exact match is more reliable than a "UMLS-resolved match" or an "AI-suggested match."
 
 ## Sorting your results
 
@@ -285,21 +298,22 @@ either, clicking **Check Measurand** will tell you it needs a Worker URL in Sett
 If you skip this setup, every other part of the tool still works fine — this is an optional
 extra layer of confirmation.
 
-## Automatic abbreviation lookup (UMLS)
+## Automatic abbreviation lookup (UMLS and AI crosscheck)
 
 There is no built-in, hand-curated list of biomarker abbreviations — every term's full medical
 name (needed when the abbreviation itself, like "GADA" or "cTnT," doesn't appear verbatim in
-FDA paperwork) is resolved automatically instead, via UMLS. This is opt-in — if it's not set up,
-the tool still finds whatever the exact/broad/antigen-only tiers above can on their own, just
-without an alternate name to fall back on.
+FDA paperwork) is resolved automatically instead, via UMLS first and, failing that, a
+search-grounded AI crosscheck. Both are opt-in — if neither is set up, the tool still finds
+whatever the exact/broad/antigen-only tiers above can on their own, just without an alternate
+name to fall back on.
 
-Go to **[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in with an
-identity provider (Login.gov works if you don't have one already), and agree to the license
-terms — this is a real license request, so the National Library of Medicine reviews it by
-hand and it can take **up to 3 business days** before your account is approved. Once approved,
-sign in, open your profile, and generate an API key. Paste that key into **Settings** (gear
-icon) → **UMLS API key**. Unlike the LDT and Measurand features, this one needs no separate
-Worker setup — paste the key and it works. A match found this way is flagged
+**UMLS** — go to **[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in
+with an identity provider (Login.gov works if you don't have one already), and agree to the
+license terms — this is a real license request, so the National Library of Medicine reviews it
+by hand and it can take **up to 3 business days** before your account is approved. Once
+approved, sign in, open your profile, and generate an API key. Paste that key into **Settings**
+(gear icon) → **UMLS API key**. Unlike the LDT and Measurand features, this one needs no
+separate Worker setup — paste the key and it works. A match found this way is flagged
 **UMLS-resolved match** since nobody has manually confirmed the looked-up name is correct —
 worth a quick sanity check, e.g. via **Check Measurand**.
 
@@ -309,11 +323,33 @@ exact/broad/antigen-only tiers above found nothing. The cross-check backend (see
 separate background process with no access to the browser's Settings, it's configured with the
 `UMLS_API_KEY` environment variable instead when you start it.
 
-A local-AI (Ollama) alternative was tried and removed: a small general-purpose model correctly
-following its own uncertainty instructions still didn't reliably know niche lab/serology
-abbreviations (confirmed live: it had no idea "AMA-M2" meant Anti-Mitochondrial Antibody, M2
-subtype), on top of needing a local install, model management, and being slow on CPU hardware.
-UMLS covers the same need without either problem.
+**Search-grounded AI crosscheck (backend only)** — for whatever UMLS doesn't cover, including
+the entire wait while a UMLS license is pending. A local AI model was tried on its own first
+(asking it to recall the term from its own training) and rejected: a small general-purpose model
+confidently had no idea "AMA-M2" meant Anti-Mitochondrial Antibody, M2 subtype — a wrong answer
+that looked exactly as confident as a right one. This tier is different in kind: it searches the
+web for the term first (via [Tavily](https://tavily.com), a free-tier search API built for
+feeding AI models — 1,000 searches/month, no credit card, no approval wait), then has a local
+Ollama model extract the full name **from those actual search results**, not from its own
+memorized recall. A verification step then double-checks the model's answer actually traces back
+to the retrieved search text before trusting it, rather than accepting whatever it says — this is
+what catches the AMA-M2-style failure specifically, since a fabricated answer won't appear
+anywhere in the real search results.
+
+This needs three things, all set as environment variables when starting the server (this tier is
+backend-only — there's no browser Settings field for it):
+```bash
+TAVILY_API_KEY=tvly-... LOCAL_LLM_URL=http://localhost:11434 LOCAL_LLM_MODEL=llama3.2:3b uvicorn server.main:app --reload
+```
+Get a Tavily API key at **[tavily.com](https://tavily.com)** (free, instant, no card). For the
+local model, install [Ollama](https://ollama.com) and pull a small, non-reasoning model — e.g.
+`ollama pull llama3.2:3b`. Deliberately avoid "reasoning"/"thinking" models (Qwen3, DeepSeek-R1,
+QwQ, and similar) for this specifically: they default to generating a long internal chain-of-
+thought before answering — confirmed to take well over 20 seconds just to decide how to say
+"hello" in one word — which this task doesn't need and just adds latency and unreliability. A
+match found this way is flagged **AI-suggested match**, kept more cautious than a UMLS-resolved
+match even though it's grounded in real search results, since it's still a generated extraction,
+not a database entry — worth a sanity check, e.g. via **Check Measurand**, before trusting it.
 
 ## Searching lab-developed tests (LDT) in New York State
 

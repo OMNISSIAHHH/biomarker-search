@@ -1,20 +1,50 @@
-"""Python port of the browser tool's UMLS abbreviation lookup (lookupUmlsExpansion in
-FDA510kBiomarkerSearch.html), promoted here from a last-resort fallback (used only for terms
-missing a dictionary entry) to the indexer's only expansion mechanism, now that dictionary.json
-is gone. UMLS is a real, curated medical terminology database aggregating many source
-vocabularies (SNOMED CT, LOINC, MeSH, etc.) — resolving an abbreviation this way is unverified
-(nobody has manually confirmed the match is right, unlike every old ABBREVIATION_EXPANSIONS
-entry), but it's a database lookup, not a generated guess.
+"""Resolves a biomarker abbreviation to its full spelled-out name automatically, via two
+fallback sources tried in order:
 
-A local-LLM (Ollama) alternative was tried and removed: a small general-purpose model correctly
-following its own uncertainty instructions still doesn't reliably know niche lab/serology
-abbreviations (confirmed live: qwen3:4b had no idea "AMA-M2" meant Anti-Mitochondrial Antibody,
-M2 subtype), on top of needing local install/model management and being slow on CPU. UMLS covers
-the same "resolve an abbreviation not in any curated list" need without either problem.
+1. UMLS (lookup_umls_expansion) — a real, curated medical terminology database aggregating many
+   source vocabularies (SNOMED CT, LOINC, MeSH, etc.). Unverified (nobody has manually confirmed
+   the match), but it's a database lookup, not a generated guess.
+
+2. Tavily search + local-LLM crosscheck (lookup_search_ai_expansion) — for whatever UMLS doesn't
+   cover (including, right now, the entire wait while a UMLS license is pending approval). A
+   plain local-LLM alternative (asking a model to recall the term from its own training) was
+   tried and removed earlier: qwen3:4b confidently had no idea "AMA-M2" meant Anti-Mitochondrial
+   Antibody, M2 subtype. A plain Wikipedia-lookup alternative was tested live and rejected too —
+   it resolves longer/specific abbreviations fine (AChR, AQP4, Dsg1) but returns something
+   actively wrong for short/ambiguous ones (AMA -> "Ama", a Japanese/Korean word; AMA-M2 ->
+   "Amaterasu"; GADA -> no page at all) — the same "confidently wrong" failure mode.
+
+   This tier is different in kind, not just a repeat: search Tavily for the term first, then ask
+   the local model to extract the full name FROM the retrieved search results, not from its own
+   memorized recall. That directly targets why the pure-recall approach failed on AMA-M2 — the
+   model simply never learned that specific abbreviation — by giving it real, current context to
+   read instead of asking it to guess. A grounding-verification guard (below) then checks the
+   model's answer actually traces back to the provided snippets, not to its own recall regardless
+   of what it was given.
+
+   Still tagged 'ai-suggested', not 'umls' — grounding makes this meaningfully more reliable than
+   the old approach, but it's not a curated database lookup, so it keeps the same "verify
+   manually" caution the tag already carried.
 """
+import re
+
 import httpx
 
 UMLS_SEARCH_BASE = "https://uts-ws.nlm.nih.gov/rest/search/current"
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
+UNKNOWN_RE = re.compile(r"^UNKNOWN\b", re.IGNORECASE)
+STOPWORDS = {"the", "a", "an", "of", "and", "or", "in", "for", "to", "with", "is", "are"}
+
+# Hybrid-reasoning models (Qwen3, DeepSeek-R1, QwQ, etc.) generate a long internal chain-of-
+# thought before their final answer by default — confirmed directly against qwen3:4b, which took
+# well over 20s just to decide how to say "hello" in one word. `think: False` asks Ollama to skip
+# it for models that support the option; splitting on "</think>" (below) is a defensive fallback
+# for any model/version that still emits one — Ollama's chat template injects the opening tag
+# itself before generation starts, so it never appears in `response`, meaning a balanced-pair
+# regex silently fails to strip anything. Timeout is raised well past a plain 20s for real margin
+# on slow CPU inference even with reasoning disabled.
+LOCAL_LLM_TIMEOUT = 90.0
 
 
 async def lookup_umls_expansion(client: httpx.AsyncClient, term: str,
@@ -37,14 +67,121 @@ async def lookup_umls_expansion(client: httpx.AsyncClient, term: str,
     return None
 
 
-async def resolve_expansion(client: httpx.AsyncClient, term: str,
-                             umls_api_key: str | None) -> tuple[dict | None, str]:
-    """Returns (expansion, source) where source is 'umls' | 'none' — the caller persists source
-    alongside the expansion in expansion_cache so a genuinely-unresolvable term doesn't get
-    re-asked of UMLS on every single search.
+async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: str | None) -> dict | None:
+    if not tavily_api_key:
+        return None
+    try:
+        res = await client.post(
+            TAVILY_SEARCH_URL,
+            headers={"Authorization": f"Bearer {tavily_api_key}"},
+            json={"query": term, "search_depth": "basic", "max_results": 5, "include_answer": True},
+            timeout=20.0,
+        )
+        if res.status_code != 200:
+            return None
+        data = res.json()
+        if not data.get("results") and not data.get("answer"):
+            return None
+        return data
+    except httpx.HTTPError:
+        return None
+
+
+def crosscheck_prompt(term: str, tavily_response: dict) -> str:
+    lines = [
+        "You are extracting laboratory/medical terminology from web search results.",
+        f'Term to identify: "{term}"',
+        "",
+        "Search results:",
+    ]
+    answer = tavily_response.get("answer")
+    if answer:
+        lines.append(f"Summary: {answer}")
+    for r in (tavily_response.get("results") or [])[:4]:
+        title = (r.get("title") or "").strip()
+        content = (r.get("content") or "").strip()[:300]
+        if title or content:
+            lines.append(f"- {title}: {content}")
+    lines += [
+        "",
+        f'Based ONLY on the search results above, what is "{term}"\'s full spelled-out',
+        "scientific/medical name? Respond with ONLY the following and nothing else — no",
+        "explanation, no extra commentary:",
+        "Line 1: its full spelled-out scientific/medical name",
+        "Line 2 (optional, only if you know one or more): up to 4 common alternate names or "
+        "synonyms, comma-separated",
+        "If the search results above do not clearly indicate a specific medical/laboratory "
+        "meaning, respond with exactly this and nothing else: UNKNOWN",
+    ]
+    return "\n".join(lines)
+
+
+def _significant_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in STOPWORDS}
+
+
+def _grounded_in_snippets(full_name: str, tavily_response: dict) -> bool:
+    """Rejects an extracted name unless at least one of its significant words actually appears
+    somewhere in the retrieved snippets/answer — checks the model's answer traces back to the
+    provided evidence rather than to its own recall regardless of what it was given, the specific
+    failure mode this whole tier exists to design against.
+    """
+    haystack = " ".join(
+        [tavily_response.get("answer") or ""]
+        + [r.get("title") or "" for r in (tavily_response.get("results") or [])]
+        + [r.get("content") or "" for r in (tavily_response.get("results") or [])]
+    ).lower()
+    return any(w in haystack for w in _significant_words(full_name))
+
+
+async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavily_api_key: str | None,
+                                      local_llm_url: str | None, local_llm_model: str | None) -> dict | None:
+    if not (tavily_api_key and local_llm_url and local_llm_model):
+        return None
+
+    tavily_response = await tavily_search(client, term, tavily_api_key)
+    if not tavily_response:
+        return None
+
+    try:
+        res = await client.post(
+            f"{local_llm_url}/api/generate",
+            json={"model": local_llm_model, "prompt": crosscheck_prompt(term, tavily_response),
+                  "stream": False, "think": False},
+            timeout=LOCAL_LLM_TIMEOUT,
+        )
+        if res.status_code != 200:
+            return None
+        data = res.json()
+        raw = (data.get("response") or "").split("</think>", 1)[-1].strip()
+        if not raw or UNKNOWN_RE.match(raw):
+            return None
+        lines = [line.strip() for line in raw.split("\n") if line.strip()]
+        if not lines:
+            return None
+        full = lines[0]
+        if not full or len(full) > 200:  # sanity bound — a real name isn't a paragraph
+            return None
+        if not _grounded_in_snippets(full, tavily_response):
+            return None
+        synonyms = [s.strip() for s in lines[1].split(",") if s.strip()] if len(lines) > 1 else []
+        return {"full": full, "search": "/".join([full, *synonyms])} if synonyms else {"full": full}
+    except httpx.HTTPError:
+        return None  # model not pulled, server down, timeout — never fail the whole search over this
+
+
+async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: str | None,
+                             tavily_api_key: str | None = None, local_llm_url: str | None = None,
+                             local_llm_model: str | None = None) -> tuple[dict | None, str]:
+    """Returns (expansion, source) where source is 'umls' | 'search-ai' | 'none' — the caller
+    persists source alongside the expansion in expansion_cache so a genuinely-unresolvable term
+    doesn't get re-asked of either source on every single search.
     """
     if umls_api_key:
         expansion = await lookup_umls_expansion(client, term, umls_api_key)
         if expansion:
             return expansion, "umls"
+    expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url, local_llm_model)
+    if expansion:
+        return expansion, "search-ai"
     return None, "none"

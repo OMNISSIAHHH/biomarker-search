@@ -1285,6 +1285,7 @@ const MATCH_MODE_LABEL = {
   broad: 'Broad match',
   'antigen-only': 'Antigen-only match',
   umls: 'UMLS-resolved match',
+  'ai-suggested': 'AI-suggested match',
   'fused-anti': 'Fused-word match',
   wordform: 'Alternate wordform match'
 };
@@ -1292,6 +1293,7 @@ const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
   'antigen-only': 'No match including the Ig-class (IgG/IgA/IgM) — matched on the antigen name alone, since many FDA device names omit the isotype. The count may include products that are not isotype-specific.',
   umls: 'No match on the abbreviation itself — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
+  'ai-suggested': 'No match on the abbreviation itself, and no UMLS entry either — the cross-check backend searched the web for it and had a local AI model extract the full name from those search results (not from the model\'s own memorized guess). More grounded than a cold guess, but still not a database lookup — worth a manual check, e.g. via Check Measurand.',
   'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
   wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.'
 };

@@ -44,9 +44,10 @@ CREATE TABLE IF NOT EXISTS biomarker_matches (
   k_number TEXT NOT NULL,
   biomarker_key TEXT NOT NULL,
   match_mode TEXT NOT NULL,          -- 'exact'|'broad'|'antigen-only'|'fused-anti'|'wordform'
-                                      -- |'umls'|'predicate' — 'expansion' (matching.py's raw
-                                      -- tier tag) is relabeled to 'umls' before being stored
-                                      -- here (indexer/lookup.py)
+                                      -- |'umls'|'ai-suggested'|'predicate' — 'expansion'
+                                      -- (matching.py's raw tier tag) is relabeled to 'umls' or
+                                      -- 'ai-suggested' before being stored here, per which
+                                      -- source actually resolved it (indexer/lookup.py)
   confidence TEXT NOT NULL,          -- 'confirmed' | 'inferred'
   via_k_number TEXT,
   PRIMARY KEY (k_number, biomarker_key, match_mode)
@@ -62,7 +63,7 @@ CREATE TABLE IF NOT EXISTS expansion_cache (
   term_key TEXT PRIMARY KEY,
   full TEXT,
   search TEXT,
-  source TEXT,                       -- 'umls' | 'none'
+  source TEXT,                       -- 'umls' | 'search-ai' | 'none'
   generated_at TEXT
 );
 
