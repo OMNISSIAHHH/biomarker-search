@@ -26,7 +26,7 @@ the normal way to run this.
 - [Filtering and narrowing your results](#filtering-and-narrowing-your-results)
 - [Exporting to Excel](#exporting-to-excel)
 - [Checking a specific device's paperwork ("Measurand")](#checking-a-specific-devices-paperwork-measurand)
-- [Automatic abbreviation lookup (UMLS or a local AI model)](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
+- [Automatic abbreviation lookup (UMLS)](#automatic-abbreviation-lookup-umls)
 - [Searching lab-developed tests (LDT) in New York State](#searching-lab-developed-tests-ldt-in-new-york-state)
 - [Things to keep in mind](#things-to-keep-in-mind)
 - [Glossary](#glossary)
@@ -106,17 +106,16 @@ faster.
 ```bash
 uvicorn server.main:app --reload
 ```
-The server resolves each biomarker's full name/synonyms automatically via AI, the same as
-[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model) below —
-but since this is a separate background process, it can't read the browser's Settings, so
-configure it with environment variables instead, e.g.:
-```bash
-LOCAL_LLM_URL=http://localhost:11434 LOCAL_LLM_MODEL=qwen3:4b uvicorn server.main:app --reload
-```
-or, using UMLS instead:
+The server resolves each biomarker's full name/synonyms automatically via UMLS, the same as
+[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls) below — but since this is a
+separate background process, it can't read the browser's Settings, so configure it with an
+environment variable instead:
 ```bash
 UMLS_API_KEY=your-key-here uvicorn server.main:app --reload
 ```
+Without it, searches still work for anything the exact/broad/antigen-only/fused-anti/wordform
+tiers can find on their own — just without an alternate name to fall back on.
+
 Then open **Settings** (gear icon) in the tool itself and enter the server's address (e.g.
 `http://localhost:8000`) in **Local index server URL**. From then on, searches automatically use
 the cross-checked results when the server is running, and fall back to the plain browser search
@@ -128,10 +127,9 @@ whenever it's blank or not running — nothing else changes. A banner in the too
 Everything below is opt-in on top of Parts 1 and 2, each with its own short setup, covered in
 full later in this guide:
 
-- **[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)** —
-  look up the full name of a biomarker abbreviation this tool doesn't already recognize, via
-  either UMLS (a real medical terminology database, slower to set up) or a local AI model (no
-  license or waiting, but a guess instead of a lookup).
+- **[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls)** — look up the full
+  name of a biomarker abbreviation this tool doesn't already recognize, via UMLS (a real medical
+  terminology database).
 - **["Check Measurand"](#checking-a-specific-devices-paperwork-measurand)** — confirm what a
   specific device actually measures by reading its official FDA paperwork, not just its name.
 - **[LDT search](#searching-lab-developed-tests-ldt-in-new-york-state)** — check New York
@@ -182,12 +180,7 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
 - **Antigen-only match** — same as above, but it also ignored the antibody class (IgG/IgA/IgM)
 - **UMLS-resolved match** — none of the above found anything either, so the abbreviation's
   spelled-out medical name was looked up automatically instead (see
-  [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-or-a-local-ai-model)
-  below)
-- **AI-suggested match** — same situation as above, but resolved by a local AI model instead of
-  UMLS. This is a *generated guess*, not a database lookup — a wrong answer can look just as
-  confident as a right one, so treat this one with more skepticism than a UMLS-resolved match
-  and double-check it, e.g. via **Check Measurand**
+  [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls) below)
 - **Fused-word match** — FDA sometimes writes "Anti" and the antigen as one run-together word
   with no space or hyphen (e.g. "Anticardiolipin"). The tool automatically tries that fused
   form for any antibody-style search, so this can show up even for terms with no special
@@ -206,7 +199,7 @@ FDA page, and a **Check Measurand** button (explained [below](#checking-a-specif
   only that something under its clearance does. Worth a manual check.
 
 None of these tags mean the result is wrong — they just tell you how confident the match is,
-so an exact match is more reliable than a "UMLS-resolved match" or an "AI-suggested match."
+so an exact match is more reliable than a "UMLS-resolved match."
 
 ## Sorting your results
 
@@ -301,16 +294,15 @@ either, clicking **Check Measurand** will tell you it needs a Worker URL in Sett
 If you skip this setup, every other part of the tool still works fine — this is an optional
 extra layer of confirmation.
 
-## Automatic abbreviation lookup (UMLS or a local AI model)
+## Automatic abbreviation lookup (UMLS)
 
 There is no built-in, hand-curated list of biomarker abbreviations — every term's full medical
-name and synonyms (needed when the abbreviation itself, like "GADA" or "cTnT," doesn't appear
-verbatim in FDA paperwork) are resolved automatically instead. Two optional ways exist to do
-this; if neither is set up, the tool still finds whatever the exact/broad/antigen-only tiers
-above can on their own, just without an alternate name to fall back on.
+name (needed when the abbreviation itself, like "GADA" or "cTnT," doesn't appear verbatim in
+FDA paperwork) is resolved automatically instead, via UMLS. This is opt-in — if it's not set up,
+the tool still finds whatever the exact/broad/antigen-only tiers above can on their own, just
+without an alternate name to fall back on.
 
-**Option 1 — UMLS** (a real database, slower to set up): go to
-**[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in with an
+Go to **[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in with an
 identity provider (Login.gov works if you don't have one already), and agree to the license
 terms — this is a real license request, so the National Library of Medicine reviews it by
 hand and it can take **up to 3 business days** before your account is approved. Once approved,
@@ -320,40 +312,17 @@ Worker setup — paste the key and it works. A match found this way is flagged
 **UMLS-resolved match** since nobody has manually confirmed the looked-up name is correct —
 worth a quick sanity check, e.g. via **Check Measurand**.
 
-**Option 2 — a local AI model** (no license or waiting, but a guess instead of a lookup):
-install [Ollama](https://ollama.com), pull a small model (e.g. `ollama pull qwen3:4b`), and
-paste its address into **Settings** → **Local LLM URL** (usually `http://localhost:11434`) and
-the exact model name into **Local LLM model**. When both UMLS and a local model are configured,
-the local model is tried first. A match found this way is flagged **AI-suggested match** — a
-generated guess, not a database entry, so it deserves more skepticism than a UMLS-resolved
-match: a wrong answer from a model can sound exactly as confident as a right one. Always worth
-a sanity check, e.g. via **Check Measurand**, before trusting it.
+This Settings field configures the browser tool's own last-resort lookup, used only when the
+exact/broad/antigen-only tiers above found nothing. The cross-check backend (see
+[Setup](#setup)) uses UMLS for every search, not just as a last resort — but since it's a
+separate background process with no access to the browser's Settings, it's configured with the
+`UMLS_API_KEY` environment variable instead when you start it.
 
-**Running Ollama on a different PC than the one you use the tool from:** `http://localhost:11434`
-only works when Ollama and the browser tool (or backend server) are on the *same* machine.
-Across machines on the same network:
-1. On the Ollama PC, set the environment variable `OLLAMA_HOST=0.0.0.0:11434` and restart
-   Ollama — by default it only listens on `localhost` and refuses connections from elsewhere.
-2. Allow inbound traffic on port 11434 through its firewall, e.g. on Windows:
-   ```powershell
-   New-NetFirewallRule -DisplayName "Ollama" -Direction Inbound -LocalPort 11434 -Protocol TCP -Action Allow
-   ```
-3. Find that PC's LAN IP (`ipconfig` on Windows, `ifconfig`/`ip addr` on Mac/Linux) and use
-   `http://<that-ip>:11434` as the Local LLM URL / `LOCAL_LLM_URL` instead of `localhost`.
-4. Test reachability first from the other machine, e.g.
-   `Invoke-WebRequest http://<that-ip>:11434/api/tags` (PowerShell) or
-   `curl http://<that-ip>:11434/api/tags` — it should return a 200 with a JSON list of models,
-   the same as it does locally.
-
-If the two machines aren't on the same network (e.g. one is remote/cloud), reaching Ollama
-needs something more than a firewall rule — a VPN or port-forwarding — which is outside the
-scope of this guide.
-
-These two Settings fields configure the browser tool's own last-resort lookup, used only when
-the exact/broad/antigen-only tiers above found nothing. The cross-check backend (see
-[Setup](#setup)) uses the same two engines for every search, not just as a last resort — but
-since it's a separate background process with no access to the browser's Settings, it's
-configured with environment variables instead when you start it.
+A local-AI (Ollama) alternative was tried and removed: a small general-purpose model correctly
+following its own uncertainty instructions still didn't reliably know niche lab/serology
+abbreviations (confirmed live: it had no idea "AMA-M2" meant Anti-Mitochondrial Antibody, M2
+subtype), on top of needing a local install, model management, and being slow on CPU hardware.
+UMLS covers the same need without either problem.
 
 ## Searching lab-developed tests (LDT) in New York State
 

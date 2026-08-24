@@ -2,18 +2,19 @@
 fetchBiomarker() returns in FDA510kBiomarkerSearch.html.
 
 Every term is resolved on demand and cached — there is no dictionary/biomarker list anywhere.
-indexer/lookup.py's get_biomarker_result does the actual work: a repeat search for an
+indexer/lookup.py's compute_and_cache_result does the actual work: a repeat search for an
 already-searched term is a pure local SQLite read; a first-time search resolves the term's full
-name/synonyms via AI (local LLM or UMLS, configured below via environment variables, since this
-process has no access to the browser's Settings/localStorage), runs the tiered match pipeline,
-and caches the result for next time. Only predicate-chain ("inferred via predicate") results
-depend on the separate, biomarker-agnostic scope+PDF crawl (`python -m indexer.crawl`) having
-already been run — confirmed and GUDID results work immediately either way.
+name/synonyms via UMLS (configured below via an environment variable, since this process has no
+access to the browser's Settings/localStorage), runs the tiered match pipeline, and caches the
+result for next time. Only predicate-chain ("inferred via predicate") results depend on the
+separate, biomarker-agnostic scope+PDF crawl (`python -m indexer.crawl`) having already been
+run — confirmed and GUDID results work immediately either way.
 
-Run from the repo root: `uvicorn server.main:app --reload`. Configure the AI engine via
-environment variables, e.g.:
-  LOCAL_LLM_URL=http://localhost:11434 LOCAL_LLM_MODEL=qwen3:4b uvicorn server.main:app --reload
-or UMLS_API_KEY=... uvicorn server.main:app --reload
+Run from the repo root: `uvicorn server.main:app --reload`. Set UMLS_API_KEY to enable automatic
+abbreviation resolution, e.g.:
+  UMLS_API_KEY=your-key-here uvicorn server.main:app --reload
+Without it, searches still work for anything the exact/broad/antigen-only/fused-anti/wordform
+tiers can find on their own — just without an alternate name to fall back on.
 """
 import os
 import sqlite3
@@ -33,11 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-AI_CONFIG = {
-    "local_llm_url": os.environ.get("LOCAL_LLM_URL"),
-    "local_llm_model": os.environ.get("LOCAL_LLM_MODEL"),
-    "umls_api_key": os.environ.get("UMLS_API_KEY"),
-}
+AI_CONFIG = {"umls_api_key": os.environ.get("UMLS_API_KEY")}
 OPENFDA_API_KEY = os.environ.get("OPENFDA_API_KEY")
 
 

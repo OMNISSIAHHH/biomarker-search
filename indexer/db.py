@@ -44,10 +44,9 @@ CREATE TABLE IF NOT EXISTS biomarker_matches (
   k_number TEXT NOT NULL,
   biomarker_key TEXT NOT NULL,
   match_mode TEXT NOT NULL,          -- 'exact'|'broad'|'antigen-only'|'fused-anti'|'wordform'
-                                      -- |'ai-suggested'|'umls'|'predicate'|'gudid' — 'expansion'
-                                      -- (matching.py's raw tier tag) is relabeled to
-                                      -- 'ai-suggested'/'umls' before being stored here, per the
-                                      -- AI engine that actually resolved it (indexer/lookup.py)
+                                      -- |'umls'|'predicate'|'gudid' — 'expansion' (matching.py's
+                                      -- raw tier tag) is relabeled to 'umls' before being stored
+                                      -- here (indexer/lookup.py)
   confidence TEXT NOT NULL,          -- 'confirmed' | 'inferred'
   via_k_number TEXT,
   PRIMARY KEY (k_number, biomarker_key, match_mode)
