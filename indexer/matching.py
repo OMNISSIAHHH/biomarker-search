@@ -7,8 +7,18 @@ for these function names) for the reasoning behind each tier — this file
 intentionally does not re-derive it, only reproduces the logic.
 """
 import re
+import time
 
 from indexer.openfda import run_query
+
+
+def _trace(trace: list[dict] | None, stage: str, outcome: str, detail: str,
+           elapsed_ms: int | None = None) -> None:
+    """See indexer/ai_expansion.py's identical helper — appends to the caller's trace list, a
+    no-op when trace is None so every existing caller not asking for search-process visibility
+    is unaffected."""
+    if trace is not None:
+        trace.append({"stage": stage, "outcome": outcome, "detail": detail, "elapsedMs": elapsed_ms})
 
 SEARCH_FIELDS = ["device_name", "statement_or_summary", "openfda.device_name"]
 
@@ -203,10 +213,22 @@ def group_implies_anti(tokens: list[str]) -> bool:
     return len(tokens) == 1 and bool(re.match(r"^anti", tokens[0], re.IGNORECASE))
 
 
+# Confirmed live: the Tavily+Ollama crosscheck resolved "dsDNA" to a synonym list including a
+# bare "IgG" group (the model treating the antibody *class* as if it were itself an alternate
+# name for the analyte). Since a bare isotype group has no anti-prefix, anti_requirement_mode
+# for a term like "dsDNA" (which has none of its own) returns "none", so the group got zero
+# extra constraint — the query became "any device mentioning IgG anywhere," matching nearly
+# every antibody-class immunoassay in the database (e.g. "Alinity i Rubella IgG", completely
+# unrelated). Dropped here regardless of source (AI-suggested, UMLS, anything) since a bare
+# isotype marker is never itself a specific enough name to stand as its own match branch.
+BARE_ISOTYPE_RE = re.compile(r"^Ig[AGME][1-4]?$", re.IGNORECASE)
+
+
 def build_expansion_expr(expansion: dict, mode: str) -> str | None:
     phrase = expansion.get("search") or expansion["full"]
     groups = [split_expansion_tokens(g) for g in phrase.split("/")]
     groups = [g for g in groups if g]
+    groups = [g for g in groups if not (len(g) == 1 and BARE_ISOTYPE_RE.match(g[0]))]
     if not groups:
         return None
     anti_exempt = [g for g in groups if group_implies_anti(g)]
@@ -230,8 +252,15 @@ def merge_query_results(a: dict, b: dict) -> dict:
     return {"total": total, "records": records}
 
 
+async def _timed_query(client, endpoint: str, expr: str, api_key: str | None) -> tuple[dict, int]:
+    t0 = time.monotonic()
+    result = await run_query(client, endpoint, expr, api_key)
+    return result, int((time.monotonic() - t0) * 1000)
+
+
 async def fetch_biomarker_matches(client, endpoint: str, term: str, expansion: dict | None,
-                                   api_key: str | None = None) -> dict:
+                                   api_key: str | None = None,
+                                   trace: list[dict] | None = None) -> dict:
     """Python port of fetchBiomarker (JS), tiers 1-5. `expansion` is resolved by the caller
     (indexer/lookup.py, via ai_expansion.resolve_expansion + its cache) before this is called —
     this function treats it as an opaque {full, search} dict, same as the browser tool's
@@ -241,43 +270,75 @@ async def fetch_biomarker_matches(client, endpoint: str, term: str, expansion: d
     search_term = to_search_term(term)
     best = None
 
-    exact = await run_query(client, endpoint, build_exact_expr(search_term), api_key)
+    exact, elapsed = await _timed_query(client, endpoint, build_exact_expr(search_term), api_key)
     if exact["total"] > 0:
         best = {**exact, "match_mode": "exact"}
+        _trace(trace, "match:exact", "hit", f"{exact['total']} result(s)", elapsed)
+    else:
+        _trace(trace, "match:exact", "miss", "0 results", elapsed)
 
     if not best:
         broad_expr = build_broad_expr(search_term)
         if broad_expr:
-            broad = await run_query(client, endpoint, broad_expr, api_key)
+            broad, elapsed = await _timed_query(client, endpoint, broad_expr, api_key)
             if broad["total"] > 0:
                 best = {**broad, "match_mode": "broad"}
+                _trace(trace, "match:broad", "hit", f"{broad['total']} result(s)", elapsed)
+            else:
+                _trace(trace, "match:broad", "miss", "0 results", elapsed)
+        else:
+            _trace(trace, "match:broad", "skipped", "term too short/single-token for a broad query")
+    else:
+        _trace(trace, "match:broad", "skipped", "an earlier tier already matched")
 
     if not best:
         antigen_expr = build_antigen_expr(search_term)
         if antigen_expr and antigen_expr != build_exact_expr(search_term):
-            antigen = await run_query(client, endpoint, antigen_expr, api_key)
+            antigen, elapsed = await _timed_query(client, endpoint, antigen_expr, api_key)
             if antigen["total"] > 0:
                 best = {**antigen, "match_mode": "antigen-only"}
+                _trace(trace, "match:antigen-only", "hit", f"{antigen['total']} result(s)", elapsed)
+            else:
+                _trace(trace, "match:antigen-only", "miss", "0 results", elapsed)
+        else:
+            _trace(trace, "match:antigen-only", "skipped", "antigen-only query is identical to the exact query")
+    else:
+        _trace(trace, "match:antigen-only", "skipped", "an earlier tier already matched")
 
     fused_expr = build_fused_anti_expr(search_term)
     if fused_expr:
-        fused = await run_query(client, endpoint, fused_expr, api_key)
+        fused, elapsed = await _timed_query(client, endpoint, fused_expr, api_key)
         if fused["total"] > 0:
             if best:
                 merged = merge_query_results(best, fused)
                 best = {**merged, "match_mode": best["match_mode"]}
+                _trace(trace, "match:fused-anti", "hit",
+                       f"{fused['total']} result(s), merged into existing {best['match_mode']} match", elapsed)
             else:
                 best = {**fused, "match_mode": "fused-anti"}
+                _trace(trace, "match:fused-anti", "hit", f"{fused['total']} result(s) — first tier to match", elapsed)
+        else:
+            _trace(trace, "match:fused-anti", "miss", "0 results", elapsed)
+    else:
+        _trace(trace, "match:fused-anti", "skipped", "term has no anti-prefix/isotype signal")
 
     wordform_expr = build_wordform_expr(search_term)
     if wordform_expr:
-        wordform = await run_query(client, endpoint, wordform_expr, api_key)
+        wordform, elapsed = await _timed_query(client, endpoint, wordform_expr, api_key)
         if wordform["total"] > 0:
             if best:
                 merged = merge_query_results(best, wordform)
                 best = {**merged, "match_mode": best["match_mode"]}
+                _trace(trace, "match:wordform", "hit",
+                       f"{wordform['total']} result(s), merged into existing {best['match_mode']} match", elapsed)
             else:
                 best = {**wordform, "match_mode": "wordform"}
+                _trace(trace, "match:wordform", "hit",
+                       f"{wordform['total']} result(s) — first tier to match", elapsed)
+        else:
+            _trace(trace, "match:wordform", "miss", "0 results", elapsed)
+    else:
+        _trace(trace, "match:wordform", "skipped", "no orthographic variants generated for this term")
 
     # Always merged in when an expansion resolved, regardless of whether an earlier tier already
     # matched — no per-entry alwaysCheck opt-in anymore (that was a curated-dictionary concept).
@@ -286,13 +347,23 @@ async def fetch_biomarker_matches(client, endpoint: str, term: str, expansion: d
     if expansion:
         expansion_expr = build_expansion_expr(expansion, anti_requirement_mode(search_term))
         if expansion_expr:
-            exp = await run_query(client, endpoint, expansion_expr, api_key)
+            exp, elapsed = await _timed_query(client, endpoint, expansion_expr, api_key)
             if exp["total"] > 0:
                 if best:
                     merged = merge_query_results(best, exp)
                     best = {**merged, "match_mode": best["match_mode"]}
+                    _trace(trace, "match:expansion", "hit",
+                           f"{exp['total']} result(s), merged into existing {best['match_mode']} match", elapsed)
                 else:
                     best = {**exp, "match_mode": "expansion"}
+                    _trace(trace, "match:expansion", "hit",
+                           f"{exp['total']} result(s) — first tier to match", elapsed)
+            else:
+                _trace(trace, "match:expansion", "miss", "0 results", elapsed)
+        else:
+            _trace(trace, "match:expansion", "skipped", "resolved expansion produced no usable query")
+    else:
+        _trace(trace, "match:expansion", "skipped", "no expansion resolved for this term")
 
     if best:
         return {**best, "expansion": expansion}

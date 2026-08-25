@@ -8,12 +8,22 @@ sometimes it's cited for instrument/methodology equivalence only. The further re
 citation is from a confirmed device, the weaker that assumption gets, so this stays shallow
 rather than propagating indefinitely through the whole graph.
 """
+import time
+
 from indexer import db
 
 MAX_HOPS = 3
 
 
-def propagate_predicate_matches(conn, biomarker_key: str) -> int:
+def _trace(trace: list[dict] | None, stage: str, outcome: str, detail: str,
+           elapsed_ms: int | None = None) -> None:
+    """See indexer/ai_expansion.py's identical helper — a no-op when trace is None."""
+    if trace is not None:
+        trace.append({"stage": stage, "outcome": outcome, "detail": detail, "elapsedMs": elapsed_ms})
+
+
+def propagate_predicate_matches(conn, biomarker_key: str, trace: list[dict] | None = None) -> int:
+    t0 = time.monotonic()
     confirmed = {
         row["k_number"]
         for row in conn.execute(
@@ -22,6 +32,8 @@ def propagate_predicate_matches(conn, biomarker_key: str) -> int:
         )
     }
     if not confirmed:
+        _trace(trace, "predicate-propagation", "miss", "no confirmed matches to propagate from",
+               int((time.monotonic() - t0) * 1000))
         return 0
 
     citing: dict[str, list[str]] = {}
@@ -44,4 +56,12 @@ def propagate_predicate_matches(conn, biomarker_key: str) -> int:
         if not next_frontier:
             break
         frontier = next_frontier
+
+    elapsed = int((time.monotonic() - t0) * 1000)
+    if added > 0:
+        _trace(trace, "predicate-propagation", "hit",
+               f"{added} inferred match(es) added via predicate citation, up to {MAX_HOPS} hop(s)", elapsed)
+    else:
+        _trace(trace, "predicate-propagation", "miss",
+               "had confirmed match(es), but nothing cites them as a predicate", elapsed)
     return added

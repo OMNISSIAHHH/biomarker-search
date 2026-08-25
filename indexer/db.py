@@ -4,9 +4,22 @@ pipeline, or inferred via predicate chain / panel-keyword tier).
 """
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "index.sqlite3"
+
+def app_base_dir() -> Path:
+    """Directory the exe/script lives in — where index.sqlite3 and .env should live. A frozen
+    (PyInstaller) process resolves __file__ into a throwaway temp extraction directory, so this
+    uses sys.executable's directory instead in that case, keeping the database and any .env
+    config next to the actual .exe a user can find, not lost in a temp folder between runs.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent.parent
+
+
+DB_PATH = app_base_dir() / "index.sqlite3"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (

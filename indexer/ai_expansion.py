@@ -27,6 +27,7 @@ fallback sources tried in order:
    manually" caution the tag already carried.
 """
 import re
+import time
 
 import httpx
 
@@ -49,9 +50,25 @@ LINE_PREFIX_RE = re.compile(r"^(?:line\s*\d+\s*[:)]|\d+[.)])\s*", re.IGNORECASE)
 # also confirmed live: "Line 2:  (none specified)" from the same response.
 NO_ANSWER_RE = re.compile(r"^\(?\s*(?:none(?:\s+specified)?|n/?a)\s*\)?$", re.IGNORECASE)
 
+# Confirmed live: llama3.2:3b listed "IgG" as a "synonym" for dsDNA — an antibody *class*
+# marker, not an alternate name for the analyte. See matching.py's identical BARE_ISOTYPE_RE
+# for why a bare isotype word can never safely stand as its own match branch.
+BARE_ISOTYPE_RE = re.compile(r"^Ig[AGME][1-4]?$", re.IGNORECASE)
+
 
 def _clean_extracted_line(line: str) -> str:
     return LINE_PREFIX_RE.sub("", line).strip()
+
+
+def _trace(trace: list[dict] | None, stage: str, outcome: str, detail: str,
+           elapsed_ms: int | None = None) -> None:
+    """Appends one entry to the caller's trace list, if it wants one — a no-op when trace is
+    None, so every existing caller that doesn't care about search-process visibility is
+    unaffected. See FDA510kBiomarkerSearch.html's own trace entries for the browser-side
+    equivalent (same stage names, used for the "search process" log panel).
+    """
+    if trace is not None:
+        trace.append({"stage": stage, "outcome": outcome, "detail": detail, "elapsedMs": elapsed_ms})
 
 # Hybrid-reasoning models (Qwen3, DeepSeek-R1, QwQ, etc.) generate a long internal chain-of-
 # thought before their final answer by default — confirmed directly against qwen3:4b, which took
@@ -64,50 +81,73 @@ def _clean_extracted_line(line: str) -> str:
 LOCAL_LLM_TIMEOUT = 90.0
 
 
-async def lookup_umls_expansion(client: httpx.AsyncClient, term: str,
-                                 umls_api_key: str | None) -> dict | None:
+async def lookup_umls_expansion(client: httpx.AsyncClient, term: str, umls_api_key: str | None,
+                                 trace: list[dict] | None = None) -> dict | None:
     if not umls_api_key:
+        _trace(trace, "expansion:umls", "skipped", "no UMLS key configured")
         return None
     for search_type in ("exact", "words"):
+        t0 = time.monotonic()
         try:
             params = {"string": term, "apiKey": umls_api_key, "searchType": search_type, "pageSize": "5"}
             res = await client.get(UMLS_SEARCH_BASE, params=params, timeout=20.0)
+            elapsed = int((time.monotonic() - t0) * 1000)
             if res.status_code != 200:
+                _trace(trace, "expansion:umls", "error",
+                       f"searchType={search_type}: HTTP {res.status_code}", elapsed)
                 continue  # bad/unapproved key, rate limit, etc. — treat as no match, not a hard error
             body = res.json()
             results = (body.get("result") or {}).get("results") or []
             hit = next((r for r in results if r.get("ui") and r["ui"] != "NONE" and r.get("name")), None)
             if hit:
+                _trace(trace, "expansion:umls", "hit",
+                       f"matched via searchType={search_type}: {hit['name']}", elapsed)
                 return {"full": hit["name"]}
-        except httpx.HTTPError:
+            _trace(trace, "expansion:umls", "miss", f"searchType={search_type}: 0 usable results", elapsed)
+        except httpx.HTTPError as e:
+            elapsed = int((time.monotonic() - t0) * 1000)
+            _trace(trace, "expansion:umls", "error", f"searchType={search_type}: {e}", elapsed)
             continue  # fall through to the next searchType, then to the caller's own handling
     return None
 
 
-async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: str | None) -> dict | None:
+async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: str | None,
+                         trace: list[dict] | None = None) -> dict | None:
     if not tavily_api_key:
+        _trace(trace, "expansion:tavily", "skipped", "no Tavily key configured")
         return None
+    t0 = time.monotonic()
     try:
         # Confirmed live: a bare-term search for "GADA" surfaces "Gada (mace)" — an unrelated
-        # Hindi/Sanskrit word for a weapon — as its top result; "GADA biomarker" returns
-        # correctly on-topic results (Glutamate decarboxylase autoantibodies, Type 1 diabetes).
-        # The grounding-verification guard below only checks that the model's answer traces
-        # back to whatever got retrieved — it can't fix a search that retrieved the wrong
-        # domain's content in the first place, so the domain hint has to go in the query itself.
+        # Hindi/Sanskrit word for a weapon — as its top result; "GADA biomarker full name"
+        # returns correctly on-topic results (Glutamate decarboxylase autoantibodies, Type 1
+        # diabetes) — "full name" steers toward pages that actually spell out the term, rather
+        # than just mentioning "biomarker" in passing. The grounding-verification guard below
+        # only checks that the model's answer traces back to whatever got retrieved — it can't
+        # fix a search that retrieved the wrong domain's content in the first place, so the
+        # domain hint has to go in the query itself.
         res = await client.post(
             TAVILY_SEARCH_URL,
             headers={"Authorization": f"Bearer {tavily_api_key}"},
-            json={"query": f"{term} biomarker", "search_depth": "basic", "max_results": 5,
+            json={"query": f"{term} biomarker full name", "search_depth": "basic", "max_results": 5,
                   "include_answer": True},
             timeout=20.0,
         )
+        elapsed = int((time.monotonic() - t0) * 1000)
         if res.status_code != 200:
+            _trace(trace, "expansion:tavily", "error", f"HTTP {res.status_code}", elapsed)
             return None
         data = res.json()
         if not data.get("results") and not data.get("answer"):
+            _trace(trace, "expansion:tavily", "miss", "no results or summary answer returned", elapsed)
             return None
+        n = len(data.get("results") or [])
+        detail = f"{n} result(s) retrieved" + (", plus a summary answer" if data.get("answer") else "")
+        _trace(trace, "expansion:tavily", "hit", detail, elapsed)
         return data
-    except httpx.HTTPError:
+    except httpx.HTTPError as e:
+        elapsed = int((time.monotonic() - t0) * 1000)
+        _trace(trace, "expansion:tavily", "error", str(e), elapsed)
         return None
 
 
@@ -160,14 +200,18 @@ def _grounded_in_snippets(full_name: str, tavily_response: dict) -> bool:
 
 
 async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavily_api_key: str | None,
-                                      local_llm_url: str | None, local_llm_model: str | None) -> dict | None:
+                                      local_llm_url: str | None, local_llm_model: str | None,
+                                      trace: list[dict] | None = None) -> dict | None:
     if not (tavily_api_key and local_llm_url and local_llm_model):
+        _trace(trace, "expansion:local-llm", "skipped",
+               "Tavily key and/or local LLM URL/model not fully configured")
         return None
 
-    tavily_response = await tavily_search(client, term, tavily_api_key)
+    tavily_response = await tavily_search(client, term, tavily_api_key, trace)
     if not tavily_response:
-        return None
+        return None  # tavily_search already recorded why
 
+    t0 = time.monotonic()
     try:
         res = await client.post(
             f"{local_llm_url}/api/generate",
@@ -175,43 +219,61 @@ async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavil
                   "stream": False, "think": False},
             timeout=LOCAL_LLM_TIMEOUT,
         )
+        elapsed = int((time.monotonic() - t0) * 1000)
         if res.status_code != 200:
+            _trace(trace, "expansion:local-llm", "error", f"HTTP {res.status_code} from local LLM", elapsed)
             return None
         data = res.json()
         raw = (data.get("response") or "").split("</think>", 1)[-1].strip()
         if not raw or UNKNOWN_RE.match(raw):
+            _trace(trace, "expansion:local-llm", "miss", "model replied UNKNOWN or gave an empty response", elapsed)
             return None
         lines = [_clean_extracted_line(line) for line in raw.split("\n") if line.strip()]
         lines = [line for line in lines if line]  # drop any that became empty after cleaning
         if not lines:
+            _trace(trace, "expansion:local-llm", "miss", "response was unparseable after cleaning", elapsed)
             return None
         full = lines[0]
         if not full or len(full) > 200:  # sanity bound — a real name isn't a paragraph
+            _trace(trace, "expansion:local-llm", "miss",
+                   "extracted line failed sanity check (empty or too long)", elapsed)
             return None
         if not _grounded_in_snippets(full, tavily_response):
+            _trace(trace, "expansion:local-llm", "miss",
+                   f"rejected: '{full}' not grounded in retrieved snippets", elapsed)
             return None
         synonyms = (
             [s.strip() for s in lines[1].split(",") if s.strip()]
             if len(lines) > 1 and not NO_ANSWER_RE.match(lines[1])
             else []
         )
+        # Confirmed live: the model listed "IgG" as a "synonym" for dsDNA (an antibody *class*,
+        # not an alternate name for the analyte) — dropped here so a bare isotype marker never
+        # even reaches the cache, on top of matching.py's own defense against the same thing
+        # (build_expansion_expr's BARE_ISOTYPE_RE filter) regardless of what's already cached.
+        synonyms = [s for s in synonyms if not BARE_ISOTYPE_RE.match(s)]
+        detail = f"extracted '{full}'" + (f", synonyms: {', '.join(synonyms)}" if synonyms else "")
+        _trace(trace, "expansion:local-llm", "hit", detail, elapsed)
         return {"full": full, "search": "/".join([full, *synonyms])} if synonyms else {"full": full}
-    except httpx.HTTPError:
+    except httpx.HTTPError as e:
+        elapsed = int((time.monotonic() - t0) * 1000)
+        _trace(trace, "expansion:local-llm", "error", str(e), elapsed)
         return None  # model not pulled, server down, timeout — never fail the whole search over this
 
 
 async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: str | None,
                              tavily_api_key: str | None = None, local_llm_url: str | None = None,
-                             local_llm_model: str | None = None) -> tuple[dict | None, str]:
+                             local_llm_model: str | None = None,
+                             trace: list[dict] | None = None) -> tuple[dict | None, str]:
     """Returns (expansion, source) where source is 'umls' | 'search-ai' | 'none' — the caller
     persists source alongside the expansion in expansion_cache so a genuinely-unresolvable term
     doesn't get re-asked of either source on every single search.
     """
-    if umls_api_key:
-        expansion = await lookup_umls_expansion(client, term, umls_api_key)
-        if expansion:
-            return expansion, "umls"
-    expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url, local_llm_model)
+    expansion = await lookup_umls_expansion(client, term, umls_api_key, trace)
+    if expansion:
+        return expansion, "umls"
+    expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url,
+                                                  local_llm_model, trace)
     if expansion:
         return expansion, "search-ai"
     return None, "none"

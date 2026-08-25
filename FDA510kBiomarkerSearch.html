@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style/dist/xlsx.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -132,6 +132,21 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
 
 .empty{padding:30px;text-align:center;color:var(--tx3);font-size:13.5px}
 .errline{font-family:var(--font);color:var(--red);font-size:12px}
+
+.logentry{border-bottom:1px solid var(--br);font-size:12.5px}
+.logentry:last-child{border-bottom:none}
+.logentry-head{display:flex;align-items:center;gap:6px;padding:7px 2px;cursor:pointer}
+.logentry-head:hover{color:var(--acc)}
+.logmeta{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--tx3)}
+.logentry-body{padding:2px 2px 8px 20px}
+.trace-row{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;padding:2px 0;font-family:var(--mono);font-size:11px}
+.trace-stage{color:var(--tx2);font-weight:600;min-width:150px}
+.trace-outcome{text-transform:uppercase;letter-spacing:.04em;font-size:9.5px;font-weight:700}
+.trace-detail{color:var(--tx2);flex:1;min-width:150px;font-family:var(--font)}
+.trace-elapsed{color:var(--tx3);margin-left:auto}
+.trace-hit .trace-outcome{color:var(--acc2)}
+.trace-miss .trace-outcome,.trace-skipped .trace-outcome{color:var(--tx3)}
+.trace-error .trace-outcome{color:var(--red)}
 ::-webkit-scrollbar{height:8px;width:8px}
 </style>
 </head>
@@ -211,6 +226,10 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
       <div class="progress" id="progressWrap" style="display:none">
         <span id="progressTxt"></span>
         <div class="pbar"><div class="pbar-fill" id="pbarFill"></div></div>
+        <button class="hinttoggle" id="searchLogToggle" type="button" style="display:none;margin-top:10px">
+          <span class="chev" id="searchLogChev">▸</span> Search process details
+        </button>
+        <div id="searchLog" style="display:none;margin-top:6px"></div>
       </div>
     </div>
 
@@ -222,8 +241,13 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
     </div>
 
     <div class="card" id="resultsCard" style="display:none">
-      <span class="captag" id="resultsCaptag">Table 1</span>
-      <div class="stitle" id="resultsTitle">Results, ranked by fewest approvals</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin:0 0 13px;padding-bottom:9px;border-bottom:2px solid var(--acc)">
+        <div>
+          <span class="captag" id="resultsCaptag" style="margin-bottom:3px">Table 1</span>
+          <div class="stitle" id="resultsTitle" style="margin:0;padding:0;border:none">Results, ranked by fewest approvals</div>
+        </div>
+        <button class="btn-export" id="resultsExportBtn" type="button" style="flex-shrink:0"><i class="ti ti-file-spreadsheet"></i> Export to Excel</button>
+      </div>
       <div class="modetabs" id="sortTabs" style="display:none">
         <button class="modetab active" id="sortByApprovals" type="button">Fewest approvals</button>
         <button class="modetab" id="sortByDate" type="button">Most recent approval</button>
@@ -370,10 +394,35 @@ function getLocalIndexUrl() {
 }
 
 // Deeper cross-checked results is the recommended way to run this tool, not a buried optional
-// extra — this stays visible on every page load until a local index URL is actually set, since
-// that's the one thing that reliably indicates someone has gone through the setup.
-function updateLocalIndexNudge() {
-  $('localIndexNudge').style.display = getLocalIndexUrl() ? 'none' : 'block';
+// extra. Three states, not two: no URL set (this banner's original text, unchanged) / URL set
+// and reachable (hidden) / URL set but NOT reachable (new — the exact class of confusion that
+// caused real stale-server debugging earlier in this project: a URL typed into Settings used
+// to hide this banner even when nothing was actually listening at it).
+const LOCAL_INDEX_NUDGE_DEFAULT_HTML = $('localIndexNudge').innerHTML;
+const LOCAL_INDEX_NUDGE_UNREACHABLE_HTML = `
+  <strong>Local index server not responding.</strong> A Local index server URL is set in
+  Settings, but it isn't reachable right now — searches will silently fall back to the reduced
+  mode below until it's back up. Check that the server (or <code>BiomarkerSearchServer.exe</code>)
+  is actually running at the address in <strong>Settings → Local index server URL</strong>.
+`;
+
+function setLocalIndexBannerState(hasUrl, reachable) {
+  const nudge = $('localIndexNudge');
+  if (!hasUrl) {
+    nudge.innerHTML = LOCAL_INDEX_NUDGE_DEFAULT_HTML;
+    nudge.style.display = 'block';
+  } else if (!reachable) {
+    nudge.innerHTML = LOCAL_INDEX_NUDGE_UNREACHABLE_HTML;
+    nudge.style.display = 'block';
+  } else {
+    nudge.style.display = 'none';
+  }
+}
+
+async function updateLocalIndexNudge() {
+  const url = getLocalIndexUrl();
+  const reachable = url ? await checkLocalIndexHealth(url) : false;
+  setLocalIndexBannerState(Boolean(url), reachable);
 }
 updateLocalIndexNudge();
 
@@ -391,6 +440,15 @@ $('clearBtn').addEventListener('click', () => {
 
 let searchMode = 'fda'; // 'fda' | 'ldt'
 
+// Table 1 (results) has its own export button in addition to the one in the actions row —
+// symmetric with Table 2 (LDT cross-check), which already has its own local export button.
+// Both wire to the identical exportToExcel() handler, so they're always kept in sync here
+// rather than toggled independently at each call site.
+function setExportButtonsDisabled(disabled) {
+  $('exportBtn').disabled = disabled;
+  $('resultsExportBtn').disabled = disabled;
+}
+
 function setSearchMode(mode) {
   searchMode = mode;
   $('modeFda').classList.toggle('active', mode === 'fda');
@@ -403,7 +461,7 @@ function setSearchMode(mode) {
   $('resultsCard').style.display = 'none';
   $('crossCard').style.display = 'none';
   $('crossCheckPrompt').style.display = 'none';
-  $('exportBtn').disabled = true;
+  setExportButtonsDisabled(true);
   $('emptyState').style.display = 'block';
 }
 
@@ -414,6 +472,12 @@ $('hintToggleBtn').addEventListener('click', () => {
   const open = $('hintWrap').style.display === 'none';
   $('hintWrap').style.display = open ? 'block' : 'none';
   $('hintChev').classList.toggle('open', open);
+});
+
+$('searchLogToggle').addEventListener('click', () => {
+  const open = $('searchLog').style.display === 'none';
+  $('searchLog').style.display = open ? 'block' : 'none';
+  $('searchLogChev').classList.toggle('open', open);
 });
 
 function parseTerms(raw) {
@@ -890,10 +954,18 @@ function groupImpliesAnti(tokens) {
   return tokens.length === 1 && /^anti/i.test(tokens[0]);
 }
 
+// Confirmed live: an AI-crosscheck-resolved synonym list for "dsDNA" included a bare "IgG"
+// group (the model treating an antibody *class* as if it were itself an alternate name for
+// the analyte). A bare isotype group has no anti-prefix, so it got zero extra constraint and
+// matched almost any antibody-class immunoassay in the database. Dropped here regardless of
+// source, mirroring indexer/matching.py's identical BARE_ISOTYPE_RE guard.
+const BARE_ISOTYPE_RE = /^Ig[AGME][1-4]?$/i;
+
 function buildExpansionExpr(expansion, mode) {
   if (!expansion) return null;
   const phrase = expansion.search || expansion.full;
-  const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length);
+  const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length)
+    .filter(g => !(g.length === 1 && BARE_ISOTYPE_RE.test(g[0])));
   if (!groups.length) return null;
   const antiExemptGroups = groups.filter(groupImpliesAnti);
   const antiRequiredGroups = groups.filter(g => !groupImpliesAnti(g));
@@ -1023,6 +1095,107 @@ function mergeQueryResults(a, b) {
   return { total, records };
 }
 
+// --- Search process log (see indexer/lookup.py's identical trace shape) -----------------
+// Gives real-time visibility into what's actually happening for each searched term — which
+// tiers were tried, whether UMLS/Tavily/local-AI were consulted and what they found or
+// rejected, how many predicate-chain matches got added — as it happens, not just a final
+// match-mode tag after the fact. Backend-driven searches stream this live over SSE (see
+// server/main.py's GET /biomarker/{term}/stream) so a real 10-30s Tavily/Ollama round-trip is
+// visible while it's happening, not just once it's done. Client-side-fallback searches (no
+// backend configured, or it failed mid-search) build an equivalent trace locally, live too —
+// each tier already runs as its own sequential awaited fetch, so its stage can be shown the
+// moment that fetch resolves — using the same stage names as the backend (same "equivalent,
+// not necessarily identical fidelity" relationship this file's tier functions already have
+// with indexer/matching.py's).
+
+// Wraps a plain trace array so every existing pushTrace(trace, ...) call site — which just
+// does trace.push({...}) — transparently notifies a live callback the instant each entry is
+// added, with zero changes needed at any of those call sites. Mirrors indexer/trace.py's
+// TraceSink on the backend, same reasoning.
+class LiveTrace {
+  constructor(onStage) {
+    this.entries = [];
+    this.onStage = onStage;
+  }
+  push(entry) {
+    this.entries.push(entry);
+    if (this.onStage) this.onStage(entry);
+  }
+}
+
+function pushTrace(trace, stage, outcome, detail, elapsedMs = null) {
+  trace.push({ stage, outcome, detail, elapsedMs });
+}
+
+const TRACE_OUTCOME_CLASS = { hit: 'trace-hit', miss: 'trace-miss', skipped: 'trace-skipped', error: 'trace-error' };
+
+function renderTraceStage(entry) {
+  const cls = TRACE_OUTCOME_CLASS[entry.outcome] || 'trace-miss';
+  const timing = entry.elapsedMs != null ? `<span class="trace-elapsed">${entry.elapsedMs}ms</span>` : '';
+  return `<div class="trace-row ${cls}">
+    <span class="trace-stage">${escapeHtml(entry.stage)}</span>
+    <span class="trace-outcome">${escapeHtml(entry.outcome)}</span>
+    <span class="trace-detail">${escapeHtml(entry.detail)}</span>
+    ${timing}
+  </div>`;
+}
+
+// One entry per term, created the moment that term's search starts (not once it finishes) —
+// its body fills in live via .addStage() as each trace entry actually arrives, then .finish()
+// sets the final match-mode tag/summary once the term is fully done. Never replaced/re-sorted,
+// so the log reads top-to-bottom in the order terms were started. Cleared at the start of
+// every new run (resetSearchLog), not accumulated across runs — a "hundreds pasted at once"
+// batch would make an ever-growing log unusable, and a re-searched term with different
+// settings (e.g. a UMLS key added mid-session) would otherwise show two contradictory entries
+// with no way to tell which is current.
+function createSearchLogEntry(term) {
+  const log = $('searchLog');
+  const entry = document.createElement('div');
+  entry.className = 'logentry';
+  entry.innerHTML = `
+    <div class="logentry-head">
+      <span class="chev">▸</span>
+      <strong>${escapeHtml(term)}</strong>
+      <span class="logtag"></span>
+      <span class="logmeta">searching…</span>
+    </div>
+    <div class="logentry-body" style="display:none"></div>`;
+  log.appendChild(entry);
+  const head = entry.querySelector('.logentry-head');
+  const body = entry.querySelector('.logentry-body');
+  const tag = entry.querySelector('.logtag');
+  const meta = entry.querySelector('.logmeta');
+  head.addEventListener('click', () => {
+    const open = body.style.display === 'none';
+    body.style.display = open ? 'block' : 'none';
+    head.querySelector('.chev').classList.toggle('open', open);
+  });
+  $('searchLogToggle').style.display = 'flex';
+
+  let stageCount = 0;
+  return {
+    addStage(traceEntry) {
+      stageCount++;
+      body.insertAdjacentHTML('beforeend', renderTraceStage(traceEntry));
+      meta.textContent = `${stageCount} stage${stageCount === 1 ? '' : 's'}…`;
+    },
+    finish(item) {
+      tag.innerHTML = item.error ? '' : matchModeTag(item.matchMode);
+      meta.textContent = item.error
+        ? 'failed'
+        : `${stageCount} stage${stageCount === 1 ? '' : 's'}`;
+      if (!stageCount) body.innerHTML = '<div class="dnote">No trace recorded.</div>';
+    },
+  };
+}
+
+function resetSearchLog() {
+  $('searchLog').innerHTML = '';
+  $('searchLog').style.display = 'none';
+  $('searchLogToggle').style.display = 'none';
+  $('searchLogChev').classList.remove('open');
+}
+
 // --- Optional local index (see indexer/ + server/ at the repo root) ---------------------
 // Pre-built by a separate offline crawler: fetches every candidate device's decision summary
 // PDF once, extracts its Measurand AND its cited predicate device(s), and follows predicate
@@ -1043,30 +1216,68 @@ async function checkLocalIndexHealth(baseUrl) {
   }
 }
 
-async function fetchFromLocalIndex(baseUrl, term) {
-  const res = await fetch(`${baseUrl}/biomarker/${encodeURIComponent(term)}`);
-  if (!res.ok) throw new Error(`Local index returned HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.error) throw new Error(data.error);
-  return {
-    total: data.total,
-    records: data.records || [],
-    matchMode: data.matchMode,
-    expansion: data.expansion,
-    panelCandidates: data.panelCandidates || [],
-    inferredMatches: data.inferredMatches || [],
-  };
+// Consumes GET {baseUrl}/biomarker/{term}/stream (server/main.py's SSE endpoint) via the
+// browser's native EventSource — each `trace` message calls onStage the instant it arrives
+// (which may be 20-30s apart around a real Tavily/Ollama round-trip, not batched at the end),
+// and the terminal `result` message resolves the returned promise with the same shape the old
+// plain (non-streaming) /biomarker/{term} call returned, so nothing downstream needs to change.
+function fetchFromLocalIndexStreaming(baseUrl, term, onStage) {
+  return new Promise((resolve, reject) => {
+    const es = new EventSource(`${baseUrl}/biomarker/${encodeURIComponent(term)}/stream`);
+    let settled = false;
+    const finish = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      es.close();
+      fn(arg);
+    };
+    es.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'trace') {
+        if (onStage) onStage(msg.entry);
+      } else if (msg.type === 'result') {
+        const data = msg.result;
+        finish(resolve, {
+          total: data.total,
+          records: data.records || [],
+          matchMode: data.matchMode,
+          expansion: data.expansion,
+          panelCandidates: data.panelCandidates || [],
+          inferredMatches: data.inferredMatches || [],
+          trace: data.trace || [],
+        });
+      } else if (msg.type === 'error') {
+        finish(reject, new Error(msg.message));
+      }
+    };
+    // EventSource auto-reconnects by default on a dropped connection — closing here on any
+    // error (rather than letting it retry against what may now be a dead server) matches the
+    // existing "any local-index failure falls through to client-side tiers" behavior below.
+    es.onerror = () => {
+      finish(reject, new Error('Local index stream connection failed'));
+    };
+  });
 }
 
-async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
+async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage) {
+  let localIndexError = null;
   if (localIndexUrl) {
     try {
-      return await fetchFromLocalIndex(localIndexUrl, term);
+      return await fetchFromLocalIndexStreaming(localIndexUrl, term, onStage);
     } catch (e) {
       // Any local-index failure (server down mid-search, AI expansion lookup failed, etc.)
-      // falls through to the live tiers below rather than failing the whole search.
+      // falls through to the live tiers below rather than failing the whole search — noted in
+      // the trace (built below) so the search-process log shows "backend was tried and
+      // failed, here's the fallback instead," not just a silent switch.
+      localIndexError = e.message || String(e);
     }
   }
+  // A real Array wrapped so every existing pushTrace(trace, ...) call below also streams live
+  // to the search-process log the instant each client-side tier resolves — see LiveTrace.
+  const trace = new LiveTrace(onStage);
+  if (localIndexError) pushTrace(trace, 'local-index', 'error', localIndexError);
+
   const searchTerm = toSearchTerm(term);
   const expansion = lookupExpansion(searchTerm);
   let resultExpansion = expansion;
@@ -1074,25 +1285,51 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
   // returned immediately, so later tiers can still union in matches it couldn't see.
   let best = null;
 
+  let t0 = performance.now();
   const exact = await runOpenFdaQuery(buildExactExpr(searchTerm), apiKey);
-  if (exact.total > 0) best = { ...exact, matchMode: 'exact' };
+  if (exact.total > 0) {
+    best = { ...exact, matchMode: 'exact' };
+    pushTrace(trace, 'match:exact', 'hit', `${exact.total} result(s)`, Math.round(performance.now() - t0));
+  } else {
+    pushTrace(trace, 'match:exact', 'miss', '0 results', Math.round(performance.now() - t0));
+  }
 
   if (!best) {
     const broadExpr = buildBroadExpr(searchTerm);
     if (broadExpr) {
       await sleep(150);
+      t0 = performance.now();
       const broad = await runOpenFdaQuery(broadExpr, apiKey);
-      if (broad.total > 0) best = { ...broad, matchMode: 'broad' };
+      if (broad.total > 0) {
+        best = { ...broad, matchMode: 'broad' };
+        pushTrace(trace, 'match:broad', 'hit', `${broad.total} result(s)`, Math.round(performance.now() - t0));
+      } else {
+        pushTrace(trace, 'match:broad', 'miss', '0 results', Math.round(performance.now() - t0));
+      }
+    } else {
+      pushTrace(trace, 'match:broad', 'skipped', 'term too short/single-token for a broad query');
     }
+  } else {
+    pushTrace(trace, 'match:broad', 'skipped', 'an earlier tier already matched');
   }
 
   if (!best) {
     const antigenExpr = buildAntigenExpr(searchTerm);
     if (antigenExpr && antigenExpr !== buildExactExpr(searchTerm)) {
       await sleep(150);
+      t0 = performance.now();
       const antigen = await runOpenFdaQuery(antigenExpr, apiKey);
-      if (antigen.total > 0) best = { ...antigen, matchMode: 'antigen-only' };
+      if (antigen.total > 0) {
+        best = { ...antigen, matchMode: 'antigen-only' };
+        pushTrace(trace, 'match:antigen-only', 'hit', `${antigen.total} result(s)`, Math.round(performance.now() - t0));
+      } else {
+        pushTrace(trace, 'match:antigen-only', 'miss', '0 results', Math.round(performance.now() - t0));
+      }
+    } else {
+      pushTrace(trace, 'match:antigen-only', 'skipped', 'antigen-only query is identical to the exact query');
     }
+  } else {
+    pushTrace(trace, 'match:antigen-only', 'skipped', 'an earlier tier already matched');
   }
 
   // Always checked and unioned in, regardless of whether an earlier tier already found
@@ -1101,10 +1338,20 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
   const fusedExpr = buildFusedAntiExpr(searchTerm);
   if (fusedExpr) {
     await sleep(150);
+    t0 = performance.now();
     const fused = await runOpenFdaQuery(fusedExpr, apiKey);
     if (fused.total > 0) {
+      const mergedMode = best ? best.matchMode : 'fused-anti';
       best = best ? { ...mergeQueryResults(best, fused), matchMode: best.matchMode } : { ...fused, matchMode: 'fused-anti' };
+      const detail = mergedMode === 'fused-anti'
+        ? `${fused.total} result(s) — first tier to match`
+        : `${fused.total} result(s), merged into existing ${mergedMode} match`;
+      pushTrace(trace, 'match:fused-anti', 'hit', detail, Math.round(performance.now() - t0));
+    } else {
+      pushTrace(trace, 'match:fused-anti', 'miss', '0 results', Math.round(performance.now() - t0));
     }
+  } else {
+    pushTrace(trace, 'match:fused-anti', 'skipped', 'term has no anti-prefix/isotype signal');
   }
 
   // Same always-checked posture as fused-anti above, for the same reason: generalizes what
@@ -1114,10 +1361,20 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
   const wordformExpr = buildWordformExpr(searchTerm);
   if (wordformExpr) {
     await sleep(150);
+    t0 = performance.now();
     const wordform = await runOpenFdaQuery(wordformExpr, apiKey);
     if (wordform.total > 0) {
+      const mergedMode = best ? best.matchMode : 'wordform';
       best = best ? { ...mergeQueryResults(best, wordform), matchMode: best.matchMode } : { ...wordform, matchMode: 'wordform' };
+      const detail = mergedMode === 'wordform'
+        ? `${wordform.total} result(s) — first tier to match`
+        : `${wordform.total} result(s), merged into existing ${mergedMode} match`;
+      pushTrace(trace, 'match:wordform', 'hit', detail, Math.round(performance.now() - t0));
+    } else {
+      pushTrace(trace, 'match:wordform', 'miss', '0 results', Math.round(performance.now() - t0));
     }
+  } else {
+    pushTrace(trace, 'match:wordform', 'skipped', 'no orthographic variants generated for this term');
   }
 
   // A dictionary-verified alternate wording is normally only tried once nothing else has
@@ -1141,26 +1398,57 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl) {
     let resolvedMode = null;
 
     if (umlsApiKey) {
+      t0 = performance.now();
       const umlsExpansion = await lookupUmlsExpansion(searchTerm, umlsApiKey);
-      if (umlsExpansion) { resolvedExpansion = umlsExpansion; resolvedMode = 'umls'; }
+      const elapsed = Math.round(performance.now() - t0);
+      if (umlsExpansion) {
+        resolvedExpansion = umlsExpansion; resolvedMode = 'umls';
+        pushTrace(trace, 'expansion:umls', 'hit', `matched: ${umlsExpansion.full}`, elapsed);
+      } else {
+        pushTrace(trace, 'expansion:umls', 'miss', '0 usable results', elapsed);
+      }
+    } else {
+      pushTrace(trace, 'expansion:umls', 'skipped', 'no UMLS key configured');
     }
+    // No client-side Tavily/local-LLM crosscheck — that tier is backend-only (see
+    // indexer/ai_expansion.py); noted here so the log doesn't just silently omit it.
+    pushTrace(trace, 'expansion:local-llm', 'skipped', 'AI crosscheck only runs via the local index server');
 
     if (resolvedExpansion) {
       const resolvedExpr = buildExpansionExpr(resolvedExpansion, antiRequirementMode(searchTerm));
       if (resolvedExpr) {
         await sleep(150);
+        t0 = performance.now();
         const resolved = await runOpenFdaQuery(resolvedExpr, apiKey);
+        const elapsed = Math.round(performance.now() - t0);
         if (resolved.total > 0) {
           best = { ...resolved, matchMode: resolvedMode };
           resultExpansion = resolvedExpansion;
+          pushTrace(trace, 'match:expansion', 'hit', `${resolved.total} result(s) — first tier to match`, elapsed);
+        } else {
+          pushTrace(trace, 'match:expansion', 'miss', '0 results', elapsed);
         }
+      } else {
+        pushTrace(trace, 'match:expansion', 'skipped', 'resolved expansion produced no usable query');
       }
+    } else {
+      pushTrace(trace, 'match:expansion', 'skipped', 'no expansion resolved for this term');
     }
+  } else {
+    pushTrace(trace, 'expansion:umls', 'skipped', 'an earlier tier already matched');
+    pushTrace(trace, 'expansion:local-llm', 'skipped', 'an earlier tier already matched');
+    pushTrace(trace, 'match:expansion', 'skipped', 'an earlier tier already matched');
   }
 
-  if (best) return { ...best, expansion: resultExpansion };
+  // No client-side equivalent — predicate propagation needs the crawled predicates table,
+  // which only exists server-side. Noted explicitly so fallback mode gives literal parity
+  // with the backend's stage list, not a silently shorter one.
+  pushTrace(trace, 'predicate-propagation', 'skipped',
+    'no local index server configured/reachable — predicate-chain inference unavailable in fallback mode');
 
-  return { ...exact, matchMode: 'exact', expansion: resultExpansion };
+  if (best) return { ...best, expansion: resultExpansion, trace: trace.entries };
+
+  return { ...exact, matchMode: 'exact', expansion: resultExpansion, trace: trace.entries };
 }
 
 // --- LDT (NY State CLEP) search ---------------------------------------------------------
@@ -1214,6 +1502,58 @@ async function fetchLdtBiomarker(term, proxyUrl) {
   return res.json(); // { term, total, count, records }
 }
 
+// --- LDT benefits from the resolved FDA-side expansion --------------------------------
+// A biomarker's full name/synonyms, once resolved via UMLS/AI for an FDA search, is useful
+// here too: NY's LDT listings might use the full name where a lab never wrote the bare
+// abbreviation. Only used when a local index server is configured and reachable (see
+// server/main.py's GET /expansion/{term}) — with no backend, LDT search behaves exactly as
+// before this feature (raw term only, no expansion query, no badges).
+async function fetchExpansionForLdt(term) {
+  const localIndexUrlSetting = getLocalIndexUrl();
+  if (!localIndexUrlSetting) return null;
+  const reachable = await checkLocalIndexHealth(localIndexUrlSetting);
+  if (!reachable) return null;
+  try {
+    const res = await fetch(`${localIndexUrlSetting}/expansion/${encodeURIComponent(term)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.expansion || null; // {full, search?} | null
+  } catch {
+    return null; // graceful degrade — LDT search proceeds on the raw term alone, same as today
+  }
+}
+
+// Defensive dedup key: worker/ldt-proxy.js's scraped records have no field confirmed globally
+// unique. detailLink (a per-test detail-page URL) is the best candidate; falls back to a
+// facility+project+analyte composite (identifies "the same lab's same approved test for the
+// same analyte" well enough for this tool's purposes) when detailLink is missing/empty.
+function ldtRecordKey(r) {
+  return r.detailLink || `${r.facilityId || ''}|${r.projectId || ''}|${r.analyte || ''}`;
+}
+
+// Two separate Worker calls (raw term, resolved expansion), merged and deduped client-side —
+// NOT one bigger "any word" query, since folding the expansion's words into the same query
+// would reintroduce exactly the "one generic word dominates the match set" problem
+// ldtQueryTerm() already exists to avoid (see its own comment). Each merged record is tagged
+// matchedVia: 'term' | 'expansion' | 'both' so a row can show which query actually found it.
+function mergeLdtResults(primary, expansionResult) {
+  // No expansion query ran at all (no backend, or nothing resolved) — pass primary records
+  // through untouched, with no `matchedVia` field, so the no-backend table renders exactly as
+  // it did before this feature (renderLdtResults only shows a badge when the field is present).
+  if (!expansionResult) return primary;
+
+  const byKey = new Map();
+  for (const r of primary.records) byKey.set(ldtRecordKey(r), { ...r, matchedVia: 'term' });
+  for (const r of expansionResult.records) {
+    const key = ldtRecordKey(r);
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? { ...existing, matchedVia: 'both' } : { ...r, matchedVia: 'expansion' });
+  }
+  const records = Array.from(byKey.values());
+  const total = Math.max(primary.total, expansionResult.total, records.length);
+  return { total, records };
+}
+
 function classifyLdt(status) {
   const s = (status || '').toLowerCase();
   if (s.includes('conditionally')) return 'conditional';
@@ -1234,34 +1574,42 @@ async function runFdaSearch() {
   const apiKey = $('apiKey').value.trim();
   const umlsApiKey = getUmlsApiKey();
   $('searchBtn').disabled = true;
-  $('exportBtn').disabled = true;
+  setExportButtonsDisabled(true);
   $('emptyState').style.display = 'none';
   $('crossCheckPrompt').style.display = 'none';
   $('crossCard').style.display = 'none';
   $('progressWrap').style.display = 'block';
+  resetSearchLog();
 
   // Checked once per search run, not per term, to avoid a redundant health check per
   // biomarker — if it's down mid-run, individual fetchBiomarker calls still fall back safely.
+  // Reused directly for the fallback banner below too, rather than a second probe.
   const localIndexUrlSetting = getLocalIndexUrl();
-  const localIndexUrl = localIndexUrlSetting && await checkLocalIndexHealth(localIndexUrlSetting)
-    ? localIndexUrlSetting : null;
+  const localIndexReachable = Boolean(localIndexUrlSetting) && await checkLocalIndexHealth(localIndexUrlSetting);
+  const localIndexUrl = localIndexReachable ? localIndexUrlSetting : null;
+  setLocalIndexBannerState(Boolean(localIndexUrlSetting), localIndexReachable);
 
   state = [];
   for (let i = 0; i < terms.length; i++) {
     const term = terms[i];
     $('progressTxt').textContent = `Searching ${i + 1} of ${terms.length}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / terms.length) * 100)}%`;
+    const logHandle = createSearchLogEntry(term);
     try {
-      const { total, records, matchMode, expansion, panelCandidates, inferredMatches } =
-        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl);
+      const { total, records, matchMode, expansion, panelCandidates, inferredMatches, trace } =
+        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, logHandle.addStage);
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
-      state.push({
+      const item = {
         term, total, approved, records, matchMode, expansion,
         panelCandidates: panelCandidates || [], inferredMatches: inferredMatches || [],
-        error: null,
-      });
+        trace: trace || [], error: null,
+      };
+      state.push(item);
+      logHandle.finish(item);
     } catch (e) {
-      state.push({ term, total: 0, approved: 0, records: [], error: e.message || String(e) });
+      const item = { term, total: 0, approved: 0, records: [], trace: [], error: e.message || String(e) };
+      state.push(item);
+      logHandle.finish(item);
     }
     if (i < terms.length - 1) await sleep(250);
   }
@@ -1269,7 +1617,7 @@ async function runFdaSearch() {
   $('pbarFill').style.width = '100%';
   $('progressTxt').textContent = `Done — ${terms.length} biomarker(s) searched.`;
   $('searchBtn').disabled = false;
-  $('exportBtn').disabled = false;
+  setExportButtonsDisabled(false);
   renderResults();
 
   const ldtCandidates = state.filter(isLdtCrossCheckCandidate);
@@ -1874,10 +2222,11 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
         ? `<div class="dnote">Showing ${s.records.length} of ${s.total} total matches (capped).</div>` : '';
       // Key information only, per the NY tool's own result output — facility, matched
       // analyte name, specimen type, permit category, status, and a link to the full record.
+      const matchedViaLabel = { term: 'Term', expansion: 'Expansion', both: 'Term + Expansion' };
       const rows = s.records.map(r => `
         <tr>
           <td>${escapeHtml(r.facilityName || '—')}</td>
-          <td>${escapeHtml(r.analyte || '—')}</td>
+          <td>${escapeHtml(r.analyte || '—')}${r.matchedVia ? ` <span class="mmtag" style="cursor:default">${matchedViaLabel[r.matchedVia]}</span>` : ''}</td>
           <td>${escapeHtml(r.specimenType || '—')}</td>
           <td>${escapeHtml(r.permitCategory || '—')}</td>
           <td>${ldtStatusBadge(r.status)}</td>
@@ -1972,21 +2321,65 @@ function renderLdtChart(valid) {
   });
 }
 
-async function runLdtSearchForTerms(terms, onProgress) {
+// `queries`: Array<{term, expansionFull?}>. expansionFull is only ever present when a resolved
+// full name is actually available (already-resolved via the FDA cross-check, or freshly
+// resolved via fetchExpansionForLdt) — see the two call sites (runLdtSearch, the crossCheckBtn
+// handler) for how each builds these. Deliberately just the plain full name, not the "/"-joined
+// synonym list build_expansion_expr uses on the FDA side — NY's "any word" match tokenizes on
+// whitespace only, so a slash-joined string with no spaces around the slashes would land as one
+// unmatchable token instead of several separate words.
+// `onTermLog`, if given, is called with each term the moment its search starts (mirroring
+// runFdaSearch's createSearchLogEntry) and must return a { addStage, finish } handle — used by
+// the direct LDT tab (runLdtSearch) so its two-query trace streams live into the same
+// search-process log the FDA tab uses. Deliberately NOT passed by the crossCheckBtn handler
+// (Table 2), which stays a secondary, opt-in action with its own inline progress text rather
+// than reopening the primary search log after the FDA search that triggered it already closed.
+async function runLdtSearchForTerms(queries, onProgress, onTermLog) {
   const results = [];
   const proxyUrl = getLdtProxyUrl();
-  for (let i = 0; i < terms.length; i++) {
-    const term = terms[i];
-    onProgress(i, terms.length, term);
+  for (let i = 0; i < queries.length; i++) {
+    const { term, expansionFull } = queries[i];
+    onProgress(i, queries.length, term);
+    const logHandle = onTermLog ? onTermLog(term) : null;
+    const trace = new LiveTrace(logHandle && logHandle.addStage);
     try {
-      const { total, records } = await fetchLdtBiomarker(term, proxyUrl);
+      let t0 = performance.now();
+      const primary = await fetchLdtBiomarker(term, proxyUrl);
+      pushTrace(trace, 'ldt:term-query', primary.total > 0 ? 'hit' : 'miss',
+        `${primary.total} result(s) for raw term`, Math.round(performance.now() - t0));
+
+      const expansionQueryTerm = expansionFull;
+      const meaningfullyDifferent = expansionQueryTerm &&
+        ldtQueryTerm(expansionQueryTerm).toLowerCase() !== ldtQueryTerm(term).toLowerCase();
+      let expansionResult = null;
+      if (meaningfullyDifferent) {
+        await sleep(150);
+        t0 = performance.now();
+        expansionResult = await fetchLdtBiomarker(expansionQueryTerm, proxyUrl);
+        pushTrace(trace, 'ldt:expansion-query', expansionResult.total > 0 ? 'hit' : 'miss',
+          `${expansionResult.total} result(s) for resolved name '${expansionQueryTerm}'`,
+          Math.round(performance.now() - t0));
+      } else if (expansionQueryTerm) {
+        pushTrace(trace, 'ldt:expansion-query', 'skipped', 'resolved name is the same as the raw term');
+      } else {
+        pushTrace(trace, 'ldt:expansion-query', 'skipped', 'no resolved expansion available for this term');
+      }
+
+      const { total, records } = mergeLdtResults(primary, expansionResult);
       const approved = records.filter(r => classifyLdt(r.status) === 'approved').length;
       const conditional = records.filter(r => classifyLdt(r.status) === 'conditional').length;
-      results.push({ term, total, approved, conditional, records, error: null });
+      const item = { term, total, approved, conditional, records, trace: trace.entries, error: null };
+      results.push(item);
+      if (logHandle) logHandle.finish(item);
     } catch (e) {
-      results.push({ term, total: 0, approved: 0, conditional: 0, records: [], error: e.message || String(e) });
+      const item = {
+        term, total: 0, approved: 0, conditional: 0, records: [],
+        trace: trace.entries, error: e.message || String(e),
+      };
+      results.push(item);
+      if (logHandle) logHandle.finish(item);
     }
-    if (i < terms.length - 1) await sleep(250);
+    if (i < queries.length - 1) await sleep(250);
   }
   return results;
 }
@@ -1998,21 +2391,40 @@ async function runLdtSearch() {
   localStorage.setItem('biomarker_terms', $('biomarkers').value);
 
   $('searchBtn').disabled = true;
-  $('exportBtn').disabled = true;
+  setExportButtonsDisabled(true);
   $('emptyState').style.display = 'none';
   $('crossCheckPrompt').style.display = 'none';
   $('crossCard').style.display = 'none';
   $('progressWrap').style.display = 'block';
+  resetSearchLog();
 
-  ldtState = await runLdtSearchForTerms(terms, (i, n, term) => {
+  // No prior FDA search to draw an already-resolved expansion from (unlike the cross-check
+  // path below) — resolve one fresh per term via the lightweight /expansion endpoint, only
+  // when a local index is configured and reachable. Same reuse-the-probe-result pattern as
+  // runFdaSearch, so this doesn't cost a second health check on top of fetchExpansionForLdt's
+  // own per-term check.
+  const localIndexUrlSetting = getLocalIndexUrl();
+  const localIndexReachable = Boolean(localIndexUrlSetting) && await checkLocalIndexHealth(localIndexUrlSetting);
+  setLocalIndexBannerState(Boolean(localIndexUrlSetting), localIndexReachable);
+  const queries = [];
+  for (const term of terms) {
+    let expansionFull = null;
+    if (localIndexReachable) {
+      const exp = await fetchExpansionForLdt(term);
+      if (exp) expansionFull = exp.full;
+    }
+    queries.push({ term, expansionFull });
+  }
+
+  ldtState = await runLdtSearchForTerms(queries, (i, n, term) => {
     $('progressTxt').textContent = `Searching LDT ${i + 1} of ${n}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / n) * 100)}%`;
-  });
+  }, (term) => createSearchLogEntry(term));
 
   $('pbarFill').style.width = '100%';
   $('progressTxt').textContent = `Done — ${terms.length} biomarker(s) searched.`;
   $('searchBtn').disabled = false;
-  $('exportBtn').disabled = false;
+  setExportButtonsDisabled(false);
   renderLdtResults(ldtState);
 }
 
@@ -2020,14 +2432,20 @@ let crossState = [];
 
 $('crossCheckBtn').addEventListener('click', async () => {
   if (!getLdtProxyUrl()) { alert('Add your LDT proxy Worker URL in Settings (gear icon) first.'); return; }
-  const terms = state.filter(isLdtCrossCheckCandidate).map(s => s.term);
-  if (!terms.length) return;
+  // Reuses each candidate's expansion already resolved moments earlier by the FDA search that
+  // just ran (state[i].expansion) — free, no extra network cost, unlike the direct-LDT-tab
+  // path (runLdtSearch above), which has no prior FDA search to draw one from.
+  const queries = state.filter(isLdtCrossCheckCandidate).map(s => ({
+    term: s.term,
+    expansionFull: s.expansion ? s.expansion.full : null,
+  }));
+  if (!queries.length) return;
 
   $('crossCheckBtn').disabled = true;
   $('crossCard').style.display = 'block';
-  $('crossBody').innerHTML = `<tr><td colspan="6" class="dnote" style="padding:12px 10px">Searching LDT database for ${terms.length} biomarker(s)…</td></tr>`;
+  $('crossBody').innerHTML = `<tr><td colspan="6" class="dnote" style="padding:12px 10px">Searching LDT database for ${queries.length} biomarker(s)…</td></tr>`;
 
-  crossState = await runLdtSearchForTerms(terms, (i, n, term) => {
+  crossState = await runLdtSearchForTerms(queries, (i, n, term) => {
     $('crossBody').innerHTML = `<tr><td colspan="6" class="dnote" style="padding:12px 10px">Searching LDT ${i + 1} of ${n}: ${escapeHtml(term)}…</td></tr>`;
   });
 
@@ -2123,16 +2541,68 @@ function ldtDetailRows(targetState) {
   return detailRows;
 }
 
+// Excel cell colors, via xlsx-js-style's per-cell `s` property (a style-capable SheetJS
+// Community Edition fork — plain SheetJS CE can't write cell styles at all, which is why the
+// CDN script tag points at xlsx-js-style instead). Matches the tool's own on-screen palette
+// (--acc / --red / --acc2 in the stylesheet above) so an exported file reads the same way away
+// from the browser.
+const XLSX_HEADER_STYLE = {
+  font: { bold: true, color: { rgb: 'FFFFFF' } },
+  fill: { fgColor: { rgb: '0066B3' } },
+  alignment: { vertical: 'center' }
+};
+const XLSX_BAND_FILL = { fill: { fgColor: { rgb: 'F2F6FA' } } };
+
+// Bolds/colors the header row and lightly bands alternating data rows on any sheet built via
+// json_to_sheet/aoa_to_sheet, using the range Sheet already computed in ws['!ref'].
+function styleSheet(ws) {
+  if (!ws['!ref']) return ws;
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: range.s.r, c })];
+    if (cell) cell.s = XLSX_HEADER_STYLE;
+  }
+  for (let r = range.s.r + 1; r <= range.e.r; r++) {
+    if ((r - range.s.r) % 2 === 0) continue;
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
+      if (cell && !cell.s) cell.s = XLSX_BAND_FILL;
+    }
+  }
+  return ws;
+}
+
+// Colors a numeric column red/green by HIGH_APPROVAL_THRESHOLD, matching the on-screen badge
+// convention (see .badge.high/.badge.low above) so the Summary sheet's "Cleared (Approved)"
+// column reads the same crowded-vs-open signal the live table already shows.
+function colorThresholdColumn(ws, colName) {
+  if (!ws['!ref']) return ws;
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  let col = -1;
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const header = ws[XLSX.utils.encode_cell({ r: range.s.r, c })];
+    if (header && header.v === colName) { col = c; break; }
+  }
+  if (col === -1) return ws;
+  for (let r = range.s.r + 1; r <= range.e.r; r++) {
+    const cell = ws[XLSX.utils.encode_cell({ r, c: col })];
+    if (!cell || typeof cell.v !== 'number') continue;
+    const fill = cell.v >= HIGH_APPROVAL_THRESHOLD ? 'DC2626' : '1B7A4D';
+    cell.s = { font: { color: { rgb: 'FFFFFF' }, bold: true }, fill: { fgColor: { rgb: fill } } };
+  }
+  return ws;
+}
+
 // Shared by both the main Export to Excel button and the one at the bottom of the LDT
 // cross-check table (Table 2) — same workbook either way, so clicking either produces an
 // identical file; the second button just saves scrolling back up after running a cross-check.
-// Sets column widths and turns on Excel's filter-dropdown row, reusing the range json_to_sheet
-// already computed in ws['!ref'] (covers the header plus every data row) so the filter applies
-// to the whole sheet, not just the header.
+// Sets column widths, turns on Excel's filter-dropdown row, and applies header/banding colors,
+// reusing the range json_to_sheet already computed in ws['!ref'] (covers the header plus every
+// data row) so both the filter and the styling apply to the whole sheet, not just the header.
 function formatSheet(ws, colWidths) {
   if (colWidths) ws['!cols'] = colWidths.map(w => ({ wch: w }));
   if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
-  return ws;
+  return styleSheet(ws);
 }
 
 // A saved export otherwise gives no way to tell, weeks later, whether "only 3 rows" means
@@ -2179,7 +2649,7 @@ function exportToExcel() {
 
   if (searchMode === 'ldt') {
     if (!ldtState.length) return;
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSearchInfoRows()), 'Search Info');
+    XLSX.utils.book_append_sheet(wb, styleSheet(XLSX.utils.aoa_to_sheet(buildSearchInfoRows())), 'Search Info');
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(ldtState)), [8, 26, 16, 12, 20, 24]), 'LDT Summary');
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtDetailRows(ldtState)), [22, 34, 26, 18, 18, 16, 50]), 'LDT Details');
     XLSX.writeFile(wb, `NY_LDT_Biomarker_Search_${ts}.xlsx`);
@@ -2252,8 +2722,10 @@ function exportToExcel() {
     });
   });
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildSearchInfoRows()), 'Search Info');
-  XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(summaryRows), [8, 22, 30, 16, 16, 16, 20, 30]), 'Summary');
+  XLSX.utils.book_append_sheet(wb, styleSheet(XLSX.utils.aoa_to_sheet(buildSearchInfoRows())), 'Search Info');
+  const summarySheet = formatSheet(XLSX.utils.json_to_sheet(summaryRows), [8, 22, 30, 16, 16, 16, 20, 30]);
+  colorThresholdColumn(summarySheet, 'Cleared (Approved)');
+  XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
   const applicantRows = buildApplicantSummaryRows(valid);
   if (applicantRows.length) {
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(applicantRows), [30, 16, 16, 60]), 'Biomarker Applicants');
@@ -2270,6 +2742,7 @@ function exportToExcel() {
 }
 
 $('exportBtn').addEventListener('click', exportToExcel);
+$('resultsExportBtn').addEventListener('click', exportToExcel);
 $('crossExportBtn').addEventListener('click', exportToExcel);
 </script>
 </body>

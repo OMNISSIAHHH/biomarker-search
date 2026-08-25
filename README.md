@@ -5,17 +5,19 @@ lab tests already exist for it — and, optionally, whether it's also offered as
 test in New York State. Meant to help you quickly gauge whether a biomarker is a crowded space
 (lots of existing tests) or an open opportunity (few or none).
 
-Two parts: a browser interface (no install) and a local cross-check backend (one-time Python
-setup). **Run both — the backend is the default workflow, not an optional add-on.** It finds
-real FDA approvals the browser alone structurally cannot see (see [Setup](#setup)). The browser
-alone still works with zero setup — useful for a fast first look, or when Python isn't available
-— but treat that as the reduced/fallback mode.
+Two parts: a browser interface (no install) and a local cross-check backend (a double-click
+program, no coding needed — see [Getting started](#getting-started)). **Run both — the backend
+is the default workflow, not an optional add-on.** It finds real FDA approvals the browser alone
+structurally cannot see (see [Why there's a backend](#why-theres-a-backend-and-what-it-does)).
+The browser alone still works with zero setup — useful for a fast first look, or if you'd rather
+skip the backend entirely — but treat that as the reduced/fallback mode.
 
 > Unfamiliar word (like "510(k)" or "LDT")? Check the **[Glossary](#glossary)** at the bottom.
 
 ## Contents
 
-- [Setup](#setup)
+- [Getting started](#getting-started)
+- [Why there's a backend, and what it does](#why-theres-a-backend-and-what-it-does)
 - [Searching for a biomarker](#searching-for-a-biomarker)
 - [Reading your results](#reading-your-results)
 - [Sorting your results](#sorting-your-results)
@@ -26,20 +28,51 @@ alone still works with zero setup — useful for a fast first look, or when Pyth
 - [Searching lab-developed tests (LDT) in New York State](#searching-lab-developed-tests-ldt-in-new-york-state)
 - [Things to keep in mind](#things-to-keep-in-mind)
 - [Glossary](#glossary)
+- [For developers](#for-developers)
 
-## Setup
+## Getting started
 
-### Part 1 — the browser interface (always needed, no install)
+No coding, no installing Python, nothing typed into a black-and-white window required. Two files
+work together: **`FDA510kBiomarkerSearch.html`** (the tool itself, opens in your normal browser)
+and **`BiomarkerSearchServer.exe`** (a small helper program — see
+[Why there's a backend](#why-theres-a-backend-and-what-it-does) for what it adds and why it's
+worth the extra step).
 
-1. Click the green **Code** button at the top of this page → **Download ZIP**. (Already have the
-   folder? Skip this.)
-2. Extract the ZIP (right-click → **Extract All** on Windows, double-click on Mac).
-3. Double-click **`FDA510kBiomarkerSearch.html`** inside the extracted folder — it opens in your
-   browser. Double-click the same file again any time you want to use the tool.
+1. Click the green **Code** button at the top of this page → **Download ZIP**, then extract it
+   (right-click → **Extract All** on Windows, double-click on Mac). *(Already have the folder?
+   Skip this.)*
+2. Double-click **`BiomarkerSearchServer.exe`**. A black window opens and, after a moment, prints
+   a line ending in "Application startup complete" — that means it's running.
+   **Leave this window open** while you use the tool; closing it just drops the tool back to
+   browser-only mode (see below), it doesn't break anything.
+   - Windows will very likely show a blue **"Windows protected your PC"** warning the first
+     time — that's expected, not a sign anything's wrong. This program isn't digitally
+     signed by a registered publisher (that costs money, not worthwhile for a small free tool),
+     so Windows flags anything unrecognized by default. Click **More info**, then **Run
+     anyway**. You'll only see this once.
+3. Double-click **`FDA510kBiomarkerSearch.html`** — it opens in your browser.
+4. Click the gear icon (⚙) → **Settings**, and paste `http://localhost:8000` into **Local index
+   server URL**. This points the tool at the program you started in step 2.
+5. Search — see [Searching for a biomarker](#searching-for-a-biomarker).
 
-### Part 2 — the cross-check backend (default workflow, not optional)
+**Optional: add API keys later, still with no coding.** A few extra features (see
+[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck)) work
+better with a free API key. To add one:
 
-The backend does two things the browser search structurally can't:
+1. In the same folder as `BiomarkerSearchServer.exe`, right-click an empty spot → **New** →
+   **Text Document**.
+2. Rename the new file to exactly `.env` (delete the `.txt` at the end — Windows will warn about
+   changing a file extension; confirm yes, that's intentional).
+3. Right-click it → **Open with** → **Notepad**, and add a line like:
+   ```
+   TAVILY_API_KEY=your-key-here
+   ```
+4. Save and close Notepad, then close the black `BiomarkerSearchServer.exe` window (if it's
+   still open) and double-click the exe again so it picks up the new setting.
+
+## Why there's a backend, and what it does
+
+The backend does two things the browser alone structurally can't:
 
 - **Reads bundled-panel reagents out of device PDFs.** Some devices measure a biomarker as part
   of a multi-antigen panel kit but never name it in FDA's searchable device data — only inside
@@ -48,69 +81,28 @@ The backend does two things the browser search structurally can't:
   tagged **"inferred via predicate"** — shown separately, not counted in totals, since a cited
   predicate is a strong hint, not proof of an identical panel.
 - **Precomputes the alternate-wordform check, so it's fast.** Same logic the browser runs live
-  (see [Reading your results](#reading-your-results)), just computed once during the crawl
-  instead of on every search — the browser alone has to make an extra network call per biomarker
-  for this, which is noticeably slower.
+  (see [Reading your results](#reading-your-results)), just computed once ahead of time instead
+  of on every search — the browser alone has to make an extra network call per biomarker for
+  this, which is noticeably slower.
 
 510(k)-only, same as the browser search — no GUDID/UDI device-registration cross-check, no PMA
 (Premarket Approval, a different FDA pathway for higher-risk Class III devices).
 
-**Confirmed-match results work immediately for any biomarker — nothing to crawl first.** Only
-the predicate-chain ("inferred via predicate") tier needs the one-time (then periodic) crawl
-below, since it depends on having already read every scope device's PDF. That crawl doesn't need
-to know which biomarkers you care about — it just builds the general device+PDF corpus (bounded
-to a handful of relevant FDA review panels) that predicate-chain lookups draw on later.
+**Confirmed-match results work immediately for any biomarker, right after step 2 of**
+[Getting started](#getting-started) — nothing to wait on. The predicate-chain ("inferred via
+predicate") tier is a bit different: it depends on `BiomarkerSearchServer.exe`'s companion
+`index.sqlite3` file already having read the relevant device's paperwork. If your download
+included a pre-built `index.sqlite3` next to the exe, this just works. If not (a fresh, empty
+`index.sqlite3` gets created automatically the first time you search), predicate-chain results
+stay empty until someone runs the underlying crawl — a source/Python step, covered in
+[For developers](#for-developers), meant to be run occasionally by whoever maintains your copy of
+this tool, not by every individual user.
 
-**Setup** (one-time, from the repo root):
-```bash
-pip install -r indexer/requirements.txt
-pip install -r server/requirements.txt
-python -m indexer.crawl
-```
-Unlocks the predicate-chain tier — confirmed matches already work before this finishes. Takes a
-while the first run (reading real PDFs, politely rate-limited); re-run periodically to pick up
-newly-cleared devices (skips PDFs already fetched, so a re-run is fast).
+Without the backend running (or if you skip it entirely), the tool still works from the browser
+alone — a banner reading "Running in fallback mode" shows when this is the case — just without
+predicate-chain results or the automatic abbreviation lookups below.
 
-**API keys — set them in the `.env` file at the repo root:**
-```
-OPENFDA_API_KEY=      # raises the openFDA rate limit from 1,000/day to 120,000/day
-UMLS_API_KEY=         # automatic abbreviation lookup — see below
-TAVILY_API_KEY=       # automatic abbreviation lookup fallback — see below
-LOCAL_LLM_URL=http://localhost:11434
-LOCAL_LLM_MODEL=llama3.2:3b
-```
-All optional — the tool works with none of them set, just with fewer automatic lookups and a
-lower openFDA rate limit. `python -m indexer.crawl --api-key KEY` also works instead of `.env`.
-
-**Optional: OCR for scanned decision summaries.** Some older 510(k) submissions are scanned
-paper documents with no text layer — nothing to parse a Measurand or predicate table out of.
-Install the free [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) OCR engine and the
-crawl automatically falls back to it for exactly those documents (documents with a normal text
-layer are unaffected, so this adds no time for the majority of devices):
-- **Windows**: run the installer from the
-  [UB-Mannheim Tesseract page](https://github.com/UB-Mannheim/tesseract/wiki), then add its
-  install folder (containing `tesseract.exe`, usually `C:\Program Files\Tesseract-OCR`) to your
-  `PATH`.
-- **Mac**: `brew install tesseract`
-- **Linux**: `sudo apt install tesseract-ocr`
-
-Without Tesseract, the crawl behaves exactly as before this feature existed.
-
-**Running it:**
-```bash
-uvicorn server.main:app --reload
-```
-Resolves each biomarker's full name/synonyms automatically via UMLS, then a Tavily+local-LLM
-crosscheck for whatever UMLS doesn't cover (see
-[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck)) — reads
-these from your `.env` file, since this background process can't read the browser's Settings.
-
-Then open **Settings** (gear icon) in the tool and enter the server's address (e.g.
-`http://localhost:8000`) in **Local index server URL**. Searches now use the cross-checked
-backend automatically, falling back to the plain browser search if it's blank or unreachable. A
-banner reading "Running in fallback mode" shows until this is set.
-
-### Part 3 — optional extras
+Related optional extras, each documented in its own section:
 
 - **[Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck)** —
   resolve an unrecognized biomarker abbreviation to its full name, via UMLS and/or a
@@ -189,11 +181,13 @@ All filters work together, update live (no re-search needed), and carry into the
   panel** to see every panel present in your results and manually exclude ones that clearly
   don't belong. Nothing is excluded automatically. **Clear all review panels** undoes this.
 
-  **Which panels are safe to rule out, for a lab biomarker search specifically:**
+  **Which panels are safe to rule out, for a lab biomarker search specifically:** the panel names
+  below are checked directly against FDA's own 510(k) data (not just general regulatory
+  knowledge), so they match exactly what you'll see in the **Rule out FDA review panel** list.
 
   | Almost always safe to rule out | Where real biomarker tests actually live |
   |---|---|
-  | General, Plastic Surgery; Orthopedic; Cardiovascular; Radiology; Dental; Ear, Nose, and Throat; Ophthalmic; Anesthesiology; Physical Medicine; Gastroenterology-Urology; Obstetrics-Gynecology; General Hospital; Neurology | Immunology; Clinical Chemistry; Hematology; Microbiology; Pathology; Toxicology |
+  | General, Plastic Surgery; Orthopedic; Cardiovascular; Radiology; Dental; Ear, Nose, Throat; Ophthalmic; Anesthesiology; Physical Medicine; Gastroenterology, Urology; Obstetrics/Gynecology; General Hospital; Neurology | Immunology; Clinical Chemistry; Hematology; Microbiology; Pathology; Clinical Toxicology |
 
   The left column is hardware/surgical/imaging panels that never contain a lab assay — even
   blood-based biomarkers like troponin are classified under Clinical Chemistry, not
@@ -202,13 +196,21 @@ All filters work together, update live (no re-search needed), and carry into the
   realistically only ever lands in one of those six. Treat this as a strong default, not a
   guarantee — for an unfamiliar biomarker, it's still worth a glance at what's actually in a
   ruled-out panel's results before trusting the exclusion blindly.
+
+  Two panels don't fit cleanly into either column, worth knowing about rather than ruling out or
+  in by default: **Medical Genetics** (a tiny panel — 17 devices FDA-wide — for genetic-test
+  submissions; plausible for a gene-based biomarker but untested by this tool so far, so treat it
+  as a judgment call) and **Unknown** (devices with no panel assigned at all — a real, sizeable
+  bucket; don't assume ruling it out is safe just because its name suggests nothing's there).
 - **Clear all filters** — resets date range, company filter, show-only list, and ruled-out
   panels together.
 
 ## Exporting to Excel
 
-**Export to Excel** downloads a spreadsheet matching whatever's currently on screen (sort order
-+ active filters). Sheets:
+**Export to Excel** downloads a color-formatted spreadsheet matching whatever's currently on
+screen (sort order + active filters) — bold colored headers, and the same red/green
+crowded-vs-open shading from the on-screen table carried into the **Cleared (Approved)** column,
+so the file reads the same way away from the browser. Sheets:
 
 - **Search Info** — when/what/how this export was produced, so the file explains itself later.
 - **Summary** — one row per biomarker, totals + Unique Applicants.
@@ -257,7 +259,8 @@ has a local Ollama model extract the full name **from those actual search result
 its own memorized recall. A grounding check then confirms the model's answer actually traces
 back to the retrieved text before trusting it, rather than accepting whatever it says.
 
-Setup, via `.env` (see [Setup](#setup)): `TAVILY_API_KEY` from
+Setup, via `.env` (see [Getting started](#getting-started) or [For developers](#for-developers)):
+`TAVILY_API_KEY` from
 [tavily.com](https://tavily.com), plus a local [Ollama](https://ollama.com) install with a small
 model pulled (`ollama pull llama3.2:3b`) and set as `LOCAL_LLM_MODEL`. Use a small,
 **non-reasoning** model — avoid Qwen3, DeepSeek-R1, QwQ, and similar "thinking" models here,
@@ -299,7 +302,7 @@ Clinic Laboratories, LabCorp, etc.).
 - Everything you type and any browser Settings (Worker URLs, API keys) stay in your own browser
   — nothing is sent anywhere except directly to the FDA and, if configured, New York's site, the
   FDA paperwork site, NLM's UMLS database, Tavily, and your own local backend/AI model. Backend
-  API keys in `.env` stay on your machine and are gitignored.
+  API keys in `.env` stay on your machine — never uploaded or shared anywhere by this tool.
 
 ## Glossary
 
@@ -318,14 +321,71 @@ Clinic Laboratories, LabCorp, etc.).
 | **openFDA** | The FDA's own public, free database that this tool queries. |
 | **UMLS (Unified Medical Language System)** | A huge, free medical terminology database run by the National Library of Medicine (NLM) that combines many other medical vocabularies and knows an enormous number of abbreviations and their full names. This tool can optionally use it to resolve a biomarker abbreviation it doesn't already recognize. |
 
+## For developers
+
+Everything above assumes the packaged `BiomarkerSearchServer.exe`. This section is for running
+the backend from source instead — needed if you're modifying the code, rebuilding the exe (see
+[BUILD.md](BUILD.md)), or want to run the device+PDF crawl that fills in predicate-chain results
+(the exe itself doesn't crawl — see [Why there's a backend](#why-theres-a-backend-and-what-it-does)).
+
+**Running the server from source**, in place of the exe:
+```bash
+pip install -r indexer/requirements.txt
+pip install -r server/requirements.txt
+uvicorn server.main:app --reload
+```
+Reads `.env` and creates/reads `index.sqlite3` in the repo root either way — same as the exe,
+just relative to the repo instead of wherever the exe sits.
+
+**The device+PDF crawl** — builds/refreshes the corpus the predicate-chain tier depends on:
+```bash
+python -m indexer.crawl
+```
+Confirmed matches already work without this; it only unlocks the "inferred via predicate" tier.
+Takes a while the first run (reading real PDFs, politely rate-limited); re-run periodically to
+pick up newly-cleared devices (skips PDFs already fetched, so a re-run is fast). If you're
+distributing a ZIP to non-coder users, run this once yourself and include the resulting
+`index.sqlite3` next to the exe in that ZIP so predicate-chain results work for them out of the
+box.
+
+**API keys — `.env` at the repo root** (same file the exe reads, just via a text editor instead
+of the New-Text-Document trick in [Getting started](#getting-started)):
+```
+OPENFDA_API_KEY=      # raises the openFDA rate limit from 1,000/day to 120,000/day
+UMLS_API_KEY=         # automatic abbreviation lookup — see below
+TAVILY_API_KEY=       # automatic abbreviation lookup fallback — see below
+LOCAL_LLM_URL=http://localhost:11434
+LOCAL_LLM_MODEL=llama3.2:3b
+```
+All optional — the tool works with none of them set, just with fewer automatic lookups and a
+lower openFDA rate limit. `python -m indexer.crawl --api-key KEY` also works instead of `.env`.
+
+**Optional: OCR for scanned decision summaries.** Some older 510(k) submissions are scanned
+paper documents with no text layer — nothing to parse a Measurand or predicate table out of.
+Install the free [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) OCR engine and the
+crawl automatically falls back to it for exactly those documents (documents with a normal text
+layer are unaffected, so this adds no time for the majority of devices):
+- **Windows**: run the installer from the
+  [UB-Mannheim Tesseract page](https://github.com/UB-Mannheim/tesseract/wiki), then add its
+  install folder (containing `tesseract.exe`, usually `C:\Program Files\Tesseract-OCR`) to your
+  `PATH`.
+- **Mac**: `brew install tesseract`
+- **Linux**: `sudo apt install tesseract-ocr`
+
+Without Tesseract, the crawl behaves exactly as before this feature existed.
+
+**Building `BiomarkerSearchServer.exe`** — see [BUILD.md](BUILD.md).
+
 ## Tech (for anyone who *does* code)
 
 Plain HTML/CSS/JS, no build tooling. Uses [Chart.js](https://www.chartjs.org/) and
-[SheetJS](https://sheetjs.com/) from a CDN. See [worker/README.md](worker/README.md) for the two
-optional Cloudflare Worker proxies — UMLS needs no proxy, its API sends CORS headers allowing
-direct browser calls. The cross-check backend (`indexer/` + `server/`) is a separate Python
-project (see [Setup](#setup)); both load config from a `.env` file at the repo root via
-`python-dotenv`.
+[xlsx-js-style](https://github.com/gitbrent/xlsx-js-style) (a style-capable SheetJS Community
+Edition fork — same `XLSX` API, adds the cell colors/fonts used in the Excel export) from a CDN.
+See [worker/README.md](worker/README.md) for the two optional Cloudflare Worker proxies — UMLS
+needs no proxy, its API sends CORS headers allowing direct browser calls. The cross-check backend
+(`indexer/` + `server/`) is a separate Python project, packaged for end users as
+`BiomarkerSearchServer.exe` via PyInstaller (see [BUILD.md](BUILD.md)) or run from source (see
+[For developers](#for-developers)); both load config from a `.env` file via `python-dotenv`.
 
 ## License
 
