@@ -169,11 +169,11 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="apiKey" placeholder="openFDA API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">LDT search calls a small proxy Worker (NY's LDT site has no CORS support, so this tool can't reach it directly) — see <code>worker/README.md</code> in the repo for step-by-step deploy instructions (~5 min, no coding required).</div>
+        <div class="sinfo">LDT search calls a small proxy Worker (NY's LDT site has no CORS support, so this tool can't reach it directly) — pre-filled below with a donated, shared instance, ready to use immediately. It runs on one person's free Cloudflare account with a shared daily limit and no uptime guarantee — fine to try the tool, but deploy your own instead (see <code>worker/README.md</code>, ~5 min, no coding required) if you're using this regularly, then just overwrite this field.</div>
         <input class="skey" id="ldtProxyUrl" placeholder="LDT proxy Worker URL">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">Optional: "Check Measurand" on an FDA record reads the device's official Decision Summary PDF to confirm what it actually measures (same CORS problem as LDT — needs its own small proxy Worker, deployed the same way; see <code>worker/README.md</code>). Not every device has one.</div>
+        <div class="sinfo">"Check Measurand" on an FDA record reads the device's official Decision Summary PDF to confirm what it actually measures (same CORS problem as LDT, same shared instance/caveats — pre-filled below). Not every device has one.</div>
         <input class="skey" id="fdaPdfProxyUrl" placeholder="FDA PDF proxy Worker URL">
       </div>
       <div class="srow" style="margin-top:8px">
@@ -364,8 +364,15 @@ function normalizeProxyUrl(raw) {
   return url;
 }
 
+// Donated, shared Worker instances (see worker/README.md) — pre-filled so LDT search and
+// Check Measurand work immediately with zero setup. A user who deploys their own Worker just
+// overwrites the field, which then persists to localStorage and takes over on future loads;
+// these defaults only ever apply when nothing's been saved yet.
+const DEFAULT_LDT_PROXY_URL = 'https://ldt-proxy.francis121026.workers.dev';
+const DEFAULT_FDA_PDF_PROXY_URL = 'https://fda-pdf-proxyjs.francis121026.workers.dev';
+
 const savedLdtUrl = localStorage.getItem('ldt_proxy_url');
-if (savedLdtUrl) $('ldtProxyUrl').value = normalizeProxyUrl(savedLdtUrl);
+$('ldtProxyUrl').value = normalizeProxyUrl(savedLdtUrl || DEFAULT_LDT_PROXY_URL);
 $('ldtProxyUrl').addEventListener('change', (e) => {
   const url = normalizeProxyUrl(e.target.value);
   e.target.value = url;
@@ -373,7 +380,7 @@ $('ldtProxyUrl').addEventListener('change', (e) => {
 });
 
 const savedFdaPdfUrl = localStorage.getItem('fda_pdf_proxy_url');
-if (savedFdaPdfUrl) $('fdaPdfProxyUrl').value = normalizeProxyUrl(savedFdaPdfUrl);
+$('fdaPdfProxyUrl').value = normalizeProxyUrl(savedFdaPdfUrl || DEFAULT_FDA_PDF_PROXY_URL);
 $('fdaPdfProxyUrl').addEventListener('change', (e) => {
   const url = normalizeProxyUrl(e.target.value);
   e.target.value = url;

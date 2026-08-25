@@ -232,11 +232,11 @@ device name alone. Shows **Matches** or **No match**.
 Most documents label this "Measurand" or "Analyte"; multi-parameter devices (e.g. hematology
 analyzers) have neither, so the tool falls back to "Type of Test" or "Intended Use" instead.
 
-**One-time setup required:** FDA's site blocks direct browser access to this PDF, so this needs
-a small free Cloudflare "Worker" go-between. See **[worker/README.md](worker/README.md)**
-(~5 minutes, no coding), or paste a ready-made shared Worker URL from there to skip setup
-entirely. Until then, the button tells you a Worker URL is needed in Settings. Skipping this
-setup doesn't affect anything else — it's an optional extra layer of confirmation.
+**Already works out of the box:** FDA's site blocks direct browser access to this PDF, so this
+needs a small Cloudflare "Worker" go-between — a shared one is already pre-filled in Settings,
+no setup needed to try it. That shared instance has a daily limit and no uptime guarantee,
+though, so if you're using this regularly, deploy your own (**[worker/README.md](worker/README.md)**,
+~5 minutes, no coding) and paste its URL into Settings to replace the shared one.
 
 ## Automatic abbreviation lookup (UMLS and AI crosscheck)
 
@@ -283,8 +283,8 @@ keeps a public list, searchable here too.
 devices, a button appears offering to check all of them against New York's list in one pass — a
 low-but-nonzero count can still point to a real LDT-only opportunity, not just a strict zero.
 
-**One-time setup required:** same reason as Measurand above — see
-**[worker/README.md](worker/README.md)**, or use a shared Worker URL from there.
+**Already works out of the box** — same reason and same shared-instance caveats as Measurand
+above.
 
 ### If nothing turns up
 
