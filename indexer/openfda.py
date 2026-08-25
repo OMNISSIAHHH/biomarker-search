@@ -40,8 +40,15 @@ async def fetch_with_retry(client: httpx.AsyncClient, url: str, params: dict) ->
     raise OpenFdaError("unreachable")  # pragma: no cover
 
 
-async def run_query(client: httpx.AsyncClient, endpoint: str, expr: str, api_key: str | None = None) -> dict:
-    """Mirrors runOpenFdaQuery: paginate skip/limit up to MAX_RECORDS, return {total, records}."""
+async def run_query(client: httpx.AsyncClient, endpoint: str, expr: str, api_key: str | None = None,
+                     max_records: int | None = MAX_RECORDS) -> dict:
+    """Mirrors runOpenFdaQuery: paginate skip/limit up to max_records, return {total, records}.
+    max_records=None paginates through the entire result set with no cap — used by
+    fetch_all_in_scope below, where the whole point is reaching every device in scope, not a
+    capped sample of it. Defaults to MAX_RECORDS (300), matching the live browser tool's
+    documented per-search display cap, for every other caller (the confirmed-match tiers in
+    indexer/matching.py) where that cap is intentional.
+    """
     records: list[dict] = []
     total = 0
     skip = 0
@@ -64,7 +71,7 @@ async def run_query(client: httpx.AsyncClient, endpoint: str, expr: str, api_key
         records.extend(data.get("results", []))
         total = data.get("meta", {}).get("results", {}).get("total", 0)
         skip += PAGE_LIMIT
-        if not (skip < total and skip < MAX_RECORDS):
+        if not (skip < total and (max_records is None or skip < max_records)):
             break
     return {"total": total, "records": records}
 
@@ -72,15 +79,22 @@ async def run_query(client: httpx.AsyncClient, endpoint: str, expr: str, api_key
 async def fetch_all_in_scope(client: httpx.AsyncClient, endpoint: str, committee_field: str,
                               committees: list[str], api_key: str | None = None) -> list[dict]:
     """Fetch every record in `endpoint` whose committee_field is one of `committees` — the
-    bounded crawl scope. One query per committee (rather than one giant OR) keeps each
-    individual query's result count well under MAX_RECORDS pagination surprises and makes
-    partial-failure retry simpler (a single committee's fetch can be retried without redoing
-    the others).
+    bounded crawl scope. Uncapped (max_records=None) per committee: this previously reused
+    run_query's default 300-record cap, silently truncating every committee's population to the
+    same 300 devices regardless of how many actually exist — confirmed live, exactly 6
+    committees x 300 = 1800 devices in scope, every single crawl run, no matter how much of
+    FDA's real history each panel actually has. The predicate graph's whole value is reaching
+    devices text search misses entirely, so it needs the true full population per committee, not
+    a capped sample of it — unlike a live per-biomarker search, where 300 is an intentional,
+    documented "don't take forever" limit (see run_query).
+
+    One query per committee (rather than one giant OR) keeps partial-failure retry simple (a
+    single committee's fetch can be retried without redoing the others).
     """
     seen: dict[str, dict] = {}
     for committee in committees:
         expr = f'{committee_field}:"{committee}"'
-        result = await run_query(client, endpoint, expr, api_key)
+        result = await run_query(client, endpoint, expr, api_key, max_records=None)
         for r in result["records"]:
             k = r.get("k_number")
             if k:
