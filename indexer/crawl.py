@@ -16,8 +16,8 @@ per-term through indexer/lookup.py, called by the local server on each /biomarke
 resolved live on first search either way.
 
 Usage: python -m indexer.crawl [--api-key KEY] [--committees IM,CH]
---api-key defaults to OPENFDA_API_KEY from a .env file (copy .env.example to .env) or the
-environment, if set.
+--api-key defaults to OPENFDA_API_KEY from the .env file at the repo root, or the environment,
+if set.
 """
 import argparse
 import asyncio

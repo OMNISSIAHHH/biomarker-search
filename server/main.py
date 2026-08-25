@@ -11,10 +11,9 @@ and caches the result for next time. Only predicate-chain ("inferred via predica
 depend on the separate, biomarker-agnostic scope+PDF crawl (`python -m indexer.crawl`) having
 already been run — confirmed results work immediately either way.
 
-Run from the repo root: `uvicorn server.main:app --reload`. Configure via a .env file (copy
-.env.example to .env, fill in whichever keys you're using — .env is gitignored, so real values
-never get committed) or plain environment variables, either way: UMLS_API_KEY for UMLS lookup,
-or TAVILY_API_KEY + LOCAL_LLM_URL + LOCAL_LLM_MODEL for the Tavily+local-LLM crosscheck fallback
+Run from the repo root: `uvicorn server.main:app --reload`. Configure via the .env file at the
+repo root, or plain environment variables — either way: UMLS_API_KEY for UMLS lookup, or
+TAVILY_API_KEY + LOCAL_LLM_URL + LOCAL_LLM_MODEL for the Tavily+local-LLM crosscheck fallback
 (see indexer/ai_expansion.py for why this is grounded in search results rather than the model's
 own recall). Both can be set together — UMLS is tried first, Tavily+local-LLM is the fallback
 for whatever UMLS doesn't cover. Without either, searches still work for anything the exact/

@@ -71,8 +71,7 @@ Unlocks the predicate-chain tier — confirmed matches already work before this 
 while the first run (reading real PDFs, politely rate-limited); re-run periodically to pick up
 newly-cleared devices (skips PDFs already fetched, so a re-run is fast).
 
-**API keys — copy `.env.example` to `.env` and fill in what you're using** (`.env` is gitignored,
-so real keys never get committed):
+**API keys — set them in the `.env` file at the repo root:**
 ```
 OPENFDA_API_KEY=      # raises the openFDA rate limit from 1,000/day to 120,000/day
 UMLS_API_KEY=         # automatic abbreviation lookup — see below
@@ -325,8 +324,8 @@ Plain HTML/CSS/JS, no build tooling. Uses [Chart.js](https://www.chartjs.org/) a
 [SheetJS](https://sheetjs.com/) from a CDN. See [worker/README.md](worker/README.md) for the two
 optional Cloudflare Worker proxies — UMLS needs no proxy, its API sends CORS headers allowing
 direct browser calls. The cross-check backend (`indexer/` + `server/`) is a separate Python
-project (see [Setup](#setup)); both load config from a gitignored `.env` file via
-`python-dotenv`, copied from the committed `.env.example` template.
+project (see [Setup](#setup)); both load config from a `.env` file at the repo root via
+`python-dotenv`.
 
 ## License
 
