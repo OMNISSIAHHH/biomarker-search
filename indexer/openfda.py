@@ -89,12 +89,24 @@ async def fetch_all_in_scope(client: httpx.AsyncClient, endpoint: str, committee
     documented "don't take forever" limit (see run_query).
 
     One query per committee (rather than one giant OR) keeps partial-failure retry simple (a
-    single committee's fetch can be retried without redoing the others).
+    single committee's fetch can be retried without redoing the others) — deliberately load-
+    bearing now that a committee's full history can be 10,000+ records deep: confirmed live,
+    openFDA occasionally returns a generic 400 ("Check your request and try again") on some page
+    of a long paginated fetch, not reproducible against a fixed skip/limit in isolation, so it
+    reads as an intermittent upstream hiccup rather than a deterministic bug tied to one value.
+    A single committee hitting this shouldn't lose the other five, so it's caught and skipped
+    here (with whatever it already found up to that point) rather than crashing the whole run —
+    re-run with `--committees <the skipped one(s)>` to retry just those.
     """
     seen: dict[str, dict] = {}
     for committee in committees:
         expr = f'{committee_field}:"{committee}"'
-        result = await run_query(client, endpoint, expr, api_key, max_records=None)
+        try:
+            result = await run_query(client, endpoint, expr, api_key, max_records=None)
+        except OpenFdaError as e:
+            print(f"  {committee}: fetch failed ({e}) — skipping this committee for now, "
+                  f"re-run with --committees {committee} to retry it")
+            continue
         for r in result["records"]:
             k = r.get("k_number")
             if k:
