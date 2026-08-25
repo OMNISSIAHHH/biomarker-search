@@ -189,6 +189,20 @@ All filters work together, update live (no re-search needed), and carry into the
   "RF" = *Rheumatoid Factor* or *Radio Frequency* ablation devices). Click **Rule out FDA review
   panel** to see every panel present in your results and manually exclude ones that clearly
   don't belong. Nothing is excluded automatically. **Clear all review panels** undoes this.
+
+  **Which panels are safe to rule out, for a lab biomarker search specifically:**
+
+  | Almost always safe to rule out | Where real biomarker tests actually live |
+  |---|---|
+  | General, Plastic Surgery; Orthopedic; Cardiovascular; Radiology; Dental; Ear, Nose, and Throat; Ophthalmic; Anesthesiology; Physical Medicine; Gastroenterology-Urology; Obstetrics-Gynecology; General Hospital; Neurology | Immunology; Clinical Chemistry; Hematology; Microbiology; Pathology; Toxicology |
+
+  The left column is hardware/surgical/imaging panels that never contain a lab assay — even
+  blood-based biomarkers like troponin are classified under Clinical Chemistry, not
+  Cardiovascular. The right column is exactly the scope the backend's predicate-chain crawl
+  already bounds itself to (see `indexer/scope.py`), for the same reason: a genuine lab test
+  realistically only ever lands in one of those six. Treat this as a strong default, not a
+  guarantee — for an unfamiliar biomarker, it's still worth a glance at what's actually in a
+  ruled-out panel's results before trusting the exclusion blindly.
 - **Clear all filters** — resets date range, company filter, show-only list, and ruled-out
   panels together.
 
