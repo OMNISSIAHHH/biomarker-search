@@ -931,7 +931,15 @@ function lookupExpansion(term) {
   return null;
 }
 
-const EXPANSION_STOPWORDS = new Set(['anti', 'antibody']);
+// Kept in lockstep with indexer/matching.py's identical set — see that file's comment for why
+// (confirmed live: bare "IgG" and bare "Serum" AI-suggested synonyms each became their own
+// fully unconstrained match branch, matching hundreds of unrelated devices).
+const EXPANSION_STOPWORDS = new Set([
+  'anti', 'antibody', 'antibodies',
+  'serum', 'plasma', 'blood', 'urine',
+  'test', 'assay', 'panel', 'screen', 'profile', 'control', 'sample', 'specimen',
+  'immunology', 'diagnostic', 'laboratory',
+]);
 
 function splitExpansionTokens(phrase) {
   return phrase.split(/[\s/,()]+/).map(s => s.trim()).filter(Boolean)

@@ -201,7 +201,21 @@ def expansion_key(term: str) -> str:
     return strip_anti_prefix(strip_isotype_suffix(term)).strip().lower()
 
 
-EXPANSION_STOPWORDS = {"anti", "antibody"}
+# Confirmed live: an AI-crosscheck-resolved synonym list for "ama-m2" included a bare "Serum"
+# entry — a generic specimen-type word, not a name for the analyte at all — which became its
+# own fully unconstrained match branch (see build_expansion_expr) and matched 775 unrelated
+# devices (e.g. "LIAISON CMV IgG Serum Control Set") purely because they mention serum
+# somewhere, same failure shape as the earlier bare-"IgG" bug. These words get stripped from
+# every group the same way "anti"/"antibody" already are — a group reduced to nothing but
+# stopwords becomes empty and is dropped entirely (see build_expansion_expr's `if g` filter);
+# a group with other, specific content alongside one of these just loses the filler word. Not
+# an exhaustive list — expect to keep adding to it as new generic "synonyms" turn up.
+EXPANSION_STOPWORDS = {
+    "anti", "antibody", "antibodies",
+    "serum", "plasma", "blood", "urine",
+    "test", "assay", "panel", "screen", "profile", "control", "sample", "specimen",
+    "immunology", "diagnostic", "laboratory",
+}
 
 
 def split_expansion_tokens(phrase: str) -> list[str]:

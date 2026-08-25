@@ -31,6 +31,8 @@ import time
 
 import httpx
 
+from indexer.matching import split_expansion_tokens
+
 UMLS_SEARCH_BASE = "https://uts-ws.nlm.nih.gov/rest/search/current"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
@@ -247,11 +249,18 @@ async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavil
             if len(lines) > 1 and not NO_ANSWER_RE.match(lines[1])
             else []
         )
-        # Confirmed live: the model listed "IgG" as a "synonym" for dsDNA (an antibody *class*,
-        # not an alternate name for the analyte) — dropped here so a bare isotype marker never
-        # even reaches the cache, on top of matching.py's own defense against the same thing
-        # (build_expansion_expr's BARE_ISOTYPE_RE filter) regardless of what's already cached.
-        synonyms = [s for s in synonyms if not BARE_ISOTYPE_RE.match(s)]
+        # Confirmed live, twice: the model listed "IgG" as a "synonym" for dsDNA, and separately
+        # a bare "Serum" for ama-m2 (a specimen-type word, not a name for the analyte at all) —
+        # both became fully unconstrained match branches once cached (build_expansion_expr),
+        # matching hundreds of unrelated devices. Dropped here so neither kind ever even reaches
+        # the cache, on top of matching.py's own defense against the same thing regardless of
+        # what's already cached: BARE_ISOTYPE_RE for isotype markers, and reusing
+        # split_expansion_tokens/EXPANSION_STOPWORDS (the exact same filter build_expansion_expr
+        # applies to every group) to drop any synonym that's nothing but generic filler words.
+        synonyms = [
+            s for s in synonyms
+            if not BARE_ISOTYPE_RE.match(s) and split_expansion_tokens(s)
+        ]
         detail = f"extracted '{full}'" + (f", synonyms: {', '.join(synonyms)}" if synonyms else "")
         _trace(trace, "expansion:local-llm", "hit", detail, elapsed)
         return {"full": full, "search": "/".join([full, *synonyms])} if synonyms else {"full": full}
