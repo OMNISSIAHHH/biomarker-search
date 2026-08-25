@@ -38,9 +38,10 @@ and **`BiomarkerSearchServer.exe`** (a small helper program — see
 [Why there's a backend](#why-theres-a-backend-and-what-it-does) for what it adds and why it's
 worth the extra step).
 
-1. Click the green **Code** button at the top of this page → **Download ZIP**, then extract it
-   (right-click → **Extract All** on Windows, double-click on Mac). *(Already have the folder?
-   Skip this.)*
+1. Go to the **[Releases page](https://github.com/OMNISSIAHHH/biomarker-search/releases/latest)**
+   and download the `.zip` under **Assets** (not the green **Code** button — that only gets you
+   the source files, not the packaged program). Extract it (right-click → **Extract All** on
+   Windows, double-click on Mac). *(Already have the folder? Skip this.)*
 2. Double-click **`BiomarkerSearchServer.exe`**. A black window opens and, after a moment, prints
    a line ending in "Application startup complete" — that means it's running.
    **Leave this window open** while you use the tool; closing it just drops the tool back to

@@ -19,10 +19,27 @@ pip install pyinstaller
 pyinstaller pyinstaller.spec
 ```
 
-The finished executable is written to `dist/BiomarkerSearchServer.exe`. Copy it next to
-`FDA510kBiomarkerSearch.html` in whatever folder/ZIP gets distributed to users — the exe creates
+The finished executable is written to `dist/BiomarkerSearchServer.exe`. It creates
 `index.sqlite3` and reads an optional `.env` from whatever folder it's actually run from, not
 from the repo.
+
+## Publishing a new release
+
+The exe is a ~45MB binary — never committed to the repo (see Notes below) — so it's
+distributed via **GitHub Releases** instead, as a single downloadable `.zip`. The README's
+"Getting started" links to the latest release, not the repo's own "Download ZIP" (which only
+contains source files, no compiled exe).
+
+```bash
+mkdir -p dist/bundle
+cp dist/BiomarkerSearchServer.exe FDA510kBiomarkerSearch.html README.md dist/bundle/
+cd dist/bundle && zip -r ../biomarker-search-vX.Y.Z.zip . && cd ../..
+gh release create vX.Y.Z dist/biomarker-search-vX.Y.Z.zip --title "vX.Y.Z — Biomarker Search" --notes "..."
+```
+
+Bump `vX.Y.Z` each time (e.g. `v1.0.1`) — GitHub Releases won't let you reuse a tag. Before
+zipping, do a real smoke test of that exact exe (start it, hit `/health`, run a real search)
+so a broken build never gets published for someone to download.
 
 ## Notes
 
