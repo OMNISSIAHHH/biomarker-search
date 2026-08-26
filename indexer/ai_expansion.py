@@ -57,6 +57,20 @@ NO_ANSWER_RE = re.compile(r"^\(?\s*(?:none(?:\s+specified)?|n/?a)\s*\)?$", re.IG
 # for why a bare isotype word can never safely stand as its own match branch.
 BARE_ISOTYPE_RE = re.compile(r"^Ig[AGME][1-4]?$", re.IGNORECASE)
 
+# Confirmed live: UMLS resolved "ama-m2" to "Mitochondria M2 Ab.IgG:ACnc:Pt:Ser:Qn" — a LOINC
+# code's own structured "Fully Specified Name" (Component:Property:Time:System:Scale[:Method]),
+# one of many source vocabularies UMLS' Metathesaurus aggregates alongside SNOMED CT/MeSH/etc.
+# Used verbatim as a search phrase, this obviously never appears anywhere in FDA's plain-English
+# device text — an ordinary biomarker name never contains even one colon, let alone several.
+# Skipped in favor of the next usable result instead (same UMLS search can return other, cleaner
+# vocabulary hits for the same term); falls through to the Tavily/local-LLM tier only if truly
+# none of the returned concepts have an ordinary name.
+LOINC_CODE_NAME_RE = re.compile(r"^[^:]+(?::[^:]+){2,}$")
+
+
+def _looks_like_loinc_code_name(name: str) -> bool:
+    return bool(LOINC_CODE_NAME_RE.match(name))
+
 
 def _clean_extracted_line(line: str) -> str:
     return LINE_PREFIX_RE.sub("", line).strip()
@@ -100,12 +114,17 @@ async def lookup_umls_expansion(client: httpx.AsyncClient, term: str, umls_api_k
                 continue  # bad/unapproved key, rate limit, etc. — treat as no match, not a hard error
             body = res.json()
             results = (body.get("result") or {}).get("results") or []
-            hit = next((r for r in results if r.get("ui") and r["ui"] != "NONE" and r.get("name")), None)
+            usable = [r for r in results if r.get("ui") and r["ui"] != "NONE" and r.get("name")]
+            hit = next((r for r in usable if not _looks_like_loinc_code_name(r["name"])), None)
             if hit:
                 _trace(trace, "expansion:umls", "hit",
                        f"matched via searchType={search_type}: {hit['name']}", elapsed)
                 return {"full": hit["name"]}
-            _trace(trace, "expansion:umls", "miss", f"searchType={search_type}: 0 usable results", elapsed)
+            skipped_loinc = any(_looks_like_loinc_code_name(r["name"]) for r in usable)
+            _trace(trace, "expansion:umls", "miss",
+                   f"searchType={search_type}: 0 usable results"
+                   + (" (skipped LOINC-coded name(s) with no plain-name alternative)" if skipped_loinc else ""),
+                   elapsed)
         except httpx.HTTPError as e:
             elapsed = int((time.monotonic() - t0) * 1000)
             _trace(trace, "expansion:umls", "error", f"searchType={search_type}: {e}", elapsed)
