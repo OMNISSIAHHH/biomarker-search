@@ -32,9 +32,17 @@ contains source files, no compiled exe).
 
 ```bash
 mkdir -p dist/bundle
-cp dist/BiomarkerSearchServer.exe FDA510kBiomarkerSearch.html README.md dist/bundle/
+cp dist/BiomarkerSearchServer.exe FDA510kBiomarkerSearch.html README.md .env dist/bundle/
 cd dist/bundle && zip -r ../biomarker-search-vX.Y.Z.zip . && cd ../..
 gh release create vX.Y.Z dist/biomarker-search-vX.Y.Z.zip --title "vX.Y.Z — Biomarker Search" --notes "..."
+```
+
+**Don't drop `.env` from that `cp`** — v1.0.4 through v1.0.6 shipped without it (a copy-paste
+regression), silently disabling AI-crosscheck expansion (missing Tavily key) on every fresh
+install with no error beyond a terminal line saying the key wasn't configured. Confirm it's
+actually inside the zip before publishing:
+```bash
+unzip -l dist/biomarker-search-vX.Y.Z.zip   # .env must be listed
 ```
 
 Bump `vX.Y.Z` each time (e.g. `v1.0.1`) — GitHub Releases won't let you reuse a tag. Before
