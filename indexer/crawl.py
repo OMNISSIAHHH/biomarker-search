@@ -30,32 +30,35 @@ from dotenv import load_dotenv
 from indexer import db, pdf_extract
 from indexer.openfda import DEVICE_510K, fetch_all_in_scope
 from indexer.scope import ADVISORY_COMMITTEES
+from indexer.trace import TraceSink
 
 load_dotenv()  # loads a .env file in the repo root if present; a no-op otherwise
 
 
 async def populate_scope_devices(client: httpx.AsyncClient, conn, committees: list[str],
-                                  api_key: str | None = None) -> None:
+                                  api_key: str | None = None, sink: TraceSink | None = None) -> None:
     """Every 510k device in the bounded advisory-committee scope, not just the ones already
     found by text matching — the predicate graph's whole value is reaching devices that text
     search misses entirely, so it needs the full population to crawl PDFs for, not a subset.
     """
+    sink = sink if sink is not None else TraceSink()
     records = await fetch_all_in_scope(client, DEVICE_510K, "advisory_committee", committees, api_key)
     for r in records:
         db.upsert_device(conn, r, source="510k")
     conn.commit()
-    print(f"  {len(records)} devices in scope ({', '.join(committees)})")
+    sink.append({"type": "scope_done", "total": len(records), "committees": committees})
 
 
 async def crawl_pdfs_in_scope(client: httpx.AsyncClient, conn, committees: list[str],
-                               concurrency: int = 5) -> None:
+                               concurrency: int = 5, sink: TraceSink | None = None) -> None:
+    sink = sink if sink is not None else TraceSink()
     placeholders = ",".join("?" * len(committees))
     rows = conn.execute(
         f"SELECT k_number FROM devices WHERE advisory_committee IN ({placeholders}) AND source = '510k'",
         committees,
     ).fetchall()
     to_fetch = [r["k_number"] for r in rows if not db.already_fetched(conn, r["k_number"])]
-    print(f"  {len(to_fetch)} devices to fetch (of {len(rows)} in scope, rest already cached)")
+    sink.append({"type": "pdf_scope", "to_fetch": len(to_fetch), "already_cached": len(rows) - len(to_fetch)})
 
     sem = asyncio.Semaphore(concurrency)
 
@@ -78,26 +81,54 @@ async def crawl_pdfs_in_scope(client: httpx.AsyncClient, conn, committees: list[
             )
             db.insert_predicates(conn, k_number, extracted.predicates)
 
+    # A cancelled asyncio.Task (see server/main.py's POST /crawl/cancel) unwinds at whatever
+    # await this loop is currently sitting on — inside asyncio.gather, that's each fetch_one's
+    # semaphore acquire or httpx call. Only the in-flight batch's uncommitted rows (<=50 devices)
+    # are lost; every batch that already reached conn.commit() below is untouched, same "loses a
+    # little, not everything" property this already has against a plain process kill.
     for i in range(0, len(to_fetch), 50):
         batch = to_fetch[i:i + 50]
         await asyncio.gather(*(fetch_one(k) for k in batch))
         conn.commit()
-        print(f"  fetched {min(i + 50, len(to_fetch))}/{len(to_fetch)}")
+        sink.append({"type": "pdf_batch", "fetched": min(i + 50, len(to_fetch)), "of": len(to_fetch)})
 
 
-async def run(committees: list[str], api_key: str | None = None) -> None:
+async def run(committees: list[str], api_key: str | None = None, sink: TraceSink | None = None) -> None:
+    sink = sink if sink is not None else TraceSink()
     conn = db.connect()
     try:
         async with httpx.AsyncClient() as client:
-            print("Step 1/2: populating full scope device list...")
-            await populate_scope_devices(client, conn, committees, api_key)
+            sink.append({"type": "step", "detail": "Step 1/2: populating full scope device list..."})
+            await populate_scope_devices(client, conn, committees, api_key, sink=sink)
 
-            print("Step 2/2: PDF crawl (Measurand + predicates) for devices in scope...")
-            await crawl_pdfs_in_scope(client, conn, committees)
+            sink.append({"type": "step", "detail": "Step 2/2: PDF crawl (Measurand + predicates) for devices in scope..."})
+            await crawl_pdfs_in_scope(client, conn, committees, sink=sink)
+    except Exception as e:
+        sink.append({"type": "error", "message": str(e)})
+        raise
     finally:
         conn.close()
-    print("Done. Biomarker lookups themselves happen on demand via the local server "
-          "(indexer/lookup.py) — nothing biomarker-specific to run here.")
+    sink.append({"type": "done", "detail": "Done. Biomarker lookups themselves happen on demand via the local "
+                                            "server (indexer/lookup.py) — nothing biomarker-specific to run here."})
+
+
+# CLI progress wording kept byte-for-byte identical to what this script has always printed —
+# this is a refactor of *how* progress is reported (through a TraceSink, so server/main.py's
+# UI-triggered crawl can stream the same events live over SSE), not a change to CLI behavior.
+def _print_progress(entry: dict) -> None:
+    t = entry.get("type")
+    if t == "step":
+        print(entry["detail"])
+    elif t == "scope_done":
+        print(f"  {entry['total']} devices in scope ({', '.join(entry['committees'])})")
+    elif t == "pdf_scope":
+        print(f"  {entry['to_fetch']} devices to fetch (of {entry['to_fetch'] + entry['already_cached']} in scope, rest already cached)")
+    elif t == "pdf_batch":
+        print(f"  fetched {entry['fetched']}/{entry['of']}")
+    elif t == "done":
+        print(entry["detail"])
+    elif t == "error":
+        print(f"Crawl failed: {entry['message']}")
 
 
 def main() -> None:
@@ -113,7 +144,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     committees = [c.strip() for c in args.committees.split(",") if c.strip()]
-    asyncio.run(run(committees, args.api_key))
+    sink = TraceSink(on_entry=_print_progress)
+    asyncio.run(run(committees, args.api_key, sink=sink))
 
 
 if __name__ == "__main__":

@@ -95,9 +95,19 @@ predicate") tier is a bit different: it depends on `BiomarkerSearchServer.exe`'s
 `index.sqlite3` file already having read the relevant device's paperwork. If your download
 included a pre-built `index.sqlite3` next to the exe, this just works. If not (a fresh, empty
 `index.sqlite3` gets created automatically the first time you search), predicate-chain results
-stay empty until someone runs the underlying crawl — a source/Python step, covered in
-[For developers](#for-developers), meant to be run occasionally by whoever maintains your copy of
-this tool, not by every individual user.
+stay empty until the crawl that builds this data has run at least once.
+
+**Running that crawl no longer needs Python or a terminal** — with the local index server
+running (step 2 above), open **Settings** (gear icon) and click **Start predicate crawl** near
+the bottom. Progress streams live in the **Platform activity** window at the top of the page.
+Set real expectations before starting it: this reads every in-scope FDA device's decision
+summary PDF (tens of thousands of documents) and can take **hours**, using real network
+bandwidth and subject to openFDA's rate limits (1,000 requests/day without an API key, 120,000/day
+with one — see the `.env` setup above). It only runs while the backend itself is running; closing
+`BiomarkerSearchServer.exe` stops it. You can safely close the browser tab or reload the page
+mid-crawl — reopening Settings picks the same crawl back up and replays its progress so far,
+rather than losing it or starting over. A **Cancel** button appears while it's running; cancelling
+keeps everything already fetched (at most the batch in progress, up to 50 devices, is lost).
 
 Without the backend running (or if you skip it entirely), the tool still works from the browser
 alone — a banner reading "Running in fallback mode" shows when this is the case — just without
@@ -127,6 +137,13 @@ Related optional extras, each documented in its own section:
 
 Type names the way they're normally written, including antibody names ("Anti-GAD65") or Greek
 letters ("Anti-β2-GP1") — both are handled automatically.
+
+**Platform activity window:** a dark, terminal-style panel at the top of the page shows exactly
+what's happening in real time — which match tiers were tried, whether UMLS/an AI web crosscheck
+were consulted and what they found, and (if you start one) predicate-crawl progress too. It's one
+shared, continuously-scrolling log for whatever the tool is doing, not cleared between searches —
+useful for seeing that a slow-feeling search (e.g. one triggering the AI crosscheck, which can
+take 10-30 seconds) is actually working, not stuck.
 
 ## Reading your results
 
@@ -325,9 +342,12 @@ Clinic Laboratories, LabCorp, etc.).
 ## For developers
 
 Everything above assumes the packaged `BiomarkerSearchServer.exe`. This section is for running
-the backend from source instead — needed if you're modifying the code, rebuilding the exe (see
-[BUILD.md](BUILD.md)), or want to run the device+PDF crawl that fills in predicate-chain results
-(the exe itself doesn't crawl — see [Why there's a backend](#why-theres-a-backend-and-what-it-does)).
+the backend from source instead — needed if you're modifying the code or rebuilding the exe (see
+[BUILD.md](BUILD.md)). The device+PDF crawl that fills in predicate-chain results can now be
+started from the UI itself (Settings → **Start predicate crawl**, see
+[Why there's a backend](#why-theres-a-backend-and-what-it-does)) — the CLI version below still
+exists and still works identically, useful for scripted/unattended runs (e.g. a scheduled
+re-crawl) rather than as the only way to do it.
 
 **Running the server from source**, in place of the exe:
 ```bash
@@ -338,16 +358,16 @@ uvicorn server.main:app --reload
 Reads `.env` and creates/reads `index.sqlite3` in the repo root either way — same as the exe,
 just relative to the repo instead of wherever the exe sits.
 
-**The device+PDF crawl** — builds/refreshes the corpus the predicate-chain tier depends on:
+**The device+PDF crawl (CLI)** — builds/refreshes the corpus the predicate-chain tier depends on:
 ```bash
 python -m indexer.crawl
 ```
 Confirmed matches already work without this; it only unlocks the "inferred via predicate" tier.
 Takes a while the first run (reading real PDFs, politely rate-limited); re-run periodically to
 pick up newly-cleared devices (skips PDFs already fetched, so a re-run is fast). If you're
-distributing a ZIP to non-coder users, run this once yourself and include the resulting
-`index.sqlite3` next to the exe in that ZIP so predicate-chain results work for them out of the
-box.
+distributing a ZIP to non-coder users, you can run this once yourself and include the resulting
+`index.sqlite3` next to the exe in that ZIP so predicate-chain results work for them immediately
+— or just let them trigger it themselves from Settings, since the exe can now do this on its own.
 
 **API keys — `.env` at the repo root** (same file the exe reads, just via a text editor instead
 of the New-Text-Document trick in [Getting started](#getting-started)):
@@ -374,6 +394,12 @@ layer are unaffected, so this adds no time for the majority of devices):
 - **Linux**: `sudo apt install tesseract-ocr`
 
 Without Tesseract, the crawl behaves exactly as before this feature existed.
+
+**This OCR fallback is source-only** — the packaged exe's Settings-triggered crawl does not
+include it (keeping the exe's download size small), so a scanned, image-only decision-summary PDF
+is simply skipped by the UI-triggered crawl, exactly as it would be with Tesseract not installed.
+If you need OCR coverage, run `python -m indexer.crawl` from source instead, with Tesseract
+installed per above.
 
 **Building `BiomarkerSearchServer.exe`** — see [BUILD.md](BUILD.md).
 

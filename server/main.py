@@ -24,16 +24,20 @@ import asyncio
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
+from indexer import crawl as crawl_module
 from indexer.db import DB_PATH, app_base_dir, connect
 from indexer.lookup import compute_and_cache_result, resolve_and_cache_expansion, try_cached_result
 from indexer.matching import expansion_key
+from indexer.scope import ADVISORY_COMMITTEES
+from indexer.trace import TraceSink
 
 # Loads the .env next to the running app (the exe's own folder when frozen, the repo root
 # otherwise — see app_base_dir) rather than relying on the current working directory, which a
@@ -45,7 +49,7 @@ app = FastAPI(title="Biomarker Search Local Index")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # local-only tool served from file:// or a local static server
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],  # POST needed for /crawl/start and /crawl/cancel below
     allow_headers=["*"],
 )
 
@@ -177,3 +181,123 @@ async def expansion(term: str, refresh: bool = False):
         return {"term": term, "expansion": resolved_expansion, "source": source, "trace": trace}
     finally:
         conn.close()
+
+
+class CrawlState:
+    """Process-lifetime singleton tracking the one predicate crawl this server can run at a
+    time. Not persisted to the DB — acceptable since this server is a single long-running local
+    process (the packaged exe or `uvicorn --reload`), not a multi-instance deployment; a restart
+    losing the in-memory event log is fine because GET /crawl/status also reads real row counts
+    from the DB, so "no events remembered" is never confused with "never crawled."
+    """
+
+    def __init__(self) -> None:
+        self.status = "idle"  # "idle" | "running" | "done" | "error" | "cancelled"
+        self.task: asyncio.Task | None = None
+        self.events: list[dict] = []
+        self.subscribers: list[asyncio.Queue] = []
+        self.last_started_at: str | None = None
+        self.last_finished_at: str | None = None
+        self.last_error: str | None = None
+
+    def broadcast(self, entry: dict) -> None:
+        # Accumulate (so a stream that attaches later can replay everything that already
+        # happened) and fan out to every currently-attached live listener.
+        self.events.append(entry)
+        for q in self.subscribers:
+            q.put_nowait(entry)
+
+
+_crawl_state = CrawlState()
+
+
+@app.post("/crawl/start")
+async def crawl_start(committees: str | None = None, api_key: str | None = None):
+    """Kicks off indexer/crawl.py's device+PDF crawl as a background task and returns
+    immediately — this can take hours for the full scope, so it's never awaited inline in a
+    request. Progress streams live via GET /crawl/stream; GET /crawl/status gives a cheap
+    snapshot. 409s rather than silently no-op-ing if one is already running: two crawls writing
+    to the same index.sqlite3 at once adds no value and only adds write contention.
+    """
+    if _crawl_state.status == "running":
+        return JSONResponse({"error": "A crawl is already running."}, status_code=409)
+
+    committee_list = [c.strip() for c in committees.split(",") if c.strip()] if committees else ADVISORY_COMMITTEES
+    _crawl_state.status = "running"
+    _crawl_state.events = []
+    _crawl_state.last_started_at = datetime.now(timezone.utc).isoformat()
+    _crawl_state.last_error = None
+
+    sink = TraceSink(on_entry=_crawl_state.broadcast)
+
+    async def worker() -> None:
+        try:
+            await crawl_module.run(committee_list, api_key or OPENFDA_API_KEY, sink=sink)
+            _crawl_state.status = "done"
+        except asyncio.CancelledError:
+            _crawl_state.status = "cancelled"
+            sink.append({"type": "cancelled"})
+            raise
+        except Exception as e:  # noqa: BLE001 — reported via status/events, not raised further
+            _crawl_state.status = "error"
+            _crawl_state.last_error = str(e)
+        finally:
+            _crawl_state.last_finished_at = datetime.now(timezone.utc).isoformat()
+
+    _crawl_state.task = asyncio.create_task(worker())
+    return {"status": "started", "committees": committee_list}
+
+
+@app.get("/crawl/stream")
+async def crawl_stream():
+    """SSE stream of crawl progress. Subscribing (before draining the replay snapshot, so
+    nothing broadcast in that instant is missed) then replaying the cumulative event log so far
+    is what lets a browser tab that opens this *after* a crawl already started — or reconnects
+    after a reload — immediately see the full history instead of an empty log that only fills in
+    from that point forward.
+    """
+    async def event_source():
+        queue: asyncio.Queue = asyncio.Queue()
+        _crawl_state.subscribers.append(queue)
+        for entry in list(_crawl_state.events):
+            queue.put_nowait(entry)
+        try:
+            while True:
+                entry = await queue.get()
+                yield _sse(entry)
+                if entry.get("type") in ("done", "error", "cancelled"):
+                    break
+        finally:
+            _crawl_state.subscribers.remove(queue)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/crawl/cancel")
+async def crawl_cancel():
+    if _crawl_state.status != "running" or _crawl_state.task is None:
+        return JSONResponse({"error": "No crawl is running."}, status_code=409)
+    _crawl_state.task.cancel()
+    return {"status": "cancelling"}
+
+
+@app.get("/crawl/status")
+def crawl_status():
+    conn = get_conn()
+    try:
+        device_count = conn.execute("SELECT COUNT(*) c FROM devices").fetchone()["c"]
+        pdf_count = conn.execute("SELECT COUNT(*) c FROM pdf_text").fetchone()["c"]
+    finally:
+        conn.close()
+    return {
+        "status": _crawl_state.status,
+        "last_started_at": _crawl_state.last_started_at,
+        "last_finished_at": _crawl_state.last_finished_at,
+        "last_error": _crawl_state.last_error,
+        "devices_indexed": device_count,
+        "pdfs_fetched": pdf_count,
+    }

@@ -1,18 +1,25 @@
 # PyInstaller spec for BiomarkerSearchServer.exe — see BUILD.md for how to build with this.
 #
-# Packages only the day-to-day server (server/launcher.py -> server/main.py), not the periodic
-# device+PDF crawl (indexer/crawl.py), which stays a source/Python step. The server's own
-# dependency chain (fastapi, uvicorn, httpx, python-dotenv) is much lighter than the crawl's
-# (which also needs pypdf/pymupdf/pytesseract/Pillow for OCR).
+# Packages the day-to-day server (server/launcher.py -> server/main.py) AND the device+PDF
+# predicate crawl (indexer/crawl.py) it can now trigger via /crawl/start — the exe is the single
+# distribution artifact, there's no separate crawl-only binary.
 #
 # Deliberately NOT collect_submodules("indexer") / ("server"): those are plain first-party
 # packages with static imports, which PyInstaller's own Analysis already follows correctly from
-# server/launcher.py (db/lookup/matching/ai_expansion/openfda/predicate_graph — server/main.py's
-# real import chain, confirmed via indexer/lookup.py). Blanket-collecting the whole `indexer`
-# package instead force-includes crawl-only modules the server never actually imports, notably
-# indexer/pdf_extract.py — whose `import pymupdf` transitively pulls in pymupdf.table, which
-# imports pandas (then scipy, then numpy), ballooning a ~15MB build into a ~100MB one for code
-# that never runs in this exe. Confirmed by comparing build output with/without it.
+# server/launcher.py's real import chain — server/main.py now does `from indexer import crawl`,
+# which is what pulls indexer.crawl (and transitively indexer.pdf_extract, indexer.scope) in,
+# the same static-analysis way db/lookup/matching/ai_expansion/openfda/predicate_graph already
+# were. No blanket indexer collection needed or wanted.
+#
+# indexer/pdf_extract.py's OCR fallback lazily imports pymupdf/pytesseract/PIL inside function
+# bodies (not at module top-level) — PyInstaller's bytecode-scanning Analysis still finds these
+# and would bundle them anyway, and pymupdf's own pymupdf.table submodule transitively pulls in
+# pandas -> scipy -> numpy, ballooning a ~45MB build into a ~100MB+ one for OCR code most PDFs
+# never need (confirmed earlier by comparing build output with/without it). Excluded below —
+# pdf_extract.py's own `except Exception: return False` in _ocr_available() then degrades this
+# to "OCR unavailable" at runtime, identical to "Tesseract not installed" today. This means the
+# UI-triggered crawl in the packaged exe does NOT OCR scanned (image-only) decision-summary
+# PDFs — that stays a from-source-only capability (see BUILD.md / README's OCR section).
 from PyInstaller.utils.hooks import collect_submodules
 
 hiddenimports = (
@@ -30,7 +37,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["pymupdf", "fitz", "pytesseract", "PIL"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

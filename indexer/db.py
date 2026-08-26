@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS searched_terms (
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    # WAL (before executescript, so even a brand-new file is created as WAL from the start) lets
+    # one writer coexist with concurrent readers/short writers without locking — needed once the
+    # predicate crawl (a long-lived writer, see indexer/crawl.py) can run in the same process as
+    # ordinary searches (short writers via db.mark_searched/insert_match, etc.). busy_timeout is a
+    # second-layer defense: a write that arrives while another connection briefly holds the write
+    # lock retries for up to 5s instead of raising "database is locked" immediately.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.executescript(SCHEMA)
     return conn
 

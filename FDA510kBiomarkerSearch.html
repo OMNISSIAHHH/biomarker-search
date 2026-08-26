@@ -133,20 +133,16 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
 .empty{padding:30px;text-align:center;color:var(--tx3);font-size:13.5px}
 .errline{font-family:var(--font);color:var(--red);font-size:12px}
 
-.logentry{border-bottom:1px solid var(--br);font-size:12.5px}
-.logentry:last-child{border-bottom:none}
-.logentry-head{display:flex;align-items:center;gap:6px;padding:7px 2px;cursor:pointer}
-.logentry-head:hover{color:var(--acc)}
-.logmeta{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--tx3)}
-.logentry-body{padding:2px 2px 8px 20px}
-.trace-row{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;padding:2px 0;font-family:var(--mono);font-size:11px}
-.trace-stage{color:var(--tx2);font-weight:600;min-width:150px}
-.trace-outcome{text-transform:uppercase;letter-spacing:.04em;font-size:9.5px;font-weight:700}
-.trace-detail{color:var(--tx2);flex:1;min-width:150px;font-family:var(--font)}
-.trace-elapsed{color:var(--tx3);margin-left:auto}
-.trace-hit .trace-outcome{color:var(--acc2)}
-.trace-miss .trace-outcome,.trace-skipped .trace-outcome{color:var(--tx3)}
-.trace-error .trace-outcome{color:var(--red)}
+/* Platform activity terminal — one persistent, always-visible rolling log both search and
+   crawl progress write into (see termLine()). Styled like an actual terminal on purpose: dark,
+   monospace, auto-scrolling, never cleared between actions — old lines just scroll off. */
+.terminal{background:#0d1117;color:#c9d1d9;font-family:var(--mono);font-size:11.5px;
+  line-height:1.65;padding:10px 12px;border-radius:4px;max-height:220px;overflow-y:auto;
+  white-space:pre-wrap;word-break:break-word}
+.terminal .t-hit{color:#3fb950}
+.terminal .t-miss,.terminal .t-skipped{color:#8b949e}
+.terminal .t-error{color:#f85149}
+.terminal .t-meta{color:#58a6ff}
 ::-webkit-scrollbar{height:8px;width:8px}
 </style>
 </head>
@@ -184,6 +180,20 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <div class="sinfo"><strong>Default workflow</strong>, not an optional extra: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — matches inferred by following a device's cited predicate back to an already-confirmed device, which the live search below structurally can't do. Leaving this blank runs the tool in a reduced fallback mode; falls back automatically if unreachable, so nothing breaks either way.</div>
         <input class="skey" id="localIndexUrl" placeholder="Local index server URL (optional, e.g. http://localhost:8000)">
       </div>
+      <div class="srow" style="margin-top:8px">
+        <div class="sinfo">
+          <strong>Predicate crawl</strong> (advanced): the "inferred via predicate" tier above
+          depends on reading every in-scope FDA device's decision-summary PDF at least once —
+          this can take hours and uses real network bandwidth/openFDA rate limits, so it's a
+          deliberate action, not something that runs automatically. Only enabled when the local
+          index server above is reachable; progress shows in the Platform activity window.
+          <div id="crawlStatusText" style="margin-top:4px;font-size:11.5px;color:var(--tx3)"></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+          <button class="btn-ghost" id="crawlStartBtn" type="button" disabled>Start predicate crawl</button>
+          <button class="btn-ghost" id="crawlCancelBtn" type="button" style="display:none">Cancel crawl</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -197,6 +207,11 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
   </div>
 
   <div class="content">
+    <div class="card" id="activityCard">
+      <div class="stitle">Platform activity</div>
+      <div id="activityTerminal" class="terminal"></div>
+    </div>
+
     <div class="card">
       <div class="stitle">Biomarkers</div>
       <div class="modetabs">
@@ -226,10 +241,6 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
       <div class="progress" id="progressWrap" style="display:none">
         <span id="progressTxt"></span>
         <div class="pbar"><div class="pbar-fill" id="pbarFill"></div></div>
-        <button class="hinttoggle" id="searchLogToggle" type="button" style="display:none;margin-top:10px">
-          <span class="chev" id="searchLogChev">▸</span> Search process details
-        </button>
-        <div id="searchLog" style="display:none;margin-top:6px"></div>
       </div>
     </div>
 
@@ -394,6 +405,7 @@ $('localIndexUrl').addEventListener('change', (e) => {
   e.target.value = url;
   localStorage.setItem('local_index_url', url);
   updateLocalIndexNudge();
+  refreshCrawlButtonState();
 });
 
 function getLocalIndexUrl() {
@@ -479,12 +491,6 @@ $('hintToggleBtn').addEventListener('click', () => {
   const open = $('hintWrap').style.display === 'none';
   $('hintWrap').style.display = open ? 'block' : 'none';
   $('hintChev').classList.toggle('open', open);
-});
-
-$('searchLogToggle').addEventListener('click', () => {
-  const open = $('searchLog').style.display === 'none';
-  $('searchLog').style.display = open ? 'block' : 'none';
-  $('searchLogChev').classList.toggle('open', open);
 });
 
 function parseTerms(raw) {
@@ -1110,23 +1116,36 @@ function mergeQueryResults(a, b) {
   return { total, records };
 }
 
-// --- Search process log (see indexer/lookup.py's identical trace shape) -----------------
-// Gives real-time visibility into what's actually happening for each searched term — which
-// tiers were tried, whether UMLS/Tavily/local-AI were consulted and what they found or
-// rejected, how many predicate-chain matches got added — as it happens, not just a final
-// match-mode tag after the fact. Backend-driven searches stream this live over SSE (see
+// --- Platform activity terminal (see indexer/trace.py's identical shape on the backend) -----
+// One persistent, always-visible rolling log for whatever the platform is currently doing —
+// searching or crawling — styled and behaving like an actual terminal: dark, monospace,
+// auto-scrolling, and never cleared between actions (old lines just scroll off, capped at
+// MAX_TERMINAL_LINES). Backend-driven searches stream real stages live over SSE (see
 // server/main.py's GET /biomarker/{term}/stream) so a real 10-30s Tavily/Ollama round-trip is
-// visible while it's happening, not just once it's done. Client-side-fallback searches (no
-// backend configured, or it failed mid-search) build an equivalent trace locally, live too —
-// each tier already runs as its own sequential awaited fetch, so its stage can be shown the
-// moment that fetch resolves — using the same stage names as the backend (same "equivalent,
-// not necessarily identical fidelity" relationship this file's tier functions already have
-// with indexer/matching.py's).
+// visible while it's happening, not just once it's done; the predicate crawl (GET /crawl/stream)
+// writes into this exact same window. Client-side-fallback searches (no backend configured, or
+// it failed mid-search) build an equivalent trace locally, live too — using the same stage names
+// as the backend (same "equivalent, not necessarily identical fidelity" relationship this file's
+// tier functions already have with indexer/matching.py's).
+
+const MAX_TERMINAL_LINES = 500;
+const TRACE_OUTCOME_CLASS = { hit: 't-hit', miss: 't-miss', skipped: 't-skipped', error: 't-error' };
+
+function termLine(text, cls) {
+  const el = $('activityTerminal');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  const ts = new Date().toLocaleTimeString([], { hour12: false });
+  line.textContent = `[${ts}] ${text}`;
+  el.appendChild(line);
+  while (el.children.length > MAX_TERMINAL_LINES) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
 
 // Wraps a plain trace array so every existing pushTrace(trace, ...) call site — which just
-// does trace.push({...}) — transparently notifies a live callback the instant each entry is
-// added, with zero changes needed at any of those call sites. Mirrors indexer/trace.py's
-// TraceSink on the backend, same reasoning.
+// does trace.push({...}) — transparently notifies a live callback (termLine, via onStage) the
+// instant each entry is added, with zero changes needed at any of those call sites. Mirrors
+// indexer/trace.py's TraceSink on the backend, same reasoning.
 class LiveTrace {
   constructor(onStage) {
     this.entries = [];
@@ -1142,73 +1161,12 @@ function pushTrace(trace, stage, outcome, detail, elapsedMs = null) {
   trace.push({ stage, outcome, detail, elapsedMs });
 }
 
-const TRACE_OUTCOME_CLASS = { hit: 'trace-hit', miss: 'trace-miss', skipped: 'trace-skipped', error: 'trace-error' };
-
-function renderTraceStage(entry) {
-  const cls = TRACE_OUTCOME_CLASS[entry.outcome] || 'trace-miss';
-  const timing = entry.elapsedMs != null ? `<span class="trace-elapsed">${entry.elapsedMs}ms</span>` : '';
-  return `<div class="trace-row ${cls}">
-    <span class="trace-stage">${escapeHtml(entry.stage)}</span>
-    <span class="trace-outcome">${escapeHtml(entry.outcome)}</span>
-    <span class="trace-detail">${escapeHtml(entry.detail)}</span>
-    ${timing}
-  </div>`;
-}
-
-// One entry per term, created the moment that term's search starts (not once it finishes) —
-// its body fills in live via .addStage() as each trace entry actually arrives, then .finish()
-// sets the final match-mode tag/summary once the term is fully done. Never replaced/re-sorted,
-// so the log reads top-to-bottom in the order terms were started. Cleared at the start of
-// every new run (resetSearchLog), not accumulated across runs — a "hundreds pasted at once"
-// batch would make an ever-growing log unusable, and a re-searched term with different
-// settings (e.g. a UMLS key added mid-session) would otherwise show two contradictory entries
-// with no way to tell which is current.
-function createSearchLogEntry(term) {
-  const log = $('searchLog');
-  const entry = document.createElement('div');
-  entry.className = 'logentry';
-  entry.innerHTML = `
-    <div class="logentry-head">
-      <span class="chev">▸</span>
-      <strong>${escapeHtml(term)}</strong>
-      <span class="logtag"></span>
-      <span class="logmeta">searching…</span>
-    </div>
-    <div class="logentry-body" style="display:none"></div>`;
-  log.appendChild(entry);
-  const head = entry.querySelector('.logentry-head');
-  const body = entry.querySelector('.logentry-body');
-  const tag = entry.querySelector('.logtag');
-  const meta = entry.querySelector('.logmeta');
-  head.addEventListener('click', () => {
-    const open = body.style.display === 'none';
-    body.style.display = open ? 'block' : 'none';
-    head.querySelector('.chev').classList.toggle('open', open);
-  });
-  $('searchLogToggle').style.display = 'flex';
-
-  let stageCount = 0;
-  return {
-    addStage(traceEntry) {
-      stageCount++;
-      body.insertAdjacentHTML('beforeend', renderTraceStage(traceEntry));
-      meta.textContent = `${stageCount} stage${stageCount === 1 ? '' : 's'}…`;
-    },
-    finish(item) {
-      tag.innerHTML = item.error ? '' : matchModeTag(item.matchMode);
-      meta.textContent = item.error
-        ? 'failed'
-        : `${stageCount} stage${stageCount === 1 ? '' : 's'}`;
-      if (!stageCount) body.innerHTML = '<div class="dnote">No trace recorded.</div>';
-    },
-  };
-}
-
-function resetSearchLog() {
-  $('searchLog').innerHTML = '';
-  $('searchLog').style.display = 'none';
-  $('searchLogToggle').style.display = 'none';
-  $('searchLogChev').classList.remove('open');
+// Shared by both search (fetchBiomarker's onStage) and LDT (runLdtSearchForTerms's trace) — a
+// trace entry becomes one terminal line, prefixed with which term/mode it's for.
+function termLineForStage(term, entry, prefix = 'search') {
+  const timing = entry.elapsedMs != null ? `  (${entry.elapsedMs}ms)` : '';
+  termLine(`${prefix}:${term}  ${entry.stage}  ${entry.outcome}  ${entry.detail}${timing}`,
+    TRACE_OUTCOME_CLASS[entry.outcome]);
 }
 
 // --- Optional local index (see indexer/ + server/ at the repo root) ---------------------
@@ -1230,6 +1188,106 @@ async function checkLocalIndexHealth(baseUrl) {
     return false;
   }
 }
+
+// --- Predicate crawl (UI-triggered, see server/main.py's /crawl/* endpoints) ----------------
+// Controls live in Settings (near Local Index URL); progress writes into the same shared
+// Platform activity terminal search uses (termLine), not a separate log surface. Unlike the
+// search stream (a one-shot promise resolved by a single terminal result), this is open-ended —
+// no resolved value, just an ongoing listener until a done/error/cancelled event arrives.
+let crawlEventSource = null;
+
+function renderCrawlEvent(entry) {
+  switch (entry.type) {
+    case 'step': termLine(`crawl  ${entry.detail}`, 't-meta'); break;
+    case 'scope_done': termLine(`crawl  ${entry.total} device(s) in scope (${entry.committees.join(', ')})`, 't-hit'); break;
+    case 'pdf_scope': termLine(`crawl  ${entry.to_fetch} device(s) to fetch (${entry.already_cached} already cached)`, 't-meta'); break;
+    case 'pdf_batch': termLine(`crawl  fetched ${entry.fetched}/${entry.of} PDFs`, 't-hit'); break;
+    case 'done': termLine(`crawl  ${entry.detail}`, 't-hit'); break;
+    case 'error': termLine(`crawl  failed — ${entry.message}`, 't-error'); break;
+    case 'cancelled': termLine('crawl  cancelled', 't-error'); break;
+  }
+}
+
+async function refreshCrawlStatus(baseUrl) {
+  try {
+    const res = await fetch(`${baseUrl}/crawl/status`);
+    if (!res.ok) return null;
+    const s = await res.json();
+    const parts = [];
+    if (s.status === 'running') parts.push(`Running since ${new Date(s.last_started_at).toLocaleTimeString()}`);
+    else if (s.status === 'idle' && !s.last_finished_at) parts.push('Idle — never run yet');
+    else if (s.status === 'error') parts.push(`Error: ${s.last_error}`);
+    else parts.push(`${s.status[0].toUpperCase()}${s.status.slice(1)} — last ran ${new Date(s.last_finished_at).toLocaleString()}`);
+    parts.push(`${s.devices_indexed.toLocaleString()} device(s) indexed, ${s.pdfs_fetched.toLocaleString()} PDF(s) fetched`);
+    $('crawlStatusText').textContent = parts.join(' · ');
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+function attachCrawlStream(baseUrl) {
+  if (crawlEventSource) crawlEventSource.close();
+  crawlEventSource = new EventSource(`${baseUrl}/crawl/stream`);
+  $('crawlStartBtn').disabled = true;
+  $('crawlCancelBtn').style.display = 'inline-flex';
+  crawlEventSource.onmessage = (ev) => {
+    let entry;
+    try { entry = JSON.parse(ev.data); } catch { return; }
+    renderCrawlEvent(entry);
+    if (['done', 'error', 'cancelled'].includes(entry.type)) {
+      crawlEventSource.close();
+      crawlEventSource = null;
+      $('crawlStartBtn').disabled = false;
+      $('crawlCancelBtn').style.display = 'none';
+      refreshCrawlStatus(baseUrl);
+    }
+  };
+  // Deliberately does NOT close on error the way the one-shot search stream does — a mid-crawl
+  // network blip is worth reconnecting from (EventSource's own default retry behavior), and the
+  // server's replay-on-attach design (GET /crawl/stream) makes a reconnect safe/idempotent.
+  crawlEventSource.onerror = () => {};
+}
+
+async function startCrawl() {
+  const baseUrl = getLocalIndexUrl();
+  if (!baseUrl) return;
+  const res = await fetch(`${baseUrl}/crawl/start`, { method: 'POST' });
+  if (res.status === 409) { alert('A crawl is already running.'); return; }
+  termLine('crawl  starting…', 't-meta');
+  attachCrawlStream(baseUrl);
+}
+
+async function cancelCrawl() {
+  const baseUrl = getLocalIndexUrl();
+  if (!baseUrl) return;
+  await fetch(`${baseUrl}/crawl/cancel`, { method: 'POST' });
+  // No local state change here — the still-open crawlEventSource's own terminal "cancelled"
+  // event (via renderCrawlEvent, above) is what actually flips the UI back to idle, keeping a
+  // single source of truth for "is it actually done" rather than assuming cancel succeeded
+  // instantly.
+}
+
+$('crawlStartBtn').addEventListener('click', startCrawl);
+$('crawlCancelBtn').addEventListener('click', cancelCrawl);
+
+// Enables/disables the Start button and refreshes the status line for whatever Local Index URL
+// is currently configured — called on page load and whenever that field changes. If a crawl is
+// already running against this backend (e.g. this tab was reloaded mid-crawl), reattaches to
+// the live stream too; the server's replay-on-attach design means this picks back up the full
+// history-so-far, not just future events.
+async function refreshCrawlButtonState() {
+  const baseUrl = getLocalIndexUrl();
+  const reachable = Boolean(baseUrl) && await checkLocalIndexHealth(baseUrl);
+  $('crawlStartBtn').disabled = !reachable;
+  if (!reachable) {
+    $('crawlStatusText').textContent = '';
+    return;
+  }
+  const status = await refreshCrawlStatus(baseUrl);
+  if (status && status.status === 'running') attachCrawlStream(baseUrl);
+}
+refreshCrawlButtonState();
 
 // Consumes GET {baseUrl}/biomarker/{term}/stream (server/main.py's SSE endpoint) via the
 // browser's native EventSource — each `trace` message calls onStage the instant it arrives
@@ -1594,7 +1652,6 @@ async function runFdaSearch() {
   $('crossCheckPrompt').style.display = 'none';
   $('crossCard').style.display = 'none';
   $('progressWrap').style.display = 'block';
-  resetSearchLog();
 
   // Checked once per search run, not per term, to avoid a redundant health check per
   // biomarker — if it's down mid-run, individual fetchBiomarker calls still fall back safely.
@@ -1609,10 +1666,10 @@ async function runFdaSearch() {
     const term = terms[i];
     $('progressTxt').textContent = `Searching ${i + 1} of ${terms.length}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / terms.length) * 100)}%`;
-    const logHandle = createSearchLogEntry(term);
+    termLine(`search:${term}  starting…`, 't-meta');
     try {
       const { total, records, matchMode, expansion, panelCandidates, inferredMatches, trace } =
-        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, logHandle.addStage);
+        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, (entry) => termLineForStage(term, entry));
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
       const item = {
         term, total, approved, records, matchMode, expansion,
@@ -1620,11 +1677,11 @@ async function runFdaSearch() {
         trace: trace || [], error: null,
       };
       state.push(item);
-      logHandle.finish(item);
+      termLine(`search:${term}  done — ${matchMode || 'exact'}, ${(trace || []).length} stage(s)`, 't-meta');
     } catch (e) {
       const item = { term, total: 0, approved: 0, records: [], trace: [], error: e.message || String(e) };
       state.push(item);
-      logHandle.finish(item);
+      termLine(`search:${term}  failed — ${item.error}`, 't-error');
     }
     if (i < terms.length - 1) await sleep(250);
   }
@@ -2343,20 +2400,19 @@ function renderLdtChart(valid) {
 // synonym list build_expansion_expr uses on the FDA side — NY's "any word" match tokenizes on
 // whitespace only, so a slash-joined string with no spaces around the slashes would land as one
 // unmatchable token instead of several separate words.
-// `onTermLog`, if given, is called with each term the moment its search starts (mirroring
-// runFdaSearch's createSearchLogEntry) and must return a { addStage, finish } handle — used by
-// the direct LDT tab (runLdtSearch) so its two-query trace streams live into the same
-// search-process log the FDA tab uses. Deliberately NOT passed by the crossCheckBtn handler
-// (Table 2), which stays a secondary, opt-in action with its own inline progress text rather
-// than reopening the primary search log after the FDA search that triggered it already closed.
-async function runLdtSearchForTerms(queries, onProgress, onTermLog) {
+// `logToTerminal`, if true, writes each term's trace live into the shared Platform activity
+// terminal (see termLine) — used by the direct LDT tab (runLdtSearch). Deliberately false for
+// the crossCheckBtn handler (Table 2), which stays a secondary, opt-in action with its own
+// inline progress text rather than adding a second, less-relevant stream of lines to the
+// terminal right after the FDA search that triggered it just finished writing to it.
+async function runLdtSearchForTerms(queries, onProgress, logToTerminal) {
   const results = [];
   const proxyUrl = getLdtProxyUrl();
   for (let i = 0; i < queries.length; i++) {
     const { term, expansionFull } = queries[i];
     onProgress(i, queries.length, term);
-    const logHandle = onTermLog ? onTermLog(term) : null;
-    const trace = new LiveTrace(logHandle && logHandle.addStage);
+    if (logToTerminal) termLine(`ldt:${term}  starting…`, 't-meta');
+    const trace = new LiveTrace(logToTerminal ? (entry) => termLineForStage(term, entry, 'ldt') : null);
     try {
       let t0 = performance.now();
       const primary = await fetchLdtBiomarker(term, proxyUrl);
@@ -2385,14 +2441,14 @@ async function runLdtSearchForTerms(queries, onProgress, onTermLog) {
       const conditional = records.filter(r => classifyLdt(r.status) === 'conditional').length;
       const item = { term, total, approved, conditional, records, trace: trace.entries, error: null };
       results.push(item);
-      if (logHandle) logHandle.finish(item);
+      if (logToTerminal) termLine(`ldt:${term}  done — ${total} result(s)`, 't-meta');
     } catch (e) {
       const item = {
         term, total: 0, approved: 0, conditional: 0, records: [],
         trace: trace.entries, error: e.message || String(e),
       };
       results.push(item);
-      if (logHandle) logHandle.finish(item);
+      if (logToTerminal) termLine(`ldt:${term}  failed — ${item.error}`, 't-error');
     }
     if (i < queries.length - 1) await sleep(250);
   }
@@ -2411,7 +2467,6 @@ async function runLdtSearch() {
   $('crossCheckPrompt').style.display = 'none';
   $('crossCard').style.display = 'none';
   $('progressWrap').style.display = 'block';
-  resetSearchLog();
 
   // No prior FDA search to draw an already-resolved expansion from (unlike the cross-check
   // path below) — resolve one fresh per term via the lightweight /expansion endpoint, only
@@ -2434,7 +2489,7 @@ async function runLdtSearch() {
   ldtState = await runLdtSearchForTerms(queries, (i, n, term) => {
     $('progressTxt').textContent = `Searching LDT ${i + 1} of ${n}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / n) * 100)}%`;
-  }, (term) => createSearchLogEntry(term));
+  }, true);
 
   $('pbarFill').style.width = '100%';
   $('progressTxt').textContent = `Done — ${terms.length} biomarker(s) searched.`;
