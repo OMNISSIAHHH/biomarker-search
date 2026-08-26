@@ -309,12 +309,27 @@ def group_implies_anti(tokens: list[str]) -> bool:
 # isotype marker is never itself a specific enough name to stand as its own match branch.
 BARE_ISOTYPE_RE = re.compile(r"^Ig[AGME][1-4]?$", re.IGNORECASE)
 
+# Confirmed live: an AI-resolved synonym for "ama-m2" — "Immunology Profile (AMA)" — reduces to
+# a bare "AMA" group once "Immunology" and "Profile" are stripped as stopwords, matching wildly
+# unrelated devices that merely contain "AMA" as a substring (a dental "CROWN REMOVER & AMA."
+# tool, a "DISPOSABLE AMA STERILE DRAPE SHEET"). Same failure shape as the bare-isotype bug
+# above and the bare-digit/bare-single-letter ones found on the LDT side — any short (here,
+# 4 characters or fewer) token left standing alone after stopword-filtering is inherently too
+# ambiguous a medical abbreviation to serve as its own unconstrained match branch, regardless of
+# which specific short word it happens to be. Not applied to the raw search term's own tiers
+# (exact/broad/antigen-only already handle that case appropriately) — only to expansion groups,
+# where a short leftover token is usually an accident of stopword-stripping a longer AI phrase
+# rather than a deliberate, specific abbreviation someone actually typed.
+def _is_bare_short_token(tokens: list[str]) -> bool:
+    return len(tokens) == 1 and len(tokens[0]) <= 4
+
 
 def build_expansion_expr(expansion: dict, mode: str) -> str | None:
     phrase = expansion.get("search") or expansion["full"]
     groups = [split_expansion_tokens(g) for g in phrase.split("/")]
     groups = [g for g in groups if g]
     groups = [g for g in groups if not (len(g) == 1 and BARE_ISOTYPE_RE.match(g[0]))]
+    groups = [g for g in groups if not _is_bare_short_token(g)]
     if not groups:
         return None
     anti_exempt = [g for g in groups if group_implies_anti(g)]

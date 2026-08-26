@@ -173,6 +173,10 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="fdaPdfProxyUrl" placeholder="FDA PDF proxy Worker URL">
       </div>
       <div class="srow" style="margin-top:8px">
+        <div class="sinfo">After an FDA search, a button offers to check biomarkers with few FDA-cleared devices against New York's LDT database in one pass — a low-but-nonzero count can still mean a real LDT-only opportunity. Adjust how few counts as "few" here.</div>
+        <input class="skey" id="ldtCrosscheckThreshold" type="number" min="0" step="1" placeholder="2" style="width:70px;text-align:center">
+      </div>
+      <div class="srow" style="margin-top:8px">
         <div class="sinfo">Optional: when an exact/broad/antigen-only search finds nothing, an <a href="https://uts.nlm.nih.gov/uts/license" target="_blank" rel="noopener">NLM UMLS Terminology Services</a> API key lets it look up the spelled-out medical name automatically instead of returning nothing. Free, but NLM manually reviews each request — allow up to 3 business days after signing up before the key works. No proxy Worker needed for this one.</div>
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
@@ -389,6 +393,23 @@ $('ldtProxyUrl').addEventListener('change', (e) => {
   e.target.value = url;
   localStorage.setItem('ldt_proxy_url', url);
 });
+
+const DEFAULT_LDT_CROSSCHECK_THRESHOLD = 2;
+const savedLdtThreshold = localStorage.getItem('ldt_crosscheck_threshold');
+$('ldtCrosscheckThreshold').value = savedLdtThreshold ?? DEFAULT_LDT_CROSSCHECK_THRESHOLD;
+$('ldtCrosscheckThreshold').addEventListener('change', (e) => {
+  const n = parseInt(e.target.value, 10);
+  const value = Number.isInteger(n) && n >= 0 ? n : DEFAULT_LDT_CROSSCHECK_THRESHOLD;
+  e.target.value = value;
+  localStorage.setItem('ldt_crosscheck_threshold', String(value));
+});
+
+// Reads live each time rather than once at startup, so a mid-session Settings change (no
+// reload needed) takes effect on the very next search.
+function getLdtCrosscheckThreshold() {
+  const n = parseInt($('ldtCrosscheckThreshold').value, 10);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_LDT_CROSSCHECK_THRESHOLD;
+}
 
 const savedFdaPdfUrl = localStorage.getItem('fda_pdf_proxy_url');
 $('fdaPdfProxyUrl').value = normalizeProxyUrl(savedFdaPdfUrl || DEFAULT_FDA_PDF_PROXY_URL);
@@ -1046,11 +1067,21 @@ function groupImpliesAnti(tokens) {
 // source, mirroring indexer/matching.py's identical BARE_ISOTYPE_RE guard.
 const BARE_ISOTYPE_RE = /^Ig[AGME][1-4]?$/i;
 
+// Confirmed live: an AI-resolved synonym for "ama-m2" — "Immunology Profile (AMA)" — reduces to
+// a bare "AMA" group once "Immunology"/"Profile" are stripped as stopwords, matching wildly
+// unrelated devices merely containing "AMA" as a substring (a dental crown-remover tool, a
+// surgical drape sheet). Same failure shape as the bare-isotype case above — mirrors
+// indexer/matching.py's identical guard.
+function isBareShortToken(tokens) {
+  return tokens.length === 1 && tokens[0].length <= 4;
+}
+
 function buildExpansionExpr(expansion, mode) {
   if (!expansion) return null;
   const phrase = expansion.search || expansion.full;
   const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length)
-    .filter(g => !(g.length === 1 && BARE_ISOTYPE_RE.test(g[0])));
+    .filter(g => !(g.length === 1 && BARE_ISOTYPE_RE.test(g[0])))
+    .filter(g => !isBareShortToken(g));
   if (!groups.length) return null;
   const antiExemptGroups = groups.filter(groupImpliesAnti);
   const antiRequiredGroups = groups.filter(g => !groupImpliesAnti(g));
@@ -1637,18 +1668,34 @@ function getLdtProxyUrl() {
 // single-character token is exactly this dangerous as an independent "any word" branch,
 // regardless of which specific letter it happens to be, so it's dropped generically here
 // rather than special-casing "G".
-const LDT_NOISE_TOKEN_RE = /^(anti|antibody|antibodies|autoantibody|autoantibodies|immunoglobulin|ig[agme][1-4]?|[a-z]|\d+)$/i;
+// Confirmed live: "Anti-His IgG" (His-tag) reduces to a bare "His" antigen — not itself an
+// anti/isotype/generic filler word, so it survived every rule above, and NY's own search turns
+// out to do fuzzy/stemmed matching rather than strict whole-word matching, letting the ordinary
+// English word "his" match 60 completely unrelated records (Histoplasma, histamine,
+// histocompatibility, "Entamoeba histolytica" — anything with "his" appearing anywhere). Added
+// here by name, same as the other specific words above — not a general short-token rule, since
+// plenty of equally-short *real* abbreviations (PSA, AFP, CEA) don't have this problem (each
+// confirmed live to return a small, reasonable count, not a flood) precisely because they
+// aren't also ordinary English word fragments.
+const LDT_NOISE_TOKEN_RE = /^(anti|antibody|antibodies|autoantibody|autoantibodies|immunoglobulin|his|ig[agme][1-4]?|[a-z]|\d+)$/i;
 
 function stripLdtNoiseTokens(phrase) {
   return phrase.split(/\s+/).filter(w => w && !LDT_NOISE_TOKEN_RE.test(w)).join(' ');
 }
 
+// Returns null when nothing safe is left to search, rather than falling back to the unstripped
+// antigen/term — confirmed live this fallback (`cleaned || base`, the previous behavior) was
+// exactly what let a newly-blocklisted word like "his" back in: stripping it left `cleaned`
+// empty, and the old fallback then searched the very word that had just been filtered out,
+// silently undoing the protection. If literally everything in a term is noise/filler, there's
+// no safe query left to send — the caller skips the network call entirely for it, rather than
+// guessing.
 function ldtQueryTerm(term) {
   const searchTerm = toSearchTerm(term);
   const antigen = stripAntiPrefix(stripIsotypeSuffix(searchTerm)).trim();
   const base = antigen || searchTerm;
   const cleaned = stripLdtNoiseTokens(base).trim();
-  return cleaned || base;
+  return cleaned || null;
 }
 
 // NY's CLEP database only covers labs holding a NY LDT permit — a small fraction of all LDTs
@@ -1669,8 +1716,30 @@ function googleLdtSearchLink(term) {
   return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">Search Google for "${escapeHtml(term)} LDT" ↗</a>`;
 }
 
+// Same reasoning as googleLdtSearchLink above, for the FDA side: every match tier here (exact,
+// broad, antigen-only, fused-anti, wordform, UMLS/AI expansion) is still just text-matching
+// against openFDA's own device_name/statement_or_summary fields — a genuinely FDA-cleared device
+// can still be missed if its paperwork phrases the biomarker in a way none of those tiers
+// happen to try (the ZnT8A/AQP4 wordform and AI-conflation bugs this session were exactly this,
+// found and fixed one at a time; there's no guarantee the next unusual phrasing is already
+// covered). Only shown for a genuine zero-match result, not a date-filtered empty view — a term
+// with zero submissions in a narrowed date range isn't a real "found nothing," so a manual
+// cross-check isn't the right suggestion there.
+function googleFda510kSearchLink(term) {
+  const query = `${term} FDA 510k`;
+  const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">Search Google for "${escapeHtml(term)} FDA 510k" ↗</a>`;
+}
+
 async function fetchLdtBiomarker(term, proxyUrl) {
-  const params = new URLSearchParams({ q: ldtQueryTerm(term), status: 'All' });
+  const queryTerm = ldtQueryTerm(term);
+  if (!queryTerm) {
+    // Nothing safe left to search (see ldtQueryTerm's own comment) — skip the network call
+    // rather than sending an empty/blocklisted query, and say why via `skipped` so the caller
+    // can show an honest reason instead of a bare "0 results".
+    return { total: 0, count: 0, records: [], skipped: true };
+  }
+  const params = new URLSearchParams({ q: queryTerm, status: 'All' });
   let res;
   try {
     res = await fetch(`${proxyUrl}?${params.toString()}`);
@@ -1761,7 +1830,7 @@ async function runFdaSearch() {
 
   const ldtCandidates = state.filter(isLdtCrossCheckCandidate);
   if (ldtCandidates.length) {
-    $('crossCheckBtn').textContent = `Check LDT database for ${ldtCandidates.length} biomarker${ldtCandidates.length === 1 ? '' : 's'} with ${LDT_CROSSCHECK_MAX_APPROVALS} or fewer FDA approvals`;
+    $('crossCheckBtn').textContent = `Check LDT database for ${ldtCandidates.length} biomarker${ldtCandidates.length === 1 ? '' : 's'} with ${getLdtCrosscheckThreshold()} or fewer FDA approvals`;
     $('crossCheckPrompt').style.display = 'block';
   }
 }
@@ -1770,11 +1839,10 @@ const HIGH_APPROVAL_THRESHOLD = 10;
 
 // A biomarker with a handful of FDA approvals, not just zero, can still be a real LDT-only
 // opportunity — a low-but-nonzero count doesn't rule that out, so the automatic LDT cross-check
-// offer isn't limited to a strict "0 approvals" cutoff.
-const LDT_CROSSCHECK_MAX_APPROVALS = 2;
-
+// offer isn't limited to a strict "0 approvals" cutoff. The cutoff itself is user-configurable
+// (Settings — see getLdtCrosscheckThreshold), not fixed at 2; that's just the default.
 function isLdtCrossCheckCandidate(s) {
-  return !s.error && s.approved <= LDT_CROSSCHECK_MAX_APPROVALS;
+  return !s.error && s.approved <= getLdtCrosscheckThreshold();
 }
 
 const MATCH_MODE_LABEL = {
@@ -2119,7 +2187,7 @@ function renderResults() {
     } else {
       wrap.innerHTML = dateFilterActive()
         ? `<div class="dnote">No submissions in this date range.</div>`
-        : `<div class="dnote">No matching 510(k) submissions found.</div>`;
+        : `<div class="dnote">No matching 510(k) submissions found. ${googleFda510kSearchLink(s.term)}</div>`;
     }
     if (hasPanelCandidates) {
       wrap.innerHTML += `
@@ -2477,9 +2545,12 @@ async function runLdtSearchForTerms(terms, onProgress, logToTerminal) {
     const trace = new LiveTrace(logToTerminal ? (entry) => termLineForStage(term, entry, 'ldt') : null);
     try {
       const t0 = performance.now();
-      const { total, records } = await fetchLdtBiomarker(term, proxyUrl);
-      pushTrace(trace, 'ldt:term-query', total > 0 ? 'hit' : 'miss',
-        `${total} result(s)`, Math.round(performance.now() - t0));
+      const { total, records, skipped } = await fetchLdtBiomarker(term, proxyUrl);
+      pushTrace(trace, 'ldt:term-query', skipped ? 'skipped' : (total > 0 ? 'hit' : 'miss'),
+        skipped
+          ? "term's antigen core is too generic/filler-only for a safe direct LDT lookup"
+          : `${total} result(s)`,
+        Math.round(performance.now() - t0));
 
       const approved = records.filter(r => classifyLdt(r.status) === 'approved').length;
       const conditional = records.filter(r => classifyLdt(r.status) === 'conditional').length;

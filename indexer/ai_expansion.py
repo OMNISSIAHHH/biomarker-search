@@ -173,8 +173,14 @@ def crosscheck_prompt(term: str, tavily_response: dict) -> str:
         f'Based ONLY on the search results above, what is "{term}"\'s full spelled-out',
         "scientific/medical name? Reply with exactly two lines and nothing else — no labels, "
         "no explanation, no extra commentary, no words like \"Line 1\" or \"Line 2\":",
-        "- First line: just the full spelled-out scientific/medical name, nothing else on that "
-        "line",
+        "- First line: the literal expansion of the term itself — what specific molecule, "
+        "protein, or antigen it targets, spelled out (e.g. an abbreviated protein name spelled "
+        "out in full). This is what a manufacturer's own test-kit paperwork actually calls the "
+        "thing being measured, NOT a disease name, syndrome, or historical eponym the antibody "
+        "is associated with — even a well-established one (e.g. for an antibody named after the "
+        "protein it targets, name the protein, not the disease it's a marker for; a "
+        "disease-associated name belongs on the second line instead, only if it's a name "
+        "genuinely used interchangeably for this exact same substance elsewhere)",
         "- Second line (only include this line if you know at least one): up to 4 common "
         "alternate names or synonyms — other ways of naming the EXACT SAME substance/test as "
         "the first line, not a different-but-related one. Search results about a biomarker "
