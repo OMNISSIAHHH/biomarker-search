@@ -1336,9 +1336,20 @@ refreshCrawlButtonState();
 // (which may be 20-30s apart around a real Tavily/Ollama round-trip, not batched at the end),
 // and the terminal `result` message resolves the returned promise with the same shape the old
 // plain (non-streaming) /biomarker/{term} call returned, so nothing downstream needs to change.
-function fetchFromLocalIndexStreaming(baseUrl, term, onStage) {
+// Confirmed live: a UMLS key pasted into Settings had no effect whenever a local index server
+// was configured — the local-index path (below) used to call this endpoint with no query
+// params at all, so the backend only ever saw its own .env UMLS_API_KEY (or lack thereof),
+// regardless of what was sitting in Settings. Forwarding the browser's own keys here, and the
+// backend preferring them over its .env value for that one request (see server/main.py's
+// _ai_config_for_request), is what makes "paste it into Settings" actually work in the default
+// (local-index) workflow, not just the client-side fallback path.
+function fetchFromLocalIndexStreaming(baseUrl, term, onStage, apiKey, umlsApiKey) {
   return new Promise((resolve, reject) => {
-    const es = new EventSource(`${baseUrl}/biomarker/${encodeURIComponent(term)}/stream`);
+    const params = new URLSearchParams();
+    if (apiKey) params.set('api_key', apiKey);
+    if (umlsApiKey) params.set('umls_api_key', umlsApiKey);
+    const qs = params.toString();
+    const es = new EventSource(`${baseUrl}/biomarker/${encodeURIComponent(term)}/stream${qs ? `?${qs}` : ''}`);
     let settled = false;
     const finish = (fn, arg) => {
       if (settled) return;
@@ -1379,7 +1390,7 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage) 
   let localIndexError = null;
   if (localIndexUrl) {
     try {
-      return await fetchFromLocalIndexStreaming(localIndexUrl, term, onStage);
+      return await fetchFromLocalIndexStreaming(localIndexUrl, term, onStage, apiKey, umlsApiKey);
     } catch (e) {
       // Any local-index failure (server down mid-search, AI expansion lookup failed, etc.)
       // falls through to the live tiers below rather than failing the whole search — noted in

@@ -62,6 +62,18 @@ AI_CONFIG = {
 OPENFDA_API_KEY = os.environ.get("OPENFDA_API_KEY")
 
 
+# Confirmed live: a UMLS key pasted into the browser's own Settings panel had no effect at all
+# whenever the local index server was configured (the default workflow, not a fallback) — every
+# call goes through this process, which only ever looked at its own UMLS_API_KEY env var. The
+# browser key is only used by the pure-client-side fallback pipeline, which the local-index path
+# short-circuits before ever reaching it, so the two settings looked interchangeable but weren't.
+# Each endpoint below now accepts an optional umls_api_key query param (sent by the browser's
+# Settings key, when set) and prefers it over the .env value for that one request — same
+# per-request-overrides-env precedence api_key already has for OPENFDA_API_KEY just above.
+def _ai_config_for_request(umls_api_key: str | None) -> dict:
+    return {**AI_CONFIG, "umls_api_key": umls_api_key or AI_CONFIG["umls_api_key"]}
+
+
 def get_conn() -> sqlite3.Connection:
     # Read-write, not read-only: a cache miss populates the index on the spot rather than only
     # ever reading a pre-built one.
@@ -80,7 +92,8 @@ def health():
 
 
 @app.get("/biomarker/{term}")
-async def biomarker(term: str, api_key: str | None = None, refresh: bool = False):
+async def biomarker(term: str, api_key: str | None = None, umls_api_key: str | None = None,
+                     refresh: bool = False):
     conn = get_conn()
     try:
         # Checked before constructing an httpx.AsyncClient at all — a cache hit should be a
@@ -92,7 +105,8 @@ async def biomarker(term: str, api_key: str | None = None, refresh: bool = False
                 return cached
         async with httpx.AsyncClient() as client:
             return await compute_and_cache_result(
-                conn, client, term, AI_CONFIG, api_key or OPENFDA_API_KEY, force_refresh=refresh
+                conn, client, term, _ai_config_for_request(umls_api_key),
+                api_key or OPENFDA_API_KEY, force_refresh=refresh
             )
     finally:
         conn.close()
@@ -103,7 +117,8 @@ def _sse(payload: dict) -> str:
 
 
 @app.get("/biomarker/{term}/stream")
-async def biomarker_stream(term: str, api_key: str | None = None, refresh: bool = False):
+async def biomarker_stream(term: str, api_key: str | None = None, umls_api_key: str | None = None,
+                            refresh: bool = False):
     """Same result as GET /biomarker/{term}, but delivered as Server-Sent Events: each trace
     entry streams the instant it's actually recorded (including mid-way through a real Tavily
     search or a 10-25s local-LLM call), not just once the whole pipeline finishes — this is what
@@ -134,7 +149,7 @@ async def biomarker_stream(term: str, api_key: str | None = None, refresh: bool 
                         return
                 async with httpx.AsyncClient() as client:
                     result = await compute_and_cache_result(
-                        conn, client, term, AI_CONFIG, api_key or OPENFDA_API_KEY,
+                        conn, client, term, _ai_config_for_request(umls_api_key), api_key or OPENFDA_API_KEY,
                         force_refresh=refresh, on_trace_entry=on_trace_entry,
                     )
                 queue.put_nowait({"type": "result", "result": result})
@@ -162,7 +177,7 @@ async def biomarker_stream(term: str, api_key: str | None = None, refresh: bool 
 
 
 @app.get("/expansion/{term}")
-async def expansion(term: str, refresh: bool = False):
+async def expansion(term: str, umls_api_key: str | None = None, refresh: bool = False):
     """Resolves (or returns the cached) full-name/synonym expansion for a term, without running
     the FDA tier queries or predicate propagation /biomarker/{term} also does — for callers that
     only need the resolved name itself (the LDT search tab, see FDA510kBiomarkerSearch.html's
@@ -175,7 +190,8 @@ async def expansion(term: str, refresh: bool = False):
         trace: list[dict] = []
         async with httpx.AsyncClient() as client:
             resolved_expansion, source = await resolve_and_cache_expansion(
-                conn, client, term, key, AI_CONFIG, force_refresh=refresh, trace=trace,
+                conn, client, term, key, _ai_config_for_request(umls_api_key),
+                force_refresh=refresh, trace=trace,
             )
         conn.commit()
         return {"term": term, "expansion": resolved_expansion, "source": source, "trace": trace}
