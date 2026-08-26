@@ -176,7 +176,11 @@ def crosscheck_prompt(term: str, tavily_response: dict) -> str:
         "- First line: just the full spelled-out scientific/medical name, nothing else on that "
         "line",
         "- Second line (only include this line if you know at least one): up to 4 common "
-        "alternate names or synonyms, comma-separated",
+        "alternate names or synonyms — other ways of naming the EXACT SAME substance/test as "
+        "the first line, not a different-but-related one. Search results about a biomarker "
+        "often mention OTHER biomarkers it's commonly tested alongside (e.g. as part of the "
+        "same panel) — do not list any of those; only include a name if it refers to precisely "
+        "what the first line names, comma-separated",
         "If the search results above do not clearly indicate a specific medical/laboratory "
         "meaning, reply with exactly one word and nothing else: UNKNOWN",
     ]

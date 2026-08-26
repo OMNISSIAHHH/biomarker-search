@@ -924,6 +924,15 @@ function abbreviateGreekSpelled(text) {
     (GREEK_SPELLED_TO_SINGLE_LETTER[word.toLowerCase()] || word) + digits);
 }
 
+// Confirmed live: "ZnT8A" (common lab shorthand for Zinc Transporter 8 Autoantibody, a bare "A"
+// fused onto the antigen core) never matches DEN140001, whose real device name is "ZINC
+// TRANSPORTER 8 ANTIBODY (ZNT8AB)" — FDA's own fused abbreviation uses "Ab" for the
+// antibody/autoantibody suffix, not a bare "A". Same convention in an unrelated biomarker's real
+// device name too ("IA-2Ab" in K171731/K220085), so this is FDA's general fused-suffix
+// convention, not ZnT8-specific. Added as an extra variant, same additive/low-risk posture as
+// the others here.
+const TRAILING_BARE_A_RE = /[A-Za-z0-9]A$/;
+
 function generateOrthographicVariants(antigen) {
   const variants = new Set();
 
@@ -949,6 +958,8 @@ function generateOrthographicVariants(antigen) {
     if (abbreviated.includes('-')) variants.add(abbreviated.replace(/-/g, ' '));
     variants.add(abbreviated.replace(/[\s-]+/g, ''));
   }
+
+  if (TRAILING_BARE_A_RE.test(antigen)) variants.add(antigen + 'b');
 
   variants.delete(antigen); // identity form is already covered by the antigen-only tier
   return Array.from(variants);

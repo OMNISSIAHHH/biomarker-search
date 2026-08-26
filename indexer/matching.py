@@ -201,6 +201,17 @@ def abbreviate_greek_spelled(text: str) -> str:
     return GREEK_SPELLED_PREFIX_RE.sub(repl, text)
 
 
+# Confirmed live: "ZnT8A" (a common lab shorthand for Zinc Transporter 8 Autoantibody, using a
+# bare "A" fused directly onto the antigen core) never matches DEN140001, whose actual device
+# name is "ZINC TRANSPORTER 8 ANTIBODY (ZNT8AB)" — FDA's own fused abbreviation uses "Ab" for
+# the antibody/autoantibody suffix, not a bare "A". The same convention shows up in an unrelated
+# biomarker's real device name too ("IA-2Ab" in K171731/K220085), so this isn't specific to
+# ZnT8 — it's FDA's general fused-suffix convention for "antibody." Generated as an additional
+# variant alongside the term as typed, same additive, low-risk-of-false-match posture as the
+# other variants here (an exact-phrase match still has to actually occur).
+TRAILING_BARE_A_RE = re.compile(r"([A-Za-z0-9])A$")
+
+
 def generate_orthographic_variants(antigen: str) -> list[str]:
     variants: list[str] = []
     seen = {antigen}
@@ -226,6 +237,9 @@ def generate_orthographic_variants(antigen: str) -> list[str]:
         if "-" in abbreviated:
             add(abbreviated.replace("-", " "))
         add(re.sub(r"[\s-]+", "", abbreviated))
+
+    if TRAILING_BARE_A_RE.search(antigen):
+        add(antigen + "b")
 
     return variants
 
