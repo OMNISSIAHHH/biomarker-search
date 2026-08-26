@@ -10,6 +10,12 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style/dist/xlsx.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- OCR fallback for "Check Measurand" on genuinely scanned/image-only Decision Summaries —
+     only loaded from CDN, never invoked unless PDF.js finds near-zero extractable text (see
+     extractMeasurandViaOcr). Same threshold/reasoning as indexer/pdf_extract.py's backend OCR
+     fallback, just running client-side (Tesseract.js, a WASM port) since "Check Measurand" has
+     no server round-trip at all today. -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -169,7 +175,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="ldtProxyUrl" placeholder="LDT proxy Worker URL">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">"Check Measurand" on an FDA record reads the device's official Decision Summary PDF to confirm what it actually measures (same CORS problem as LDT, same shared instance/caveats — pre-filled below). Not every device has one.</div>
+        <div class="sinfo">"Check Measurand" on an FDA record reads the device's official Decision Summary PDF to confirm what it actually measures (same CORS problem as LDT, same shared instance/caveats — pre-filled below). Not every device has one. Falls back to in-browser OCR automatically for older, scanned/image-only documents with no real text layer — no setup needed, just slower for those.</div>
         <input class="skey" id="fdaPdfProxyUrl" placeholder="FDA PDF proxy Worker URL">
       </div>
       <div class="srow" style="margin-top:8px">
@@ -666,17 +672,52 @@ function reconstructPageText(content) {
   return text;
 }
 
-async function extractMeasurand(arrayBuffer) {
+// Same threshold indexer/pdf_extract.py's backend OCR fallback uses — a near-empty text layer
+// across the WHOLE document (not just one field failing to match a label pattern) means this
+// is very likely a scanned/image-only Decision Summary, not a labeling-format miss.
+const MIN_TEXT_LENGTH_BEFORE_OCR = 50;
+
+// OCR fallback for a genuinely scanned Decision Summary — Tesseract.js (WASM, CDN-loaded, see
+// the <script> tag's own comment) runs entirely client-side, matching this feature's existing
+// "no server round-trip" design. Only reached when extractMeasurand's normal PDF.js text pass
+// found next to nothing at all; deliberately re-renders each page to a canvas and re-runs the
+// exact same label regex against the OCR'd text, rather than a different matching strategy, so
+// a scanned document is handled identically to a text-layer one once OCR recovers its words.
+async function extractMeasurandViaOcr(pages, onProgress) {
+  let fullText = '';
+  for (let i = 0; i < pages.length; i++) {
+    if (onProgress) onProgress(i + 1, pages.length);
+    const viewport = pages[i].getViewport({ scale: 2 }); // higher render scale -> better OCR accuracy
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await pages[i].render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    const { data: { text } } = await Tesseract.recognize(canvas, 'eng');
+    fullText += text + '\n';
+    for (const labelPattern of MEASURAND_FIELD_LABELS) {
+      const m = fullText.match(measurandFieldPattern(labelPattern));
+      if (m) return { label: m[1], value: m[2].trim(), viaOcr: true };
+    }
+  }
+  return null;
+}
+
+async function extractMeasurand(arrayBuffer, onOcrProgress) {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let fullText = '';
+  const pages = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
+    pages.push(page);
     const content = await page.getTextContent();
     fullText += reconstructPageText(content) + '\n';
     for (const labelPattern of MEASURAND_FIELD_LABELS) {
       const m = fullText.match(measurandFieldPattern(labelPattern));
       if (m) return { label: m[1], value: m[2].trim() };
     }
+  }
+  if (fullText.trim().length < MIN_TEXT_LENGTH_BEFORE_OCR && typeof Tesseract !== 'undefined') {
+    return await extractMeasurandViaOcr(pages, onOcrProgress);
   }
   return null;
 }
@@ -704,7 +745,9 @@ async function checkMeasurand(button) {
       throw new Error(msg);
     }
     const buf = await res.arrayBuffer();
-    const found = await extractMeasurand(buf);
+    const found = await extractMeasurand(buf, (page, total) => {
+      button.textContent = `Running OCR (page ${page}/${total})…`;
+    });
 
     if (!found) {
       resultSpan.textContent = 'No field stating what this device measures was found in its review document.';
@@ -727,7 +770,12 @@ async function checkMeasurand(button) {
     const lowerMeasurand = found.value.toLowerCase();
     const matched = candidateTokens.some(tok => lowerMeasurand.includes(tok));
 
-    resultSpan.innerHTML = `<span class="decl ${matched ? 'se' : 'nse'}">${matched ? 'Matches' : 'No match'}</span> ${escapeHtml(found.label)}: ${escapeHtml(found.value)}`;
+    // OCR is a real, if usually good, recognition step — flagged so a mismatch or an odd-
+    // looking value isn't mistaken for a bad reading of a normal text layer.
+    const ocrNote = found.viaOcr
+      ? ' <span class="mmtag" title="This document had no usable text layer (scanned/image-only) — read via OCR, which can occasionally misrecognize a character.">via OCR</span>'
+      : '';
+    resultSpan.innerHTML = `<span class="decl ${matched ? 'se' : 'nse'}">${matched ? 'Matches' : 'No match'}</span> ${escapeHtml(found.label)}: ${escapeHtml(found.value)}${ocrNote}`;
     button.remove();
   } catch (e) {
     resultSpan.textContent = `Measurand check failed: ${e.message || String(e)}`;
