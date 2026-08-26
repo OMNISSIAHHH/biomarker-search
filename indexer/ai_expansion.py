@@ -306,12 +306,30 @@ async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: 
     """Returns (expansion, source) where source is 'umls' | 'search-ai' | 'none' — the caller
     persists source alongside the expansion in expansion_cache so a genuinely-unresolvable term
     doesn't get re-asked of either source on every single search.
+
+    Confirmed live (a real UMLS key): a UMLS hit used to short-circuit here, skipping the AI
+    crosscheck entirely — but UMLS returns exactly ONE candidate name, no alternates, unlike the
+    AI crosscheck's 2-4 phrasings. For "ama-m2 igG", UMLS's one name ("Mitochondrial M2 IgG
+    Antibody Measurement") didn't match FDA's actual device-naming convention, and with no
+    fallback, the whole expansion tier failed outright — even though the very same term,
+    searched with no UMLS key configured, succeeds via one of the AI's several candidate
+    phrasings. Both are now tried and merged into one combined candidate pool whenever both are
+    configured, so a UMLS hit adds a candidate rather than replacing the AI path's redundancy.
+    This does mean a UMLS-configured search always also pays the Tavily/local-LLM latency (the
+    same ~10-30s already documented for the AI-only path) rather than skipping it on a UMLS hit —
+    a deliberate correctness-over-speed tradeoff, not an oversight.
     """
-    expansion = await lookup_umls_expansion(client, term, umls_api_key, trace)
-    if expansion:
-        return expansion, "umls"
-    expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url,
-                                                  local_llm_model, trace)
-    if expansion:
-        return expansion, "search-ai"
+    umls_expansion = await lookup_umls_expansion(client, term, umls_api_key, trace)
+    ai_expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url,
+                                                     local_llm_model, trace)
+    if umls_expansion and ai_expansion:
+        merged_search = "/".join([
+            umls_expansion.get("search") or umls_expansion["full"],
+            ai_expansion.get("search") or ai_expansion["full"],
+        ])
+        return {"full": umls_expansion["full"], "search": merged_search}, "umls"
+    if umls_expansion:
+        return umls_expansion, "umls"
+    if ai_expansion:
+        return ai_expansion, "search-ai"
     return None, "none"

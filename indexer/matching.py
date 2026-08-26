@@ -280,6 +280,12 @@ EXPANSION_STOPWORDS = {
     "serum", "plasma", "blood", "urine",
     "test", "assay", "panel", "screen", "profile", "control", "sample", "specimen",
     "immunology", "diagnostic", "laboratory",
+    # Confirmed live (with a real UMLS key): UMLS resolved "ama-m2 igG" to an NCI Thesaurus
+    # concept name, "Mitochondrial M2 IgG Antibody Measurement" — "Measurement" is NCI's own
+    # ontology-naming suffix for a lab-test *concept*, never how an actual FDA device/kit
+    # describes itself. Same category as "test"/"assay"/"panel" above, just a source (NCI
+    # Thesaurus via UMLS) this project hadn't hit before.
+    "measurement",
 }
 
 
@@ -292,7 +298,10 @@ EXPANSION_STOPWORDS = {
 # same "Search not supported" openFDA rejection strip_diacritics exists to prevent.
 def split_expansion_tokens(phrase: str) -> list[str]:
     parts = re.split(r"[\s/,()]+", strip_diacritics(_replace_greek_letters(phrase)))
-    return [p for p in parts if p and p.lower() not in EXPANSION_STOPWORDS]
+    return [
+        p for p in parts
+        if p and p.lower() not in EXPANSION_STOPWORDS and not BARE_ISOTYPE_RE.match(p)
+    ]
 
 
 def group_implies_anti(tokens: list[str]) -> bool:
@@ -305,8 +314,15 @@ def group_implies_anti(tokens: list[str]) -> bool:
 # for a term like "dsDNA" (which has none of its own) returns "none", so the group got zero
 # extra constraint — the query became "any device mentioning IgG anywhere," matching nearly
 # every antibody-class immunoassay in the database (e.g. "Alinity i Rubella IgG", completely
-# unrelated). Dropped here regardless of source (AI-suggested, UMLS, anything) since a bare
-# isotype marker is never itself a specific enough name to stand as its own match branch.
+# unrelated). Filtered out by split_expansion_tokens (same treatment as any other stopword) so
+# an isotype marker is never itself part of a match requirement — regardless of whether it's the
+# *entire* group (the dsDNA case above) or just one word alongside others: confirmed live (real
+# UMLS key) "ama-m2 igG" resolved to "Mitochondrial M2 IgG Antibody Measurement", where requiring
+# "IgG" as a mandatory AND-condition alongside "Mitochondrial"/"M2" excluded real devices that
+# either don't specify isotype at all or fuse multiple isotypes into one word ("IGGAM"). The raw
+# term's own isotype suffix already gets this same treatment via strip_isotype_suffix before the
+# exact/broad/wordform tiers ever see it — this is that same reasoning, applied to
+# AI/UMLS-resolved text too, which strip_isotype_suffix never touches.
 BARE_ISOTYPE_RE = re.compile(r"^Ig[AGME][1-4]?$", re.IGNORECASE)
 
 # Confirmed live: an AI-resolved synonym for "ama-m2" — "Immunology Profile (AMA)" — reduces to
@@ -328,7 +344,6 @@ def build_expansion_expr(expansion: dict, mode: str) -> str | None:
     phrase = expansion.get("search") or expansion["full"]
     groups = [split_expansion_tokens(g) for g in phrase.split("/")]
     groups = [g for g in groups if g]
-    groups = [g for g in groups if not (len(g) == 1 and BARE_ISOTYPE_RE.match(g[0]))]
     groups = [g for g in groups if not _is_bare_short_token(g)]
     if not groups:
         return None

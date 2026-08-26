@@ -1026,6 +1026,11 @@ const EXPANSION_STOPWORDS = new Set([
   'serum', 'plasma', 'blood', 'urine',
   'test', 'assay', 'panel', 'screen', 'profile', 'control', 'sample', 'specimen',
   'immunology', 'diagnostic', 'laboratory',
+  // Confirmed live (real UMLS key): UMLS resolved "ama-m2 igG" to an NCI Thesaurus concept
+  // name, "Mitochondrial M2 IgG Antibody Measurement" — "Measurement" is NCI's own
+  // ontology-naming suffix for a lab-test *concept*, never how an actual FDA device/kit
+  // describes itself. Same category as test/assay/panel above.
+  'measurement',
 ]);
 
 // Confirmed live: an AI-resolved synonym for "Anti-β2-GP1 IgA" included literal Greek-letter
@@ -1037,7 +1042,7 @@ const EXPANSION_STOPWORDS = new Set([
 // stripDiacritics exists to prevent.
 function splitExpansionTokens(phrase) {
   return stripDiacritics(replaceGreekLetters(phrase)).split(/[\s/,()]+/).map(s => s.trim()).filter(Boolean)
-    .filter(tok => !EXPANSION_STOPWORDS.has(tok.toLowerCase()));
+    .filter(tok => !EXPANSION_STOPWORDS.has(tok.toLowerCase()) && !BARE_ISOTYPE_RE.test(tok));
 }
 
 // Tier 4: search by the expanded full name instead of the abbreviation. Some device names
@@ -1068,6 +1073,14 @@ function groupImpliesAnti(tokens) {
 // the analyte). A bare isotype group has no anti-prefix, so it got zero extra constraint and
 // matched almost any antibody-class immunoassay in the database. Dropped here regardless of
 // source, mirroring indexer/matching.py's identical BARE_ISOTYPE_RE guard.
+// Filtered out by splitExpansionTokens (same treatment as any other stopword) so an isotype
+// marker is never itself part of a match requirement — whether it's the *entire* group or just
+// one word alongside others: confirmed live (real UMLS key) "ama-m2 igG" resolved to
+// "Mitochondrial M2 IgG Antibody Measurement", where requiring "IgG" as a mandatory AND-
+// condition excluded real devices that either don't specify isotype or fuse multiple isotypes
+// into one word ("IGGAM"). The raw term's own isotype suffix already gets this treatment via
+// stripIsotypeSuffix before the exact/broad/wordform tiers see it — this is that same reasoning
+// applied to AI/UMLS-resolved text too, which stripIsotypeSuffix never touches.
 const BARE_ISOTYPE_RE = /^Ig[AGME][1-4]?$/i;
 
 // Confirmed live: an AI-resolved synonym for "ama-m2" — "Immunology Profile (AMA)" — reduces to
@@ -1083,7 +1096,6 @@ function buildExpansionExpr(expansion, mode) {
   if (!expansion) return null;
   const phrase = expansion.search || expansion.full;
   const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length)
-    .filter(g => !(g.length === 1 && BARE_ISOTYPE_RE.test(g[0])))
     .filter(g => !isBareShortToken(g));
   if (!groups.length) return null;
   const antiExemptGroups = groups.filter(groupImpliesAnti);
