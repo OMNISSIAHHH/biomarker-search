@@ -44,10 +44,14 @@ def strip_diacritics(text: str) -> str:
     return "".join(c for c in normalized if not unicodedata.combining(c))
 
 
-def to_search_term(term: str) -> str:
+def _replace_greek_letters(text: str) -> str:
     for greek, latin in GREEK_TO_LATIN.items():
-        term = term.replace(greek, latin)
-    return strip_diacritics(term)
+        text = text.replace(greek, latin)
+    return text
+
+
+def to_search_term(term: str) -> str:
+    return strip_diacritics(_replace_greek_letters(term))
 
 
 def field_or(build) -> str:
@@ -279,8 +283,15 @@ EXPANSION_STOPWORDS = {
 }
 
 
+# Confirmed live: an AI-resolved synonym for "Anti-β2-GP1 IgA" included literal Greek-letter
+# text ("β2GP1", "β2A-CIC") that reached openFDA completely unconverted — to_search_term's Greek
+# handling only ever ran on the raw typed term, never on expansion-derived text, so a Greek
+# letter anywhere in an AI/UMLS-resolved name or synonym slipped straight through
+# strip_diacritics (which only strips combining marks off Latin letters — Greek letters have no
+# such decomposition, so it's a no-op on them) and into a quoted query, triggering the exact
+# same "Search not supported" openFDA rejection strip_diacritics exists to prevent.
 def split_expansion_tokens(phrase: str) -> list[str]:
-    parts = re.split(r"[\s/,()]+", strip_diacritics(phrase))
+    parts = re.split(r"[\s/,()]+", strip_diacritics(_replace_greek_letters(phrase)))
     return [p for p in parts if p and p.lower() not in EXPANSION_STOPWORDS]
 
 

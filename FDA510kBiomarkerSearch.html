@@ -712,8 +712,12 @@ function stripDiacritics(text) {
   return text.normalize('NFKD').replace(/[̀-ͯ]/g, '');
 }
 
+function replaceGreekLetters(text) {
+  return text.replace(/[α-ωΑ-Ω]/g, c => GREEK_TO_LATIN[c] || c);
+}
+
 function toSearchTerm(term) {
-  return stripDiacritics(term.replace(/[α-ωΑ-Ω]/g, c => GREEK_TO_LATIN[c] || c));
+  return stripDiacritics(replaceGreekLetters(term));
 }
 
 // openFDA's free-text fields don't always phrase things the way a biomarker is commonly
@@ -1000,8 +1004,15 @@ const EXPANSION_STOPWORDS = new Set([
   'immunology', 'diagnostic', 'laboratory',
 ]);
 
+// Confirmed live: an AI-resolved synonym for "Anti-β2-GP1 IgA" included literal Greek-letter
+// text ("β2GP1", "β2A-CIC") that reached openFDA completely unconverted — toSearchTerm's Greek
+// handling only ever ran on the raw typed term, never on expansion-derived text, so a Greek
+// letter anywhere in an AI/UMLS-resolved name or synonym slipped straight through
+// stripDiacritics (which only strips combining marks off Latin letters, a no-op on Greek ones)
+// and into a quoted query, triggering the same "Search not supported" openFDA rejection
+// stripDiacritics exists to prevent.
 function splitExpansionTokens(phrase) {
-  return phrase.split(/[\s/,()]+/).map(s => s.trim()).filter(Boolean)
+  return stripDiacritics(replaceGreekLetters(phrase)).split(/[\s/,()]+/).map(s => s.trim()).filter(Boolean)
     .filter(tok => !EXPANSION_STOPWORDS.has(tok.toLowerCase()));
 }
 

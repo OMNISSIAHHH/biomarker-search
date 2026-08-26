@@ -91,32 +91,19 @@ def health():
     return {"status": "ok", "db_path": str(DB_PATH)}
 
 
-@app.get("/biomarker/{term}")
-async def biomarker(term: str, api_key: str | None = None, umls_api_key: str | None = None,
-                     refresh: bool = False):
-    conn = get_conn()
-    try:
-        # Checked before constructing an httpx.AsyncClient at all — a cache hit should be a
-        # pure local read, and on some machines just instantiating a client costs real
-        # wall-clock time, which would otherwise quietly defeat the point of caching.
-        if not refresh:
-            cached = try_cached_result(conn, term)
-            if cached is not None:
-                return cached
-        async with httpx.AsyncClient() as client:
-            return await compute_and_cache_result(
-                conn, client, term, _ai_config_for_request(umls_api_key),
-                api_key or OPENFDA_API_KEY, force_refresh=refresh
-            )
-    finally:
-        conn.close()
-
-
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
-@app.get("/biomarker/{term}/stream")
+# Registered BEFORE the plain /biomarker/{term} route below, deliberately — both use a `:path`
+# converter so `term` itself can contain a literal "/" (see its own comment), and Starlette tries
+# routes in registration order. If the plain route (no fixed suffix to anchor against) were tried
+# first, its greedy `.*` would swallow a trailing "/stream" as part of `term` for every streaming
+# request, matching there instead and never reaching this one at all — confirmed live, this exact
+# thing happened before this route was moved above it. Regex backtracking still correctly strips
+# the literal "/stream" suffix here and leaves everything before it as `term`, including any "/"
+# inside the term itself.
+@app.get("/biomarker/{term:path}/stream")
 async def biomarker_stream(term: str, api_key: str | None = None, umls_api_key: str | None = None,
                             refresh: bool = False):
     """Same result as GET /biomarker/{term}, but delivered as Server-Sent Events: each trace
@@ -176,7 +163,28 @@ async def biomarker_stream(term: str, api_key: str | None = None, umls_api_key: 
     )
 
 
-@app.get("/expansion/{term}")
+@app.get("/biomarker/{term:path}")
+async def biomarker(term: str, api_key: str | None = None, umls_api_key: str | None = None,
+                     refresh: bool = False):
+    conn = get_conn()
+    try:
+        # Checked before constructing an httpx.AsyncClient at all — a cache hit should be a
+        # pure local read, and on some machines just instantiating a client costs real
+        # wall-clock time, which would otherwise quietly defeat the point of caching.
+        if not refresh:
+            cached = try_cached_result(conn, term)
+            if cached is not None:
+                return cached
+        async with httpx.AsyncClient() as client:
+            return await compute_and_cache_result(
+                conn, client, term, _ai_config_for_request(umls_api_key),
+                api_key or OPENFDA_API_KEY, force_refresh=refresh
+            )
+    finally:
+        conn.close()
+
+
+@app.get("/expansion/{term:path}")
 async def expansion(term: str, umls_api_key: str | None = None, refresh: bool = False):
     """Resolves (or returns the cached) full-name/synonym expansion for a term, without running
     the FDA tier queries or predicate propagation /biomarker/{term} also does — for callers that
