@@ -1646,57 +1646,14 @@ async function fetchLdtBiomarker(term, proxyUrl) {
   return res.json(); // { term, total, count, records }
 }
 
-// --- LDT benefits from the resolved FDA-side expansion --------------------------------
-// A biomarker's full name/synonyms, once resolved via UMLS/AI for an FDA search, is useful
-// here too: NY's LDT listings might use the full name where a lab never wrote the bare
-// abbreviation. Only used when a local index server is configured and reachable (see
-// server/main.py's GET /expansion/{term}) — with no backend, LDT search behaves exactly as
-// before this feature (raw term only, no expansion query, no badges).
-async function fetchExpansionForLdt(term) {
-  const localIndexUrlSetting = getLocalIndexUrl();
-  if (!localIndexUrlSetting) return null;
-  const reachable = await checkLocalIndexHealth(localIndexUrlSetting);
-  if (!reachable) return null;
-  try {
-    const res = await fetch(`${localIndexUrlSetting}/expansion/${encodeURIComponent(term)}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.expansion || null; // {full, search?} | null
-  } catch {
-    return null; // graceful degrade — LDT search proceeds on the raw term alone, same as today
-  }
-}
-
-// Defensive dedup key: worker/ldt-proxy.js's scraped records have no field confirmed globally
-// unique. detailLink (a per-test detail-page URL) is the best candidate; falls back to a
-// facility+project+analyte composite (identifies "the same lab's same approved test for the
-// same analyte" well enough for this tool's purposes) when detailLink is missing/empty.
-function ldtRecordKey(r) {
-  return r.detailLink || `${r.facilityId || ''}|${r.projectId || ''}|${r.analyte || ''}`;
-}
-
-// Two separate Worker calls (raw term, resolved expansion), merged and deduped client-side —
-// NOT one bigger "any word" query, since folding the expansion's words into the same query
-// would reintroduce exactly the "one generic word dominates the match set" problem
-// ldtQueryTerm() already exists to avoid (see its own comment). Each merged record is tagged
-// matchedVia: 'term' | 'expansion' | 'both' so a row can show which query actually found it.
-function mergeLdtResults(primary, expansionResult) {
-  // No expansion query ran at all (no backend, or nothing resolved) — pass primary records
-  // through untouched, with no `matchedVia` field, so the no-backend table renders exactly as
-  // it did before this feature (renderLdtResults only shows a badge when the field is present).
-  if (!expansionResult) return primary;
-
-  const byKey = new Map();
-  for (const r of primary.records) byKey.set(ldtRecordKey(r), { ...r, matchedVia: 'term' });
-  for (const r of expansionResult.records) {
-    const key = ldtRecordKey(r);
-    const existing = byKey.get(key);
-    byKey.set(key, existing ? { ...existing, matchedVia: 'both' } : { ...r, matchedVia: 'expansion' });
-  }
-  const records = Array.from(byKey.values());
-  const total = Math.max(primary.total, expansionResult.total, records.length);
-  return { total, records };
-}
+// LDT search is term-match only — no AI-expansion query. Confirmed live this was actively
+// harmful: the AI-resolved full name for a term routinely spells things out in ways NY's
+// "any word" matching can't handle safely (e.g. "immunoglobulin G" instead of "IgG" leaving
+// a bare "G" that alone matched ~5,000 of ~5,000+ LDT records — see stripLdtNoiseTokens's own
+// history). Rather than keep expanding the noise-token blocklist for every new AI phrasing
+// that turns up, LDT search just doesn't use the expansion at all; the raw term alone is
+// already precise (ldtQueryTerm still narrows it to the antigen core, dropping "Anti-"/the
+// isotype/generic filler words).
 
 function classifyLdt(status) {
   const s = (status || '').toLowerCase();
@@ -2365,11 +2322,10 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
         ? `<div class="dnote">Showing ${s.records.length} of ${s.total} total matches (capped).</div>` : '';
       // Key information only, per the NY tool's own result output — facility, matched
       // analyte name, specimen type, permit category, status, and a link to the full record.
-      const matchedViaLabel = { term: 'Term', expansion: 'Expansion', both: 'Term + Expansion' };
       const rows = s.records.map(r => `
         <tr>
           <td>${escapeHtml(r.facilityName || '—')}</td>
-          <td>${escapeHtml(r.analyte || '—')}${r.matchedVia ? ` <span class="mmtag" style="cursor:default">${matchedViaLabel[r.matchedVia]}</span>` : ''}</td>
+          <td>${escapeHtml(r.analyte || '—')}</td>
           <td>${escapeHtml(r.specimenType || '—')}</td>
           <td>${escapeHtml(r.permitCategory || '—')}</td>
           <td>${ldtStatusBadge(r.status)}</td>
@@ -2464,50 +2420,26 @@ function renderLdtChart(valid) {
   });
 }
 
-// `queries`: Array<{term, expansionFull?}>. expansionFull is only ever present when a resolved
-// full name is actually available (already-resolved via the FDA cross-check, or freshly
-// resolved via fetchExpansionForLdt) — see the two call sites (runLdtSearch, the crossCheckBtn
-// handler) for how each builds these. Deliberately just the plain full name, not the "/"-joined
-// synonym list build_expansion_expr uses on the FDA side — NY's "any word" match tokenizes on
-// whitespace only, so a slash-joined string with no spaces around the slashes would land as one
-// unmatchable token instead of several separate words.
-// `logToTerminal`, if true, writes each term's trace live into the shared Platform activity
-// terminal (see termLine) — used by the direct LDT tab (runLdtSearch). Deliberately false for
-// the crossCheckBtn handler (Table 2), which stays a secondary, opt-in action with its own
-// inline progress text rather than adding a second, less-relevant stream of lines to the
-// terminal right after the FDA search that triggered it just finished writing to it.
-async function runLdtSearchForTerms(queries, onProgress, logToTerminal) {
+// `terms`: string[]. `logToTerminal`, if true, writes each term's trace live into the shared
+// Platform activity terminal (see termLine) — used by the direct LDT tab (runLdtSearch).
+// Deliberately false for the crossCheckBtn handler (Table 2), which stays a secondary, opt-in
+// action with its own inline progress text rather than adding a second, less-relevant stream
+// of lines to the terminal right after the FDA search that triggered it just finished writing
+// to it.
+async function runLdtSearchForTerms(terms, onProgress, logToTerminal) {
   const results = [];
   const proxyUrl = getLdtProxyUrl();
-  for (let i = 0; i < queries.length; i++) {
-    const { term, expansionFull } = queries[i];
-    onProgress(i, queries.length, term);
+  for (let i = 0; i < terms.length; i++) {
+    const term = terms[i];
+    onProgress(i, terms.length, term);
     if (logToTerminal) termLine(`ldt:${term}  starting…`, 't-meta');
     const trace = new LiveTrace(logToTerminal ? (entry) => termLineForStage(term, entry, 'ldt') : null);
     try {
-      let t0 = performance.now();
-      const primary = await fetchLdtBiomarker(term, proxyUrl);
-      pushTrace(trace, 'ldt:term-query', primary.total > 0 ? 'hit' : 'miss',
-        `${primary.total} result(s) for raw term`, Math.round(performance.now() - t0));
+      const t0 = performance.now();
+      const { total, records } = await fetchLdtBiomarker(term, proxyUrl);
+      pushTrace(trace, 'ldt:term-query', total > 0 ? 'hit' : 'miss',
+        `${total} result(s)`, Math.round(performance.now() - t0));
 
-      const expansionQueryTerm = expansionFull;
-      const meaningfullyDifferent = expansionQueryTerm &&
-        ldtQueryTerm(expansionQueryTerm).toLowerCase() !== ldtQueryTerm(term).toLowerCase();
-      let expansionResult = null;
-      if (meaningfullyDifferent) {
-        await sleep(150);
-        t0 = performance.now();
-        expansionResult = await fetchLdtBiomarker(expansionQueryTerm, proxyUrl);
-        pushTrace(trace, 'ldt:expansion-query', expansionResult.total > 0 ? 'hit' : 'miss',
-          `${expansionResult.total} result(s) for resolved name '${expansionQueryTerm}'`,
-          Math.round(performance.now() - t0));
-      } else if (expansionQueryTerm) {
-        pushTrace(trace, 'ldt:expansion-query', 'skipped', 'resolved name is the same as the raw term');
-      } else {
-        pushTrace(trace, 'ldt:expansion-query', 'skipped', 'no resolved expansion available for this term');
-      }
-
-      const { total, records } = mergeLdtResults(primary, expansionResult);
       const approved = records.filter(r => classifyLdt(r.status) === 'approved').length;
       const conditional = records.filter(r => classifyLdt(r.status) === 'conditional').length;
       const item = { term, total, approved, conditional, records, trace: trace.entries, error: null };
@@ -2521,7 +2453,7 @@ async function runLdtSearchForTerms(queries, onProgress, logToTerminal) {
       results.push(item);
       if (logToTerminal) termLine(`ldt:${term}  failed — ${item.error}`, 't-error');
     }
-    if (i < queries.length - 1) await sleep(250);
+    if (i < terms.length - 1) await sleep(250);
   }
   return results;
 }
@@ -2539,25 +2471,7 @@ async function runLdtSearch() {
   $('crossCard').style.display = 'none';
   $('progressWrap').style.display = 'block';
 
-  // No prior FDA search to draw an already-resolved expansion from (unlike the cross-check
-  // path below) — resolve one fresh per term via the lightweight /expansion endpoint, only
-  // when a local index is configured and reachable. Same reuse-the-probe-result pattern as
-  // runFdaSearch, so this doesn't cost a second health check on top of fetchExpansionForLdt's
-  // own per-term check.
-  const localIndexUrlSetting = getLocalIndexUrl();
-  const localIndexReachable = Boolean(localIndexUrlSetting) && await checkLocalIndexHealth(localIndexUrlSetting);
-  setLocalIndexBannerState(Boolean(localIndexUrlSetting), localIndexReachable);
-  const queries = [];
-  for (const term of terms) {
-    let expansionFull = null;
-    if (localIndexReachable) {
-      const exp = await fetchExpansionForLdt(term);
-      if (exp) expansionFull = exp.full;
-    }
-    queries.push({ term, expansionFull });
-  }
-
-  ldtState = await runLdtSearchForTerms(queries, (i, n, term) => {
+  ldtState = await runLdtSearchForTerms(terms, (i, n, term) => {
     $('progressTxt').textContent = `Searching LDT ${i + 1} of ${n}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / n) * 100)}%`;
   }, true);
@@ -2573,20 +2487,14 @@ let crossState = [];
 
 $('crossCheckBtn').addEventListener('click', async () => {
   if (!getLdtProxyUrl()) { alert('Add your LDT proxy Worker URL in Settings (gear icon) first.'); return; }
-  // Reuses each candidate's expansion already resolved moments earlier by the FDA search that
-  // just ran (state[i].expansion) — free, no extra network cost, unlike the direct-LDT-tab
-  // path (runLdtSearch above), which has no prior FDA search to draw one from.
-  const queries = state.filter(isLdtCrossCheckCandidate).map(s => ({
-    term: s.term,
-    expansionFull: s.expansion ? s.expansion.full : null,
-  }));
-  if (!queries.length) return;
+  const terms = state.filter(isLdtCrossCheckCandidate).map(s => s.term);
+  if (!terms.length) return;
 
   $('crossCheckBtn').disabled = true;
   $('crossCard').style.display = 'block';
-  $('crossBody').innerHTML = `<tr><td colspan="6" class="dnote" style="padding:12px 10px">Searching LDT database for ${queries.length} biomarker(s)…</td></tr>`;
+  $('crossBody').innerHTML = `<tr><td colspan="6" class="dnote" style="padding:12px 10px">Searching LDT database for ${terms.length} biomarker(s)…</td></tr>`;
 
-  crossState = await runLdtSearchForTerms(queries, (i, n, term) => {
+  crossState = await runLdtSearchForTerms(terms, (i, n, term) => {
     $('crossBody').innerHTML = `<tr><td colspan="6" class="dnote" style="padding:12px 10px">Searching LDT ${i + 1} of ${n}: ${escapeHtml(term)}…</td></tr>`;
   });
 
