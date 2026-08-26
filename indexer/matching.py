@@ -154,31 +154,64 @@ def build_fused_anti_expr(term: str) -> str | None:
 # bare 2-3 letter term has no camelCase boundary/hyphen/space to transform in the first place.
 CAMEL_BOUNDARY_RE = re.compile(r"([a-z])([A-Z])")
 
+# FDA device names aren't consistent about spacing a trailing digit off its preceding word
+# either (e.g. "Domain1" vs "Domain 1") — confirmed live: K152875's actual device name spells
+# it "Domain 1" (spaced), which a term typed/resolved as "...Domain1" (fused) would otherwise
+# never match, the same class of gap CAMEL_BOUNDARY_RE already closes for letter-case
+# transitions, just for a letter-to-digit one instead.
+ALPHA_DIGIT_BOUNDARY_RE = re.compile(r"([A-Za-z])(\d)")
+
+# FDA device names very commonly abbreviate a spelled-out Greek letter immediately preceding a
+# number down to its single Latin initial instead — e.g. "beta-2-glycoprotein" becomes "B2GPI"
+# in real device text, never spelled out as "beta2...". to_search_term's GREEK_TO_LATIN mapping
+# (β -> "beta") only produces the spelled-out form; confirmed live this caused a real miss:
+# K152875's device name is "B2GP1-Domain1", not "beta2-GP1-Domain1" (what a "β2" a user types
+# becomes after Greek-letter conversion). Generated as an additional variant alongside the
+# spelled-out form, since both conventions are genuinely common in real FDA text.
+GREEK_SPELLED_TO_SINGLE_LETTER = {
+    "alpha": "A", "beta": "B", "gamma": "G", "delta": "D", "kappa": "K", "lambda": "L", "mu": "M",
+}
+# Also consumes an immediately-following hyphen (the "-?" below) — a single-letter+digit
+# abbreviation conventionally fuses directly with whatever follows it (e.g. "B2GPI", not
+# "B2-GPI"), confirmed against K152875's real device name "B2GP1-Domain1": the hyphen the user
+# typed between "β2" and "GP1" isn't present in FDA's own abbreviated convention, while the
+# later hyphen before "Domain1" is untouched since this regex only matches at the Greek-letter
+# prefix itself.
+GREEK_SPELLED_PREFIX_RE = re.compile(r"\b(alpha|beta|gamma|delta|kappa|lambda|mu)(\d+)-?", re.IGNORECASE)
+
+
+def abbreviate_greek_spelled(text: str) -> str:
+    def repl(m: re.Match) -> str:
+        letter = GREEK_SPELLED_TO_SINGLE_LETTER.get(m.group(1).lower(), m.group(1))
+        return f"{letter}{m.group(2)}"
+    return GREEK_SPELLED_PREFIX_RE.sub(repl, text)
+
 
 def generate_orthographic_variants(antigen: str) -> list[str]:
     variants: list[str] = []
     seen = {antigen}
 
-    camel_split = CAMEL_BOUNDARY_RE.sub(r"\1 \2", antigen)
-    if camel_split not in seen:
-        variants.append(camel_split)
-        seen.add(camel_split)
+    def add(v: str) -> None:
+        if v and v not in seen:
+            variants.append(v)
+            seen.add(v)
+
+    add(CAMEL_BOUNDARY_RE.sub(r"\1 \2", antigen))
+    add(ALPHA_DIGIT_BOUNDARY_RE.sub(r"\1 \2", antigen))
 
     if "-" in antigen:
-        hyphen_to_space = antigen.replace("-", " ")
-        if hyphen_to_space not in seen:
-            variants.append(hyphen_to_space)
-            seen.add(hyphen_to_space)
+        add(antigen.replace("-", " "))
     if " " in antigen:
-        space_to_hyphen = re.sub(r"\s+", "-", antigen)
-        if space_to_hyphen not in seen:
-            variants.append(space_to_hyphen)
-            seen.add(space_to_hyphen)
+        add(re.sub(r"\s+", "-", antigen))
 
-    fused = re.sub(r"[\s-]+", "", antigen)
-    if fused not in seen:
-        variants.append(fused)
-        seen.add(fused)
+    add(re.sub(r"[\s-]+", "", antigen))
+
+    abbreviated = abbreviate_greek_spelled(antigen)
+    if abbreviated != antigen:
+        add(abbreviated)
+        if "-" in abbreviated:
+            add(abbreviated.replace("-", " "))
+        add(re.sub(r"[\s-]+", "", abbreviated))
 
     return variants
 

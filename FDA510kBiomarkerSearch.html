@@ -892,6 +892,28 @@ function buildFusedAntiExpr(term) {
 // found this session for short bare tokens (against PMA, then GUDID) never gets amplified by
 // this tier. Only terms that already carry real internal structure (mixed case, a hyphen, an
 // embedded space) produce anything.
+// FDA device names aren't consistent about spacing a trailing digit off its preceding word
+// either (e.g. "Domain1" vs "Domain 1") — confirmed live: K152875's actual device name spells
+// it "Domain 1" (spaced), the same class of gap the camelCase split above already closes for
+// letter-case transitions, just for a letter-to-digit one instead.
+const ALPHA_DIGIT_BOUNDARY_RE = /([A-Za-z])(\d)/g;
+
+// FDA device names very commonly abbreviate a spelled-out Greek letter immediately preceding a
+// number down to its single Latin initial instead — e.g. "beta-2-glycoprotein" becomes "B2GPI"
+// in real device text, never spelled out as "beta2...". toSearchTerm's GREEK_TO_LATIN mapping
+// (β -> "beta") only produces the spelled-out form; confirmed live this caused a real miss:
+// K152875's device name is "B2GP1-Domain1", not "beta2-GP1-Domain1" (what a "β2" a user types
+// becomes after Greek-letter conversion). Also consumes an immediately-following hyphen — a
+// single-letter+digit abbreviation conventionally fuses directly with whatever follows it
+// ("B2GPI", not "B2-GPI"), confirmed against K152875's exact device name.
+const GREEK_SPELLED_TO_SINGLE_LETTER = { alpha: 'A', beta: 'B', gamma: 'G', delta: 'D', kappa: 'K', lambda: 'L', mu: 'M' };
+const GREEK_SPELLED_PREFIX_RE = /\b(alpha|beta|gamma|delta|kappa|lambda|mu)(\d+)-?/gi;
+
+function abbreviateGreekSpelled(text) {
+  return text.replace(GREEK_SPELLED_PREFIX_RE, (m, word, digits) =>
+    (GREEK_SPELLED_TO_SINGLE_LETTER[word.toLowerCase()] || word) + digits);
+}
+
 function generateOrthographicVariants(antigen) {
   const variants = new Set();
 
@@ -900,6 +922,9 @@ function generateOrthographicVariants(antigen) {
   const camelSplit = antigen.replace(/([a-z])([A-Z])/g, '$1 $2');
   if (camelSplit !== antigen) variants.add(camelSplit);
 
+  const digitSplit = antigen.replace(ALPHA_DIGIT_BOUNDARY_RE, '$1 $2');
+  if (digitSplit !== antigen) variants.add(digitSplit);
+
   // Hyphen <-> space, both directions, since FDA device names use either inconsistently.
   if (antigen.includes('-')) variants.add(antigen.replace(/-/g, ' '));
   if (antigen.includes(' ')) variants.add(antigen.replace(/\s+/g, '-'));
@@ -907,6 +932,13 @@ function generateOrthographicVariants(antigen) {
   // Fully fused: strip every internal space/hyphen, e.g. "DS DNA" -> "DSDNA".
   const fused = antigen.replace(/[\s-]+/g, '');
   if (fused !== antigen) variants.add(fused);
+
+  const abbreviated = abbreviateGreekSpelled(antigen);
+  if (abbreviated !== antigen) {
+    variants.add(abbreviated);
+    if (abbreviated.includes('-')) variants.add(abbreviated.replace(/-/g, ' '));
+    variants.add(abbreviated.replace(/[\s-]+/g, ''));
+  }
 
   variants.delete(antigen); // identity form is already covered by the antigen-only tier
   return Array.from(variants);
@@ -1541,10 +1573,31 @@ function getLdtProxyUrl() {
 // antigen core only (reusing the same strip helpers built for the FDA antigen-only tier)
 // so the match reflects the antigen, not the isotype boilerplate. The isotype (and "Anti-")
 // are still shown in the UI via the original `term` — only the query itself is narrowed.
+//
+// stripIsotypeSuffix only catches a *trailing* "IgG"/"IgA"/etc. — confirmed live this isn't
+// enough once the query term comes from an AI-resolved expansion rather than raw user input:
+// "Anti-Dsg1 IgG" resolved to a full name of "Anti-desmoglein 1 IgG antibody", where "IgG" is
+// followed by "antibody" rather than sitting at the end of the string, so the existing
+// suffix-anchored regex doesn't match it at all. Worse, the bare digit "1" left over from
+// "desmoglein 1" (the AI's spaced phrasing, vs. this tool's own fused "Dsg1" convention) turned
+// out to be the dominant problem — confirmed live, the single word "1" alone matched 2,526 of
+// NY's ~11,200 LDT records by itself, while "desmoglein" alone matched only 1 (the honest
+// answer) and the correctly-fused "Dsg1"/"desmoglein1" both matched 0. Any bare token that
+// isn't distinctive on its own — a lone number, an isotype marker, or a generic antibody-class
+// word — is dangerous as its own independent "any word" branch and gets dropped here, from
+// anywhere in the phrase, not just the end.
+const LDT_NOISE_TOKEN_RE = /^(anti|antibody|antibodies|autoantibody|autoantibodies|ig[agme][1-4]?|\d+)$/i;
+
+function stripLdtNoiseTokens(phrase) {
+  return phrase.split(/\s+/).filter(w => w && !LDT_NOISE_TOKEN_RE.test(w)).join(' ');
+}
+
 function ldtQueryTerm(term) {
   const searchTerm = toSearchTerm(term);
   const antigen = stripAntiPrefix(stripIsotypeSuffix(searchTerm)).trim();
-  return antigen || searchTerm;
+  const base = antigen || searchTerm;
+  const cleaned = stripLdtNoiseTokens(base).trim();
+  return cleaned || base;
 }
 
 // NY's CLEP database only covers labs holding a NY LDT permit — a small fraction of all
