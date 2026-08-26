@@ -1596,7 +1596,15 @@ function getLdtProxyUrl() {
 // isn't distinctive on its own — a lone number, an isotype marker, or a generic antibody-class
 // word — is dangerous as its own independent "any word" branch and gets dropped here, from
 // anywhere in the phrase, not just the end.
-const LDT_NOISE_TOKEN_RE = /^(anti|antibody|antibodies|autoantibody|autoantibodies|ig[agme][1-4]?|\d+)$/i;
+// Confirmed live: "Anti-PLA2R IgG" resolved (AI expansion) to "anti-phospholipase A2 receptor
+// immunoglobulin G" — spelled-out "immunoglobulin G" instead of the fused "IgG" abbreviation,
+// so neither stripIsotypeSuffix nor the ig[agme] pattern below caught it. The leftover bare
+// single-letter word "G" alone matched 4,958 of ~5,000+ NY LDT records on its own (same failure
+// shape as the bare-digit "1" bug above, just a letter instead of a number) — any bare
+// single-character token is exactly this dangerous as an independent "any word" branch,
+// regardless of which specific letter it happens to be, so it's dropped generically here
+// rather than special-casing "G".
+const LDT_NOISE_TOKEN_RE = /^(anti|antibody|antibodies|autoantibody|autoantibodies|immunoglobulin|ig[agme][1-4]?|[a-z]|\d+)$/i;
 
 function stripLdtNoiseTokens(phrase) {
   return phrase.split(/\s+/).filter(w => w && !LDT_NOISE_TOKEN_RE.test(w)).join(' ');
