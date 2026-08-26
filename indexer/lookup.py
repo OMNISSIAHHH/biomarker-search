@@ -117,15 +117,56 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
     everything finishes) — this is what lets server/main.py's GET /biomarker/{term}/stream stream
     each stage live over SSE as it actually happens, rather than only after the whole pipeline
     (including any real Tavily/Ollama round-trip) completes.
+
+    Confirmed live: unconditionally resolving both UMLS and the Tavily/local-LLM crosscheck up
+    front (still what resolve_and_cache_expansion/ai_expansion.resolve_expansion do, since GET
+    /expansion/{term} has no match-result signal to condition on) burns a Tavily call on every
+    UMLS-configured search regardless of whether UMLS already got it right — measured against
+    real terms: 3 of 4 needed zero Tavily calls once made conditional, and the one that did
+    still recovered its full, correct result. Here, where the match pipeline's own outcome is
+    available, UMLS is tried first (free) and Tavily/AI is only reached for when the match
+    pipeline comes back with nothing across every tier — never on a cache hit, since caching
+    already means "don't redo network work automatically" and Force Refresh is the deliberate
+    escape hatch for that. One deliberate side effect: if a more reliable tier (exact/broad/
+    wordform) already found something, this no longer also spends a Tavily call hunting for a
+    few more matches via a less-reliable AI-generated name the way the old unconditional
+    version did — an acceptable trade given Tavily is the one tier with a real, metered cost.
     """
     key = expansion_key(term)
     trace = TraceSink(on_trace_entry)
-    expansion, source = await resolve_and_cache_expansion(
-        conn, client, term, key, ai_config, force_refresh, trace=trace,
-    )
+
+    cached = None if force_refresh else db.get_expansion_cache_entry(conn, key)
+    if cached is not None:
+        expansion, source = cached
+        trace.append({"stage": "expansion:cache", "outcome": "hit",
+                       "detail": f"cached, source={source}", "elapsedMs": 0})
+    else:
+        expansion = await ai_expansion.lookup_umls_expansion(
+            client, term, ai_config.get("umls_api_key"), trace=trace,
+        )
+        source = "umls" if expansion else "none"
 
     db.clear_matches_for_biomarker(conn, key)
     result = await fetch_biomarker_matches(client, DEVICE_510K, term, expansion, api_key, trace=trace)
+
+    if cached is None and result["total"] == 0:
+        ai_result = await ai_expansion.lookup_search_ai_expansion(
+            client, term, ai_config.get("tavily_api_key"), ai_config.get("local_llm_url"),
+            ai_config.get("local_llm_model"), trace=trace,
+        )
+        if ai_result:
+            if expansion:
+                merged_search = "/".join(filter(None, [
+                    expansion.get("search") or expansion.get("full"),
+                    ai_result.get("search") or ai_result.get("full"),
+                ]))
+                expansion = {"full": expansion["full"], "search": merged_search}
+            else:
+                expansion = ai_result
+                source = "search-ai"
+            result = await fetch_biomarker_matches(client, DEVICE_510K, term, expansion, api_key, trace=trace)
+
+    db.upsert_expansion_cache(conn, key, expansion, source, datetime.now(timezone.utc).isoformat())
     # matching.py's 'expansion' tier tag means "nothing else matched, only the resolved name/
     # synonyms did" — relabeled per the source that actually resolved it, so the tag correctly
     # conveys whether this was an unverified database lookup ('umls') or a search-grounded AI
