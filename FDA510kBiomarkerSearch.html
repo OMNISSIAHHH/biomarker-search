@@ -241,6 +241,9 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <button class="btn-primary" id="searchBtn"><i class="ti ti-search"></i> Search</button>
         <button class="btn-ghost" id="clearBtn">Clear</button>
         <button class="btn-export" id="exportBtn" disabled><i class="ti ti-file-spreadsheet"></i> Export to Excel</button>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--tx2);margin-left:4px" title="A term already searched once is normally read straight from the local index's cache — check this to re-resolve it from scratch (fresh UMLS/AI lookup, fresh openFDA queries) instead, e.g. after a fix or an AI answer that looked wrong last time.">
+          <input type="checkbox" id="forceRefresh"> Force refresh (ignore cached results)
+        </label>
       </div>
       <div class="progress" id="progressWrap" style="display:none">
         <span id="progressTxt"></span>
@@ -1396,11 +1399,12 @@ refreshCrawlButtonState();
 // backend preferring them over its .env value for that one request (see server/main.py's
 // _ai_config_for_request), is what makes "paste it into Settings" actually work in the default
 // (local-index) workflow, not just the client-side fallback path.
-function fetchFromLocalIndexStreaming(baseUrl, term, onStage, apiKey, umlsApiKey) {
+function fetchFromLocalIndexStreaming(baseUrl, term, onStage, apiKey, umlsApiKey, forceRefresh) {
   return new Promise((resolve, reject) => {
     const params = new URLSearchParams();
     if (apiKey) params.set('api_key', apiKey);
     if (umlsApiKey) params.set('umls_api_key', umlsApiKey);
+    if (forceRefresh) params.set('refresh', 'true');
     const qs = params.toString();
     const es = new EventSource(`${baseUrl}/biomarker/${encodeURIComponent(term)}/stream${qs ? `?${qs}` : ''}`);
     let settled = false;
@@ -1439,11 +1443,11 @@ function fetchFromLocalIndexStreaming(baseUrl, term, onStage, apiKey, umlsApiKey
   });
 }
 
-async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage) {
+async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage, forceRefresh) {
   let localIndexError = null;
   if (localIndexUrl) {
     try {
-      return await fetchFromLocalIndexStreaming(localIndexUrl, term, onStage, apiKey, umlsApiKey);
+      return await fetchFromLocalIndexStreaming(localIndexUrl, term, onStage, apiKey, umlsApiKey, forceRefresh);
     } catch (e) {
       // Any local-index failure (server down mid-search, AI expansion lookup failed, etc.)
       // falls through to the live tiers below rather than failing the whole search — noted in
@@ -1799,6 +1803,7 @@ async function runFdaSearch() {
 
   const apiKey = $('apiKey').value.trim();
   const umlsApiKey = getUmlsApiKey();
+  const forceRefresh = $('forceRefresh').checked;
   $('searchBtn').disabled = true;
   setExportButtonsDisabled(true);
   $('emptyState').style.display = 'none';
@@ -1822,7 +1827,7 @@ async function runFdaSearch() {
     termLine(`search:${term}  starting…`, 't-meta');
     try {
       const { total, records, matchMode, expansion, panelCandidates, inferredMatches, trace } =
-        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, (entry) => termLineForStage(term, entry));
+        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, (entry) => termLineForStage(term, entry), forceRefresh);
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
       const item = {
         term, total, approved, records, matchMode, expansion,

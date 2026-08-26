@@ -366,9 +366,11 @@ Clinic Laboratories, LabCorp, etc.).
 - Research purposes only — not medical advice, never for patient-care decisions. Double-check
   anything important on [FDA's own site](https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm).
 - A search result is cached the first time a term is looked up, so a repeat search reads
-  instantly from the local index rather than re-querying openFDA — see [API](#api) for how to
-  force a fresh lookup for one term, or delete `index.sqlite3` next to the exe to clear
-  everything (this also clears the predicate crawl, so it'll need re-running).
+  instantly from the local index rather than re-querying openFDA/UMLS/the AI crosscheck. Check
+  **Force refresh (ignore cached results)** next to the Search button to re-resolve a term from
+  scratch instead — worth doing after a tool update, or if an earlier AI/UMLS answer looked
+  wrong. Deleting `index.sqlite3` next to the exe clears everything at once (also clears the
+  predicate crawl, so it'll need re-running).
 
 ## Glossary
 
