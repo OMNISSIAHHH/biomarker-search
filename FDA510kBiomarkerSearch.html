@@ -638,13 +638,41 @@ function measurandFieldPattern(labelPattern) {
   return new RegExp(`[A-Z]\\.?\\s*(${labelPattern})s?\\s*:\\s*([\\s\\S]{1,400}?)\\s*(?=[A-Z]\\.?\\s+[A-Z][a-z]|$)`);
 }
 
+// Confirmed live against a real document (K173726): PDF.js's raw text items don't always
+// align with whole words — this PDF's own content stream splits "Measurand" into three
+// separate items ("Measura", "n", "d:") and "Allergen" into two ("A", "llergen"), evidently
+// from kerning-pair glyph runs in however this PDF was generated. Blindly joining every item
+// with a single space (the previous behavior) turns "Measurand:" into "Measura n d:", which
+// this field's regex can never recognize — it silently fell through to the "Type of Test"
+// fallback instead, on a document that had a perfectly good Measurand field all along. Each
+// item carries its own position (transform) and width, so a real visual gap can be told apart
+// from a same-run continuation: join with nothing when the next item starts right where this
+// one ends (a split word), and with one space otherwise (an actual word boundary) — same
+// principle pypdf already gets right internally for the backend's own PDF text extraction,
+// which is why this bug was JS/PDF.js-specific and never affected the predicate crawl's search.
+function reconstructPageText(content) {
+  let text = '';
+  let prev = null;
+  for (const item of content.items) {
+    if (prev) {
+      const sameLine = Math.abs(item.transform[5] - prev.transform[5]) < 2;
+      const gap = item.transform[4] - (prev.transform[4] + prev.width);
+      const isContinuation = sameLine && gap < (prev.height || 10) * 0.25;
+      text += isContinuation ? '' : ' ';
+    }
+    text += item.str;
+    prev = item;
+  }
+  return text;
+}
+
 async function extractMeasurand(arrayBuffer) {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let fullText = '';
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    fullText += content.items.map(it => it.str).join(' ') + '\n';
+    fullText += reconstructPageText(content) + '\n';
     for (const labelPattern of MEASURAND_FIELD_LABELS) {
       const m = fullText.match(measurandFieldPattern(labelPattern));
       if (m) return { label: m[1], value: m[2].trim() };
