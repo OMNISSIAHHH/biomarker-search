@@ -284,6 +284,10 @@ device name alone. Shows **Matches** or **No match**.
 
 Most documents label this "Measurand" or "Analyte"; multi-parameter devices (e.g. hematology
 analyzers) have neither, so the tool falls back to "Type of Test" or "Intended Use" instead.
+For an older or poorly-scanned document with no real text layer at all, it automatically falls
+back to OCR (in your browser, no setup) instead of giving up — slower for those specific
+documents, but no different to use otherwise. A result found this way is labeled **via OCR**,
+since OCR occasionally misreads a character worth a second look.
 
 **Already works out of the box:** FDA's site blocks direct browser access to this PDF, so this
 needs a small Cloudflare "Worker" go-between — a shared one is already pre-filled in Settings,
@@ -490,6 +494,8 @@ one term past its cache (see [Things to keep in mind](#things-to-keep-in-mind)):
 - [xlsx-js-style](https://github.com/gitbrent/xlsx-js-style) — a style-capable
   [SheetJS](https://sheetjs.com/) Community Edition fork (same `XLSX` API, adds the cell
   colors/fonts used in the Excel export).
+- [Tesseract.js](https://tesseract.projectnaptha.com/) — in-browser OCR fallback for Check
+  Measurand on scanned/image-only Decision Summaries.
 - [openFDA](https://open.fda.gov/) — the FDA's own public device-clearance data this tool queries.
 - The National Library of Medicine's [UMLS](https://www.nlm.nih.gov/research/umls/index.html) —
   the medical-abbreviation lookup.
