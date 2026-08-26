@@ -913,8 +913,14 @@ function antiRequirementMode(term) {
   return 'none';
 }
 
+// Confirmed live: "Centromere (CENP-A/B)" split (on whitespace/slash only, the previous
+// pattern) into ["Centromere", "(CENP-A", "B)"] — the stray parentheses stuck to the adjacent
+// token, producing a malformed literal-phrase search no real device text would ever contain
+// verbatim. Parentheses are common in how a term's own clarifying abbreviation gets typed
+// ("Name (Abbrev)"), so they're stripped here the same way whitespace/slashes already are —
+// mirrors indexer/matching.py's identical fix.
 function splitTokens(term) {
-  return term.split(/[\s/]+/).map(s => s.trim()).filter(Boolean);
+  return term.split(/[\s/()]+/).map(s => s.trim()).filter(Boolean);
 }
 
 function tokenClause(field, tokens) {
@@ -1075,6 +1081,49 @@ function buildWordformExpr(term) {
   const variants = generateOrthographicVariants(antigen);
   if (!variants.length) return null;
   const clauses = variants.map(v => crossFieldTokensClause(splitTokens(v))).filter(Boolean);
+  if (!clauses.length) return null;
+  return '(' + clauses.join(' OR ') + ')';
+}
+
+// Confirmed live, twice: "Centromere (CENP-A/B)" was missing 11 of 12 real Centromere/CENP-A/
+// CENP-B devices (found only 1), and "Desmoglein 3 (Dsg3)" was missing K091969 (real device
+// name: "...ANTI-DESMOGLEIN 3 ELISA...", spelled out with a space — never the fused "Dsg3" the
+// rest of the term folded into the same mandatory AND-group). Beyond splitTokens's own
+// parenthesis bug above, the deeper issue is that every existing tier ANDs its tokens
+// together, but "Name (Alt)" and "Name (Prefix-Alt1/Alt2)" both describe an OR relationship —
+// a real device names the antigen ONE of these ways, not all of them at once ("MESACUP-2 TEST
+// CENP-B" never says "Centromere" or "CENP-A"; K091969 never says "Dsg3"). A slash-separated
+// parenthetical is also a shared-prefix shorthand ("CENP-A/B" for "CENP-A and CENP-B", the same
+// convention as "IL-6/8" for "IL-6 and IL-8") — a bare trailing piece like "B" isn't a real
+// name on its own, it borrows the prefix from before the slash. Generated as extra alternative
+// candidate phrases, tried independently (OR'd) rather than folded into the same AND-group as
+// the rest of the term — mirrors indexer/matching.py's identical fix.
+const PAREN_CONTENT_RE = /\(([^()]+)\)/;
+
+function expandParenAlternates(term) {
+  const m = PAREN_CONTENT_RE.exec(term);
+  if (!m) return [];
+  const inner = m[1].trim();
+  if (!inner) return [];
+  if (!inner.includes('/')) return [inner];
+  const pieces = inner.split('/').map(p => p.trim()).filter(Boolean);
+  if (!pieces.length) return [];
+  const first = pieces[0];
+  const prefixMatch = first.match(/^(.*-)/);
+  const prefix = prefixMatch ? prefixMatch[1] : '';
+  const alternates = [first];
+  for (const piece of pieces.slice(1)) {
+    alternates.push(piece.includes('-') ? piece : prefix + piece);
+  }
+  return alternates;
+}
+
+function buildParenAlternatesExpr(term) {
+  const alternates = expandParenAlternates(term);
+  if (!alternates.length) return null;
+  const beforeParen = term.slice(0, term.indexOf('(')).trim();
+  const candidates = (beforeParen ? [beforeParen] : []).concat(alternates);
+  const clauses = candidates.filter(Boolean).map(buildExactExpr);
   if (!clauses.length) return null;
   return '(' + clauses.join(' OR ') + ')';
 }
@@ -1648,6 +1697,25 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage, 
     pushTrace(trace, 'match:wordform', 'skipped', 'no orthographic variants generated for this term');
   }
 
+  const parenExpr = buildParenAlternatesExpr(searchTerm);
+  if (parenExpr) {
+    await sleep(150);
+    t0 = performance.now();
+    const parenResult = await runOpenFdaQuery(parenExpr, apiKey);
+    if (parenResult.total > 0) {
+      const mergedMode = best ? best.matchMode : 'paren-alternates';
+      best = best ? { ...mergeQueryResults(best, parenResult), matchMode: best.matchMode } : { ...parenResult, matchMode: 'paren-alternates' };
+      const detail = mergedMode === 'paren-alternates'
+        ? `${parenResult.total} result(s) — first tier to match`
+        : `${parenResult.total} result(s), merged into existing ${mergedMode} match`;
+      pushTrace(trace, 'match:paren-alternates', 'hit', detail, Math.round(performance.now() - t0));
+    } else {
+      pushTrace(trace, 'match:paren-alternates', 'miss', '0 results', Math.round(performance.now() - t0));
+    }
+  } else {
+    pushTrace(trace, 'match:paren-alternates', 'skipped', 'no "Name (Alt1/Alt2)" pattern in this term');
+  }
+
   // A dictionary-verified alternate wording is normally only tried once nothing else has
   // matched (below) — but for entries explicitly flagged alwaysCheck: true, it's checked (and
   // its matches UNIONed in) even when an earlier tier already found something. This is opt-in,
@@ -1961,7 +2029,8 @@ const MATCH_MODE_LABEL = {
   umls: 'UMLS-resolved match',
   'ai-suggested': 'AI-suggested match',
   'fused-anti': 'Fused-word match',
-  wordform: 'Alternate wordform match'
+  wordform: 'Alternate wordform match',
+  'paren-alternates': 'Parenthetical alternate match'
 };
 const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
@@ -1969,7 +2038,8 @@ const MATCH_MODE_TITLE = {
   umls: 'No match on the abbreviation itself — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
   'ai-suggested': 'No match on the abbreviation itself, and no UMLS entry either — the cross-check backend searched the web for it and had a local AI model extract the full name from those search results (not from the model\'s own memorized guess). More grounded than a cold guess, but still not a database lookup — worth a manual check, e.g. via Check Measurand.',
   'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
-  wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.'
+  wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.',
+  'paren-alternates': 'Your term has a "Name (Alt1/Alt2)" shape (e.g. "Centromere (CENP-A/B)") — matched on one of the parenthetical alternatives independently (e.g. "CENP-B" alone), since real device names often use only one of these names, never all of them together.'
 };
 
 function matchModeTag(mode) {

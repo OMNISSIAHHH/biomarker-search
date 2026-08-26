@@ -116,8 +116,13 @@ def with_cross_field_anti(main_expr: str, mode: str) -> str:
     return main_expr
 
 
+# Confirmed live: "Centromere (CENP-A/B)" split (on whitespace/slash only, the previous
+# pattern) into ["Centromere", "(CENP-A", "B)"] — the stray parentheses stuck to the adjacent
+# token, producing a malformed literal-phrase search no real device text would ever contain
+# verbatim. Parentheses are common in how a term's own clarifying abbreviation gets typed
+# ("Name (Abbrev)"), so they're stripped here the same way whitespace/slashes already are.
 def split_tokens(term: str) -> list[str]:
-    return [t for t in re.split(r"[\s/]+", term.strip()) if t]
+    return [t for t in re.split(r"[\s/()]+", term.strip()) if t]
 
 
 def token_clause(field: str, tokens: list[str]) -> str:
@@ -257,6 +262,57 @@ def build_wordform_expr(term: str) -> str | None:
         return None
     clauses = [cross_field_tokens_clause(split_tokens(v)) for v in variants]
     clauses = [c for c in clauses if c]
+    if not clauses:
+        return None
+    return "(" + " OR ".join(clauses) + ")"
+
+
+# Confirmed live, twice: "Centromere (CENP-A/B)" was missing 11 of 12 real Centromere/CENP-A/
+# CENP-B devices (found only 1), and "Desmoglein 3 (Dsg3)" was missing K091969 (real device
+# name: "...ANTI-DESMOGLEIN 3 ELISA...", spelled out with a space — never the fused "Dsg3" the
+# rest of the term folded into the same mandatory AND-group). Beyond split_tokens's own
+# parenthesis bug above, the deeper issue is that every existing tier ANDs its tokens together,
+# but "Name (Alt)" and "Name (Prefix-Alt1/Alt2)" both describe an OR relationship — a real
+# device names the antigen ONE of these ways, not all of them at once ("MESACUP-2 TEST CENP-B"
+# never says "Centromere" or "CENP-A"; K091969 never says "Dsg3"). A slash-separated
+# parenthetical is also a shared-prefix shorthand ("CENP-A/B" for "CENP-A and CENP-B", the same
+# convention as "IL-6/8" for "IL-6 and IL-8") — a bare trailing piece like "B" isn't a real name
+# on its own, it borrows the prefix from before the slash. Generated as extra alternative
+# candidate phrases, tried independently (OR'd) rather than folded into the same AND-group as
+# the rest of the term — not specific to either term above, applies to any "Name (Alt)" or
+# "Name (Prefix-Alt1/Alt2)" convention.
+PAREN_CONTENT_RE = re.compile(r"\(([^()]+)\)")
+
+
+def expand_paren_alternates(term: str) -> list[str]:
+    m = PAREN_CONTENT_RE.search(term)
+    if not m:
+        return []
+    inner = m.group(1).strip()
+    if not inner:
+        return []
+    if "/" not in inner:
+        return [inner]
+    pieces = [p.strip() for p in inner.split("/") if p.strip()]
+    if not pieces:
+        return []
+    first = pieces[0]
+    prefix_match = re.match(r"^(.*-)", first)
+    prefix = prefix_match.group(1) if prefix_match else ""
+    alternates = [first]
+    for piece in pieces[1:]:
+        alternates.append(piece if "-" in piece else prefix + piece)
+    return alternates
+
+
+def build_paren_alternates_expr(term: str) -> str | None:
+    alternates = expand_paren_alternates(term)
+    if not alternates:
+        return None
+    paren_start = term.index("(")
+    before_paren = term[:paren_start].strip()
+    candidates = ([before_paren] if before_paren else []) + alternates
+    clauses = [build_exact_expr(c) for c in candidates if c]
     if not clauses:
         return None
     return "(" + " OR ".join(clauses) + ")"
@@ -455,6 +511,24 @@ async def fetch_biomarker_matches(client, endpoint: str, term: str, expansion: d
             _trace(trace, "match:wordform", "miss", "0 results", elapsed)
     else:
         _trace(trace, "match:wordform", "skipped", "no orthographic variants generated for this term")
+
+    paren_expr = build_paren_alternates_expr(search_term)
+    if paren_expr:
+        paren_result, elapsed = await _timed_query(client, endpoint, paren_expr, api_key)
+        if paren_result["total"] > 0:
+            if best:
+                merged = merge_query_results(best, paren_result)
+                best = {**merged, "match_mode": best["match_mode"]}
+                _trace(trace, "match:paren-alternates", "hit",
+                       f"{paren_result['total']} result(s), merged into existing {best['match_mode']} match", elapsed)
+            else:
+                best = {**paren_result, "match_mode": "paren-alternates"}
+                _trace(trace, "match:paren-alternates", "hit",
+                       f"{paren_result['total']} result(s) — first tier to match", elapsed)
+        else:
+            _trace(trace, "match:paren-alternates", "miss", "0 results", elapsed)
+    else:
+        _trace(trace, "match:paren-alternates", "skipped", "no \"Name (Alt1/Alt2)\" pattern in this term")
 
     # Always merged in when an expansion resolved, regardless of whether an earlier tier already
     # matched — no per-entry alwaysCheck opt-in anymore (that was a curated-dictionary concept).
