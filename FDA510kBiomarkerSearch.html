@@ -1651,15 +1651,21 @@ function ldtQueryTerm(term) {
   return cleaned || base;
 }
 
-// NY's CLEP database only covers labs holding a NY LDT permit — a small fraction of all
-// LDTs offered nationally. When it finds nothing, a plain Google search for "<term> LDT"
-// routinely surfaces the actual offering lab (ARUP, Mayo, LabCorp, and similar reference
-// labs' public test directories all turn up this way) even though none of them expose a
-// free, no-login, CORS-friendly search API this tool could query directly. This is just a
+// NY's CLEP database only covers labs holding a NY LDT permit — a small fraction of all LDTs
+// offered nationally, so even a hit here doesn't rule out other labs offering it too, and a
+// Google search routinely surfaces the actual offering lab (ARUP, Mayo, LabCorp, and similar
+// reference labs' public test directories all turn up this way) even though none of them expose
+// a free, no-login, CORS-friendly search API this tool could query directly. Shown for every
+// search regardless of whether NY's database matched anything — manual cross-checking beyond
+// NY's one-state list is always worth doing, not just when NY comes back empty. This is just a
 // plain link to Google's own search results page — no API key, no proxy, no added cost.
-function googleLdtSearchLink(term) {
+function googleLdtSearchUrl(term) {
   const query = `${term} LDT laboratory developed test`;
-  const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
+function googleLdtSearchLink(term) {
+  const url = googleLdtSearchUrl(term);
   return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">Search Google for "${escapeHtml(term)} LDT" ↗</a>`;
 }
 
@@ -2368,7 +2374,9 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
         <table class="dtable">
           <thead><tr><th>Facility</th><th>Analyte</th><th>Specimen Type</th><th>Permit Category</th><th>Status</th><th>Detail</th></tr></thead>
           <tbody>${rows}</tbody>
-        </table>${shownNote}`;
+        </table>${shownNote}
+        <div class="dnote">NY's list only covers labs holding a NY permit — a small slice of all
+          labs nationally. ${googleLdtSearchLink(s.term)}</div>`;
     } else {
       wrap.innerHTML = `<div class="dnote">No matching LDTs found. ${googleLdtSearchLink(s.term)}</div>`;
     }
@@ -2591,16 +2599,21 @@ $('showOnlyInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') {
 
 $('searchBtn').addEventListener('click', runSearch);
 
+// Google Search column is populated for every row, matches or not (see googleLdtSearchUrl's own
+// comment) — NY's database is one state's list, never the full picture, so it's worth a manual
+// cross-check regardless of what NY returned.
 function ldtSummaryRows(targetState) {
   const { valid, errored } = getLdtRanked(targetState);
   return [
     ...valid.map((s, i) => ({
       Rank: i + 1, Biomarker: s.term, 'Total LDT Matches': s.total,
-      Approved: s.approved, 'Conditionally Approved': s.conditional, Error: ''
+      Approved: s.approved, 'Conditionally Approved': s.conditional, Error: '',
+      'Google Search': googleLdtSearchUrl(s.term)
     })),
     ...errored.map(s => ({
       Rank: '', Biomarker: s.term, 'Total LDT Matches': '',
-      Approved: '', 'Conditionally Approved': '', Error: s.error
+      Approved: '', 'Conditionally Approved': '', Error: s.error,
+      'Google Search': googleLdtSearchUrl(s.term)
     }))
   ];
 }
@@ -2732,7 +2745,7 @@ function exportToExcel() {
   if (searchMode === 'ldt') {
     if (!ldtState.length) return;
     XLSX.utils.book_append_sheet(wb, styleSheet(XLSX.utils.aoa_to_sheet(buildSearchInfoRows())), 'Search Info');
-    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(ldtState)), [8, 26, 16, 12, 20, 24]), 'LDT Summary');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(ldtState)), [8, 26, 16, 12, 20, 24, 50]), 'LDT Summary');
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtDetailRows(ldtState)), [22, 34, 26, 18, 18, 16, 50]), 'LDT Details');
     XLSX.writeFile(wb, `NY_LDT_Biomarker_Search_${ts}.xlsx`);
     return;
@@ -2817,7 +2830,7 @@ function exportToExcel() {
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(panelRows), [22, 16, 14, 40, 30, 20, 14, 12, 50]), 'Unconfirmed Matches');
   }
   if (crossState.length) {
-    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(crossState)), [8, 26, 16, 12, 20, 24]), 'LDT Cross-Check');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(crossState)), [8, 26, 16, 12, 20, 24, 50]), 'LDT Cross-Check');
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtDetailRows(crossState)), [22, 34, 26, 18, 18, 16, 50]), 'LDT Cross-Check Details');
   }
   XLSX.writeFile(wb, `FDA_510k_Biomarker_Search_${ts}.xlsx`);
