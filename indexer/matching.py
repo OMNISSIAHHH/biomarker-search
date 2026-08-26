@@ -8,6 +8,7 @@ intentionally does not re-derive it, only reproduces the logic.
 """
 import re
 import time
+import unicodedata
 
 from indexer.openfda import run_query
 
@@ -30,10 +31,23 @@ GREEK_TO_LATIN = {
 }
 
 
+# Confirmed live: openFDA's search endpoint rejects any query containing a non-ASCII letter
+# inside a quoted phrase with "Search not supported" — e.g. "anti-Sjögren" (with the accented
+# ö) errors outright where the plain-ASCII "anti-Sjogren" returns a normal (possibly empty)
+# result. This isn't specific to ö; openFDA's Lucene-style parser appears to choke on
+# non-ASCII text generally. AI-resolved synonym text (e.g. Tavily/Ollama returning "Sjögren's
+# syndrome") routinely contains these, so every string that ends up quoted in a query — the
+# raw search term and every expansion-derived token — gets transliterated to its closest ASCII
+# form before being used, not just this one term.
+def strip_diacritics(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in normalized if not unicodedata.combining(c))
+
+
 def to_search_term(term: str) -> str:
     for greek, latin in GREEK_TO_LATIN.items():
         term = term.replace(greek, latin)
-    return term
+    return strip_diacritics(term)
 
 
 def field_or(build) -> str:
@@ -252,7 +266,7 @@ EXPANSION_STOPWORDS = {
 
 
 def split_expansion_tokens(phrase: str) -> list[str]:
-    parts = re.split(r"[\s/,()]+", phrase)
+    parts = re.split(r"[\s/,()]+", strip_diacritics(phrase))
     return [p for p in parts if p and p.lower() not in EXPANSION_STOPWORDS]
 
 

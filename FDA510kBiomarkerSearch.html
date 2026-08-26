@@ -702,8 +702,18 @@ const GREEK_TO_LATIN = {
   'Σ':'Sigma','Τ':'Tau','Υ':'Upsilon','Φ':'Phi','Χ':'Chi','Ψ':'Psi','Ω':'Omega'
 };
 
+// Confirmed live: openFDA's search endpoint rejects any query containing a non-ASCII letter
+// inside a quoted phrase with "Search not supported" — e.g. "anti-Sjögren" (with the accented
+// ö) errors outright where the plain-ASCII "anti-Sjogren" returns a normal (possibly empty)
+// result. Not specific to ö; openFDA's parser appears to choke on non-ASCII text generally.
+// AI-resolved synonym text routinely contains these, so every string quoted in a query gets
+// transliterated to its closest ASCII form first, not just this one term.
+function stripDiacritics(text) {
+  return text.normalize('NFKD').replace(/[̀-ͯ]/g, '');
+}
+
 function toSearchTerm(term) {
-  return term.replace(/[α-ωΑ-Ω]/g, c => GREEK_TO_LATIN[c] || c);
+  return stripDiacritics(term.replace(/[α-ωΑ-Ω]/g, c => GREEK_TO_LATIN[c] || c));
 }
 
 // openFDA's free-text fields don't always phrase things the way a biomarker is commonly
