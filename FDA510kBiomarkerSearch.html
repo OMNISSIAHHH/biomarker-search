@@ -1668,16 +1668,7 @@ function getLdtProxyUrl() {
 // single-character token is exactly this dangerous as an independent "any word" branch,
 // regardless of which specific letter it happens to be, so it's dropped generically here
 // rather than special-casing "G".
-// Confirmed live: "Anti-His IgG" (His-tag) reduces to a bare "His" antigen — not itself an
-// anti/isotype/generic filler word, so it survived every rule above, and NY's own search turns
-// out to do fuzzy/stemmed matching rather than strict whole-word matching, letting the ordinary
-// English word "his" match 60 completely unrelated records (Histoplasma, histamine,
-// histocompatibility, "Entamoeba histolytica" — anything with "his" appearing anywhere). Added
-// here by name, same as the other specific words above — not a general short-token rule, since
-// plenty of equally-short *real* abbreviations (PSA, AFP, CEA) don't have this problem (each
-// confirmed live to return a small, reasonable count, not a flood) precisely because they
-// aren't also ordinary English word fragments.
-const LDT_NOISE_TOKEN_RE = /^(anti|antibody|antibodies|autoantibody|autoantibodies|immunoglobulin|his|ig[agme][1-4]?|[a-z]|\d+)$/i;
+const LDT_NOISE_TOKEN_RE = /^(anti|antibody|antibodies|autoantibody|autoantibodies|immunoglobulin|ig[agme][1-4]?|[a-z]|\d+)$/i;
 
 function stripLdtNoiseTokens(phrase) {
   return phrase.split(/\s+/).filter(w => w && !LDT_NOISE_TOKEN_RE.test(w)).join(' ');
@@ -1731,6 +1722,27 @@ function googleFda510kSearchLink(term) {
   return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">Search Google for "${escapeHtml(term)} FDA 510k" ↗</a>`;
 }
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Confirmed live: NY's own search does fuzzy *substring* matching per word, not whole-word
+// matching — querying "His" (from "Anti-His IgG") matched 60 unrelated records purely because
+// "his" appears as a substring inside longer, unrelated words ("polymor-HIS-ms", "Histoplasma",
+// "Sc-HIS-tosoma"), never as its own distinct word in any of them. Patching this one word into
+// a blocklist (the previous fix here) doesn't generalize — the next biomarker whose antigen
+// happens to also be a common English word/fragment would hit the exact same failure, and
+// there's no way to enumerate every such word in advance. This filters NY's raw response
+// dynamically instead, for any term: a record only counts as a real match if the query's own
+// (already antigen-narrowed) word actually appears as a distinct whole word somewhere in the
+// returned analyte text, not merely as a substring — no per-word knowledge required, so it
+// applies equally to whichever biomarker is searched, not just ones already seen and patched.
+function ldtRecordMatchesQuery(record, queryTerm) {
+  const words = queryTerm.split(/\s+/).filter(Boolean);
+  const haystack = record.analyte || '';
+  return words.some(w => new RegExp(`\\b${escapeRegExp(w)}\\b`, 'i').test(haystack));
+}
+
 async function fetchLdtBiomarker(term, proxyUrl) {
   const queryTerm = ldtQueryTerm(term);
   if (!queryTerm) {
@@ -1751,7 +1763,12 @@ async function fetchLdtBiomarker(term, proxyUrl) {
     try { const body = await res.json(); if (body?.error) msg = body.detail ? `${body.error}: ${body.detail}` : body.error; } catch {}
     throw new Error(msg);
   }
-  return res.json(); // { term, total, count, records }
+  const body = await res.json(); // { term, total, count, records }
+  // NY's own reported `total`/`count` reflect its fuzzy, unfiltered match — not trustworthy for
+  // display once real substring false-positives are filtered out of `records` here, so this
+  // tool's own filtered count replaces it rather than showing two disagreeing numbers.
+  const records = (body.records || []).filter(r => ldtRecordMatchesQuery(r, queryTerm));
+  return { ...body, total: records.length, count: records.length, records };
 }
 
 // LDT search is term-match only — no AI-expansion query. Confirmed live this was actively
