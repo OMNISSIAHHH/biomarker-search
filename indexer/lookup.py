@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from indexer import ai_expansion, db
-from indexer.matching import expansion_key, fetch_biomarker_matches
+from indexer.matching import expansion_key, fetch_biomarker_matches, panel_candidate_search_token_groups, to_search_term
 from indexer.openfda import DEVICE_510K
 from indexer.predicate_graph import propagate_predicate_matches
 from indexer.trace import TraceSink
@@ -47,6 +47,21 @@ def read_biomarker_result(conn, key: str, term: str, expansion: dict | None,
 
     records = [_record_from_row(r) for r in confirmed_rows]
     match_mode = confirmed_rows[0]["match_mode"] if confirmed_rows else "exact"
+    inferred_matches = [
+        {"device": _record_from_row(r), "viaKNumber": r["via_k_number"], "reason": "predicate"}
+        for r in predicate_rows
+    ]
+
+    # See matching.py's panel_candidate_search_variants for the full reasoning: a bundled
+    # multi-antigen panel (confirmed live: K123261) can name this antigen in its actual PDF
+    # Measurand while never mentioning it in openFDA's own structured device_name/
+    # statement_or_summary/openfda.device_name fields — invisible to every tier above, which
+    # only ever queries those. Pure local SQL against the predicate crawl's already-stored
+    # Measurand text (indexer/crawl.py), no network call — a no-op returning [] if no crawl has
+    # run yet, same degraded-but-safe posture the predicate-chain tier above already has.
+    exclude = {r["k_number"] for r in records} | {m["device"]["k_number"] for m in inferred_matches}
+    token_groups = panel_candidate_search_token_groups(to_search_term(term))
+    panel_candidates = db.find_panel_candidates(conn, token_groups, exclude) if token_groups else []
 
     return {
         "term": term,
@@ -54,11 +69,8 @@ def read_biomarker_result(conn, key: str, term: str, expansion: dict | None,
         "records": records,
         "matchMode": match_mode,
         "expansion": expansion,
-        "panelCandidates": [],
-        "inferredMatches": [
-            {"device": _record_from_row(r), "viaKNumber": r["via_k_number"], "reason": "predicate"}
-            for r in predicate_rows
-        ],
+        "panelCandidates": panel_candidates,
+        "inferredMatches": inferred_matches,
         "trace": trace or [],
     }
 

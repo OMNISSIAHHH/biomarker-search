@@ -162,6 +162,38 @@ def already_fetched(conn: sqlite3.Connection, k_number: str) -> bool:
     return row is not None
 
 
+# See matching.py's panel_candidate_search_token_groups for why this exists and what
+# "token_groups" means here: each inner list is one antigen-name variant's own words, ALL of
+# which must appear somewhere in the Measurand text (ANDed) — mirroring cross_field_tokens_
+# clause's exact semantics, not a literal whole-phrase match (confirmed live: "jo1"/"jo 1" as
+# phrases never match the real text "anti-Jo-1", but requiring "jo" AND "1" separately does).
+# The outer groups are OR'd — any one variant's words all being present is enough. A device
+# only shows up if the predicate crawl has already read its PDF (this queries pdf_text,
+# populated only by indexer/crawl.py) — harmless no-op, same as the predicate-chain tier, if no
+# crawl has run yet. Capped at 25: this is a manual-review list, not a primary result set.
+def find_panel_candidates(conn: sqlite3.Connection, token_groups: list[list[str]],
+                           exclude: set[str]) -> list[dict]:
+    if not token_groups:
+        return []
+    or_clauses = []
+    params: list[str] = []
+    for tokens in token_groups:
+        or_clauses.append("(" + " AND ".join("p.measurand_value LIKE ?" for _ in tokens) + ")")
+        params += [f"%{t}%" for t in tokens]
+    conditions = " OR ".join(or_clauses)
+    exclude_clause = ""
+    if exclude:
+        exclude_clause = f" AND p.k_number NOT IN ({','.join('?' * len(exclude))})"
+        params += list(exclude)
+    rows = conn.execute(
+        f"""SELECT d.raw_json FROM pdf_text p JOIN devices d ON d.k_number = p.k_number
+            WHERE p.measurand_value IS NOT NULL AND ({conditions}){exclude_clause}
+            LIMIT 25""",
+        params,
+    ).fetchall()
+    return [json.loads(r["raw_json"]) for r in rows]
+
+
 def insert_predicates(conn: sqlite3.Connection, device_k: str, predicates: list[dict]) -> None:
     for p in predicates:
         conn.execute(

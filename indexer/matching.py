@@ -318,6 +318,56 @@ def build_paren_alternates_expr(term: str) -> str | None:
     return "(" + " OR ".join(clauses) + ")"
 
 
+# Confirmed live: K123261's real Decision Summary Measurand is "Anti-nRNP/Sm, anti-Sm,
+# anti-SS-A, anti-SS-B, anti-Scl-70, anti-Centromeres, anti-Jo-1, anti-Ribosomal P-proteins IgG
+# antibodies (bundled)" — a bundled 8-antigen panel — but its device_name only ever says
+# "ANTI-NRNP/SM", so it's structurally invisible to every text-matching tier here, which only
+# ever queries openFDA's own device_name/statement_or_summary/openfda.device_name fields, never
+# the actual PDF text. The predicate crawl (indexer/crawl.py) already reads and stores this real
+# Measurand text locally (pdf_text.measurand_value) specifically to close this gap — confirmed
+# via db.py that nothing ever reads it back out for search purposes; lookup.py's own
+# `panelCandidates` field, clearly built for exactly this ("possible panel match", shown as
+# unconfirmed/verify-manually), was hardcoded to `[]` everywhere. This generates the substrings
+# worth checking a device's crawled Measurand text for, reusing the same antigen-extraction,
+# wordform-variant generation, and parenthetical-alternate expansion the confirmed-match tiers
+# already use — so "does this bundled panel's real Measurand mention this antigen" uses the same
+# definition of "the antigen" as the rest of this pipeline, including the same fused/hyphenated
+# form handling ("jo1" needs "Jo-1" too, the form real Measurand prose actually uses).
+# Confirmed live: "jo1" only generates the variants "jo1"/"jo 1" (no hyphenated form — the
+# digit-boundary split only ever adds a space, see generate_orthographic_variants), but the
+# real Measurand text says "anti-Jo-1" — hyphenated. A literal whole-phrase substring match
+# against either variant would never find it. The confirmed-match tiers don't have this problem
+# because cross_field_tokens_clause never matches a *phrase* either — it splits each variant
+# into separate words and requires them all present independently (which is why "jo 1" already
+# correctly matches "JO-1" today: "jo" and "1" each just have to appear somewhere). Returning
+# token groups instead of phrase strings mirrors that same semantics for panel-candidate search.
+def panel_candidate_search_token_groups(search_term: str) -> list[list[str]]:
+    antigen = strip_anti_prefix(strip_isotype_suffix(search_term)).strip()
+    if not antigen:
+        return []
+    variants = [antigen] + generate_orthographic_variants(antigen)
+    # Mirrors build_paren_alternates_expr: expand_paren_alternates only returns what's *inside*
+    # the parens ("CENP-A"/"CENP-B"), not the term before them ("Centromere") — without adding
+    # that too, every remaining group still requires the parenthetical alternates ANDed in
+    # alongside "Centromere", so a device whose Measurand just says "anti-Centromeres" (no
+    # CENP-A/B at all, confirmed live: K123261) would never match on that alone.
+    if "(" in search_term:
+        before_paren = search_term[:search_term.index("(")].strip()
+        if before_paren:
+            variants.append(before_paren)
+    variants += expand_paren_alternates(search_term)
+    seen: set[tuple[str, ...]] = set()
+    groups: list[list[str]] = []
+    for v in variants:
+        if not v:
+            continue
+        tokens = tuple(split_tokens(v))
+        if tokens and tokens not in seen:
+            seen.add(tokens)
+            groups.append(list(tokens))
+    return groups
+
+
 def expansion_key(term: str) -> str:
     return strip_anti_prefix(strip_isotype_suffix(term)).strip().lower()
 
