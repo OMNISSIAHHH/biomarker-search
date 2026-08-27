@@ -161,7 +161,18 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
     db.clear_matches_for_biomarker(conn, key)
     result = await fetch_biomarker_matches(client, DEVICE_510K, term, expansion, api_key, trace=trace)
 
-    if cached is None and result["total"] == 0:
+    # Confirmed live: escalating only on result["total"] == 0 missed the actual failure mode for
+    # "ama-m2" — UMLS resolved a name that found exactly 1 real match via the *expansion* tier
+    # (the weakest one: a single unvalidated name, no alternate phrasings, unlike the AI path's
+    # 2-4 synonyms), while the AI crosscheck's own resolution found 14+. total > 0 stopped the
+    # escalation, permanently caching the narrower answer. Also escalating whenever the
+    # *expansion* tier was the only thing that matched (regardless of its own total) catches
+    # this without losing the original savings: whenever the raw term or UMLS's name lines up
+    # with real device text well enough to hit exact/broad/wordform directly (confirmed for
+    # Centromere, Desmoglein 3 — both match_mode came back as something other than "expansion"),
+    # that's already a strong, literal-text signal, so there's still nothing to gain from also
+    # spending a Tavily call there.
+    if cached is None and (result["total"] == 0 or result["match_mode"] == "expansion"):
         ai_result = await ai_expansion.lookup_search_ai_expansion(
             client, term, ai_config.get("tavily_api_key"), ai_config.get("local_llm_url"),
             ai_config.get("local_llm_model"), trace=trace,
