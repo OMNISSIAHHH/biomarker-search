@@ -4,22 +4,33 @@ No coding experience needed for this either — it's copy-paste, entirely throug
 browser, on Cloudflare's free plan (no credit card required). It takes about 5 minutes per
 Worker.
 
-**What's a "Worker" and why do I need one?** Two features of this tool — searching New York's
-lab-developed-test list, and the "Check Measurand" button — need to read data from a website
-that, for its own security reasons, refuses to hand that data directly to a page running in
-your browser. A Worker is a small, free helper program (hosted by Cloudflare, not your own
-computer) that fetches the data on the tool's behalf and passes it along. You never see or
-touch its code beyond pasting it in once during setup.
+**What's a "Worker" and why do I need one?** Three features of this tool — searching New York's
+lab-developed-test list, searching Quest Diagnostics' test catalog, and the "Check Measurand"
+button — need to read data from a website that, for its own security reasons (or, for Quest,
+an explicit origin allowlist), refuses to hand that data directly to a page running in your
+browser. A Worker is a small, free helper program (hosted by Cloudflare, not your own computer)
+that fetches the data on the tool's behalf and passes it along. You never see or touch its code
+beyond pasting it in once during setup.
 
-This folder has two of these small programs:
+Two other LDT-adjacent sources — **ARUP** and **LabCorp** — need no Worker at all; both allow
+direct cross-origin requests from this tool, so they're always on with zero setup.
+
+This folder has three of these small programs:
 
 | Worker | Fetches from | Powers |
 |---|---|---|
-| `ldt-proxy.js` | NY State Wadsworth Center's lab-developed-test list | The **LDT** search tab |
+| `ldt-proxy.js` | NY State Wadsworth Center's lab-developed-test list | The **LDT** search tab, NY State source |
+| `quest-proxy.js` | Quest Diagnostics' test directory | The **LDT** search tab, Quest source |
 | `fda-pdf-proxy.js` | The FDA's own website (Decision Summary PDFs) | The **Check Measurand** button on an FDA search result |
 
-Both are optional — the main **FDA 510(k)** search works fine with neither one set up. Only
-set up the one(s) for the feature(s) you actually want; skip the other if you don't need it.
+All three are optional — the main **FDA 510(k)** search, and the ARUP/LabCorp LDT sources,
+work fine with none of them set up. Only set up the one(s) for the feature(s) you actually
+want; skip the others if you don't need them.
+
+**Before deploying `quest-proxy.js`, read the note in Settings (gear icon) next to the Quest
+proxy field** — Quest's Terms of Use restrict automated/commercial reuse of their test-directory
+content beyond noncommercial/educational purposes without written permission. This is a real
+consideration, not just a technical one.
 
 ## Don't want to set one up? Use these instead
 
@@ -34,7 +45,8 @@ These are donated, shared instances — convenient to try the tool immediately, 
 one person's free Cloudflare account with a shared daily request limit across everyone using
 them, and no uptime guarantee. If you're using this tool regularly or for real work, deploy
 your own (below) — it's free, it's yours alone, and it takes about the same 5 minutes either
-way.
+way. There's no donated shared instance for `quest-proxy.js` yet — deploy your own if you want
+the Quest source (see the ToU note above first).
 
 ## Deploy (no local Node/wrangler needed)
 
@@ -78,9 +90,9 @@ dropdown). This opens a browser-based code editor showing a file, usually named 
 or `index.js`, containing placeholder `Hello World` code.
 
 - Select **all** the existing text in that file (Ctrl+A / Cmd+A) and delete it.
-- Open the file you want from this repo — [`ldt-proxy.js`](ldt-proxy.js) or
-  [`fda-pdf-proxy.js`](fda-pdf-proxy.js) — copy its **entire contents**, and paste it into the
-  editor in place of the placeholder.
+- Open the file you want from this repo — [`ldt-proxy.js`](ldt-proxy.js),
+  [`quest-proxy.js`](quest-proxy.js), or [`fda-pdf-proxy.js`](fda-pdf-proxy.js) — copy its
+  **entire contents**, and paste it into the editor in place of the placeholder.
 
 **6. Deploy**
 
@@ -97,6 +109,10 @@ https://ldt-proxy.<your-subdomain>.workers.dev
 ```
 or
 ```
+https://quest-proxy.<your-subdomain>.workers.dev
+```
+or
+```
 https://fda-pdf-proxy.<your-subdomain>.workers.dev
 ```
 
@@ -104,6 +120,8 @@ Test it directly in a new browser tab before wiring it into the tool:
 
 - **LDT proxy**: append `?q=GADA` — you should see a page of JSON starting with
   `{"term":"GADA","total":...`.
+- **Quest proxy**: append `?q=Troponin` — you should see a page of JSON starting with
+  `{"term":"Troponin","total":...`.
 - **FDA PDF proxy**: append `?k=K051061` — your browser should open/download an actual PDF
   (a real Decision Summary). If you see JSON like `{"error":...}` instead, read the message —
   `Missing or malformed required query parameter: k` just means you forgot `?k=...`.
@@ -114,20 +132,22 @@ If instead you see an error page or blank response, see **Troubleshooting** belo
 
 Open `FDA510kBiomarkerSearch.html` in a browser, click the gear icon (Settings), and paste the
 Worker's base URL (**without** the `?q=...`/`?k=...` part you added to test) into the matching
-field — **LDT proxy Worker URL** or **FDA PDF proxy Worker URL**. Then either switch to the
-**LDT** tab and search a biomarker, or run an FDA search and click **Check Measurand** on a
-result, to confirm.
+field — **LDT proxy Worker URL (NY State)**, **Quest proxy Worker URL**, or **FDA PDF proxy
+Worker URL**. Then either switch to the **LDT** tab and search a biomarker (with the
+corresponding source checked in the "Data sources" row), or run an FDA search and click **Check
+Measurand** on a result, to confirm.
 
 ### Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| Step 7's test URL shows Cloudflare's default "Hello World" text, not JSON/a PDF | The code paste in step 5 didn't fully replace the placeholder, or you deployed before saving the paste. Go back to **Edit code**, confirm the file starts with the matching Worker's opening comment (`// LDT search proxy for...` or `// Generic byte-relay proxy for FDA...`), then deploy again. |
+| Step 7's test URL shows Cloudflare's default "Hello World" text, not JSON/a PDF | The code paste in step 5 didn't fully replace the placeholder, or you deployed before saving the paste. Go back to **Edit code**, confirm the file starts with the matching Worker's opening comment (`// LDT search proxy for...`, `// Test-catalog search proxy for Quest...`, or `// Generic byte-relay proxy for FDA...`), then deploy again. |
 | LDT test URL shows `{"error":"Missing required query parameter: q"}` | Working correctly — you forgot to add `?q=GADA` (or similar) to the end of the URL. |
 | LDT test URL shows `{"error":"LDT lookup failed", ...}` | The Worker deployed fine but couldn't reach or parse wadsworth.org — check the `detail` field; a timeout usually just means retry, since wadsworth.org can be slow. |
+| Quest test URL shows `{"error":"Quest lookup failed", ...}` | The Worker deployed fine but couldn't reach or parse Quest's API — check the `detail` field. If it mentions HTTP 403, Quest may have changed their origin-allowlist behavior; this Worker's whole reason to exist is bypassing that, so a persistent 403 means their API changed and the Worker needs a look. |
 | FDA PDF test URL shows `{"error":"No Decision Summary available for this K number",...}` | Working correctly — not every device has one (this is common for older/simpler submissions). Try a different K number. |
 | FDA PDF test URL shows `{"error":"Upstream did not return a PDF (possibly rate-limited)...`" | accessdata.fda.gov has aggressive bot detection and occasionally blocks rapid requests — wait a bit and retry. |
-| The tool shows "Network error — could not reach the LDT proxy" / "Add an FDA PDF proxy Worker URL..." | The URL pasted into Settings is wrong, missing, or empty — re-check it matches exactly what step 7 showed (no trailing `?q=...`/`?k=...`, no trailing slash). |
+| The tool shows "Network error — could not reach the LDT proxy" / "...the Quest proxy" / "Add an FDA PDF proxy Worker URL..." | The URL pasted into Settings is wrong, missing, or empty — re-check it matches exactly what step 7 showed (no trailing `?q=...`/`?k=...`, no trailing slash). |
 | Can't find "Create Worker" / only see Pages options | You may be in the **Pages** tab instead of **Workers** — look for a toggle or separate tab between "Workers" and "Pages" near the top of the section. |
 
 ## `ldt-proxy.js` — what it does
@@ -165,6 +185,50 @@ Notes for anyone modifying this:
   `25`, `50`, or `All`) — an arbitrary value like `100` silently breaks the filter server-side
   and the page renders as if nothing matched. This was found the hard way; don't "optimize"
   it back to a round number without re-checking against the real site.
+
+## `quest-proxy.js` — what it does
+
+`GET <worker-url>?q=<term>` →
+
+```json
+{
+  "term": "Troponin",
+  "total": 91,
+  "count": 10,
+  "records": [
+    {
+      "testName": "Troponin T, High Sensitivity (hs-TnT)",
+      "orderCode": "38685",
+      "performingLab": "",
+      "aliases": "hs-cTnT, Troponin T, high-sensitivity, Troponin T, hs, Cardiac Troponin T",
+      "cptCodes": "84484",
+      "status": "Active",
+      "id": "MASTER38685"
+    }
+  ]
+}
+```
+
+`total` is Quest's own `numFound` (accurate even though `records` only returns what Quest's
+API hands back per page — same "don't cap the true count, just the returned list" reasoning as
+`ldt-proxy.js`).
+
+Notes for anyone modifying this:
+
+- Unlike NY's site (which simply omits CORS headers), Quest's search API actively 403s any
+  request whose `Origin` it doesn't recognize — confirmed live. This Worker works around that
+  the same way `ldt-proxy.js` works around NY's missing headers: fetch server-side (Worker-to-
+  Quest has no browser-style CORS restriction at all), return the result with this Worker's own
+  permissive CORS headers attached.
+- The upstream API requires an `x-quest-api-id: test-details-v1` header on every request — a
+  request without it is rejected with `{"error":"Missing required header: x-quest-api-id"}`
+  before Quest even looks at `q`. This isn't a secret credential, just a required routing
+  header their frontend also sends.
+- The client (not this Worker) is responsible for narrowing the term to its antigen core and
+  whole-word-filtering the results — same division of responsibility as `ldt-proxy.js`, and for
+  the same reason: confirmed live, Quest's own search relevance returns real false positives for
+  an unrelated test alongside genuine matches, so a literal-text-match filter still has to run
+  client-side regardless of which source returned the record.
 
 ## `fda-pdf-proxy.js` — what it does
 

@@ -185,8 +185,12 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="apiKey" placeholder="openFDA API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">LDT search calls a small proxy Worker (NY's LDT site has no CORS support, so this tool can't reach it directly) — pre-filled below with a donated, shared instance, ready to use immediately. It runs on one person's free Cloudflare account with a shared daily limit and no uptime guarantee — fine to try the tool, but deploy your own instead (see <code>worker/README.md</code>, ~5 min, no coding required) if you're using this regularly, then just overwrite this field.</div>
-        <input class="skey" id="ldtProxyUrl" placeholder="LDT proxy Worker URL">
+        <div class="sinfo">LDT search checks up to 4 sources — pick which ones in the "Data sources" row on the LDT tab. <strong>NY State</strong> search calls a small proxy Worker (NY's LDT site has no CORS support, so this tool can't reach it directly) — pre-filled below with a donated, shared instance, ready to use immediately. It runs on one person's free Cloudflare account with a shared daily limit and no uptime guarantee — fine to try the tool, but deploy your own instead (see <code>worker/README.md</code>, ~5 min, no coding required) if you're using this regularly, then just overwrite this field. <strong>ARUP and LabCorp need no setup at all</strong> — both allow direct cross-origin requests from this tool. Unlike ARUP, though, <strong>LabCorp's Terms of Use explicitly restrict automated/commercial reuse of their test-menu content</strong> (including using it to inform a competing product) — a real consideration, not just a technical one, if you're relying on those results commercially.</div>
+        <input class="skey" id="ldtProxyUrl" placeholder="LDT proxy Worker URL (NY State)">
+      </div>
+      <div class="srow" style="margin-top:8px">
+        <div class="sinfo"><strong>Quest</strong> is the one other LDT source that needs its own proxy Worker — its search API blocks cross-origin requests outright, the same reason NY needs one above. Note: Quest's test-directory content is governed by their own Terms of Use, which restricts reuse beyond noncommercial/educational purposes without written permission — this tool queries it the same way a browser visiting their site does, but that's a real consideration if you're using results commercially, not just a technical detail.</div>
+        <input class="skey" id="questProxyUrl" placeholder="Quest proxy Worker URL">
       </div>
       <div class="srow" style="margin-top:8px">
         <div class="sinfo">"Check Measurand" on an FDA record reads the device's official Decision Summary PDF to confirm what it actually measures (same CORS problem as LDT, same shared instance/caveats — pre-filled below). Not every device has one. Falls back to in-browser OCR automatically for older, scanned/image-only documents with no real text layer — no setup needed, just slower for those.</div>
@@ -238,6 +242,13 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <button class="modetab active" id="modeFda" type="button">FDA 510(k)</button>
         <button class="modetab" id="modeLdt" type="button">LDT</button>
       </div>
+      <div class="datefilter" id="ldtSourcesRow" style="display:none" title="NY State is the only source that's a real regulatory approval record — ARUP/LabCorp/Quest just mean the term appears in that lab's own commercial test catalog.">
+        <span>Data sources:</span>
+        <label><input type="checkbox" class="ldtSourceCheck" data-source="ny"> NY State</label>
+        <label><input type="checkbox" class="ldtSourceCheck" data-source="arup"> ARUP</label>
+        <label><input type="checkbox" class="ldtSourceCheck" data-source="labcorp"> LabCorp</label>
+        <label><input type="checkbox" class="ldtSourceCheck" data-source="quest"> Quest</label>
+      </div>
       <textarea id="biomarkers" placeholder="Enter one biomarker per line or comma-separated, e.g.&#10;HbA1c&#10;Troponin&#10;PSA&#10;BNP"></textarea>
       <button class="hinttoggle" id="hintToggleBtn" type="button"><span class="chev" id="hintChev">▸</span> Search tips</button>
       <div id="hintWrap" style="display:none">
@@ -249,8 +260,8 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
           <li>If an exact/broad/antigen-only search finds nothing, a UMLS API key (set in Settings) can look up the term's spelled-out medical name automatically instead of returning nothing — flagged as <span class="mmtag" style="cursor:default">UMLS-resolved match</span> since that name hasn't been manually verified.</li>
         </ul>
         <ul class="hint" id="hintLdt" style="display:none">
-          <li>Terms are matched against the analyte/test name in the NY State Wadsworth Center CLEP "Approved Laboratory Developed Tests" database (any-word match, same as the site's own default).</li>
-          <li>Requires an LDT proxy Worker URL configured in Settings (gear icon).</li>
+          <li>Checks up to 4 sources at once — pick which ones in the "Data sources" row above. Only <strong>NY State</strong> is an actual regulatory LDT approval record; <strong>ARUP</strong>, <strong>LabCorp</strong>, and <strong>Quest</strong> just mean the term appears in that lab's own commercial test catalog — real signal, but not a regulatory fact.</li>
+          <li>NY State and Quest each need a proxy Worker URL configured in Settings (gear icon) — both sites block direct requests from this tool. ARUP and LabCorp need no setup at all.</li>
         </ul>
       </div>
       <div class="actions">
@@ -337,14 +348,13 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
     <div class="card" id="crossCard" style="display:none">
       <span class="captag">Table 2</span>
       <div class="stitle">LDT cross-check — biomarkers with 2 or fewer FDA approvals</div>
-      <div class="hint" style="margin:-6px 0 12px">Same NY State LDT search as above, run automatically for every biomarker that showed 2 or fewer cleared FDA products.</div>
+      <div class="hint" style="margin:-6px 0 12px">Same LDT source search as above (whichever sources are checked on the LDT tab), run automatically for every biomarker that showed 2 or fewer cleared FDA products.</div>
       <table class="sumtable">
         <thead><tr>
           <th style="width:44px">Rank</th>
-          <th style="width:30%">Biomarker</th>
-          <th>Total LDT Matches</th>
-          <th>Approved</th>
-          <th>Conditionally Approved</th>
+          <th style="width:26%">Biomarker</th>
+          <th>Total Matches</th>
+          <th>Sources</th>
           <th></th>
         </tr></thead>
         <tbody id="crossBody"></tbody>
@@ -420,6 +430,22 @@ $('ldtProxyUrl').addEventListener('change', (e) => {
   e.target.value = url;
   localStorage.setItem('ldt_proxy_url', url);
 });
+
+// No donated shared instance for this one (unlike LDT/FDA-PDF above) — Quest support is brand
+// new, so there's nothing pre-existing to default to yet. Starts blank, same posture as
+// localIndexUrl: NY/ARUP/LabCorp all still work with this left empty, Quest search just skips
+// itself (see fetchQuestLdt's configMissing case) until a Worker URL is set here.
+const savedQuestUrl = localStorage.getItem('quest_proxy_url');
+if (savedQuestUrl) $('questProxyUrl').value = normalizeProxyUrl(savedQuestUrl);
+$('questProxyUrl').addEventListener('change', (e) => {
+  const url = normalizeProxyUrl(e.target.value);
+  e.target.value = url;
+  localStorage.setItem('quest_proxy_url', url);
+});
+
+function getQuestProxyUrl() {
+  return normalizeProxyUrl($('questProxyUrl').value);
+}
 
 const DEFAULT_LDT_CROSSCHECK_THRESHOLD = 2;
 const savedLdtThreshold = localStorage.getItem('ldt_crosscheck_threshold');
@@ -522,6 +548,7 @@ function setSearchMode(mode) {
   $('modeLdt').classList.toggle('active', mode === 'ldt');
   $('hintFda').style.display = mode === 'fda' ? 'block' : 'none';
   $('hintLdt').style.display = mode === 'ldt' ? 'block' : 'none';
+  $('ldtSourcesRow').style.display = mode === 'ldt' ? 'flex' : 'none';
   // Switching modes invalidates the currently-displayed results/chart (different shape) —
   // hide them rather than show stale data under the wrong headers.
   $('chartCard').style.display = 'none';
@@ -1904,13 +1931,14 @@ function ldtQueryTerm(term) {
 }
 
 // NY's CLEP database only covers labs holding a NY LDT permit — a small fraction of all LDTs
-// offered nationally, so even a hit here doesn't rule out other labs offering it too, and a
-// Google search routinely surfaces the actual offering lab (ARUP, Mayo, LabCorp, and similar
-// reference labs' public test directories all turn up this way) even though none of them expose
-// a free, no-login, CORS-friendly search API this tool could query directly. Shown for every
-// search regardless of whether NY's database matched anything — manual cross-checking beyond
-// NY's one-state list is always worth doing, not just when NY comes back empty. This is just a
-// plain link to Google's own search results page — no API key, no proxy, no added cost.
+// offered nationally. ARUP, LabCorp, and Quest are now queried directly too (see LDT_SOURCES
+// below) — but each is a commercial test catalog, not a state regulator, so between them there
+// are still plenty of reference labs (Mayo Clinic among them — its site sits behind an active
+// bot wall with no clean public API, confirmed live) this tool has no direct way to check. This
+// Google link stays as the manual fallback for everything the direct sources don't cover. Shown
+// for every search regardless of whether the direct sources matched anything — manual
+// cross-checking is always worth doing, not just on a zero-match result. Just a plain link to
+// Google's own search results page — no API key, no proxy, no added cost.
 function googleLdtSearchUrl(term) {
   const query = `${term} LDT laboratory developed test`;
   return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
@@ -1946,25 +1974,92 @@ function escapeRegExp(s) {
 // "Sc-HIS-tosoma"), never as its own distinct word in any of them. Patching this one word into
 // a blocklist (the previous fix here) doesn't generalize — the next biomarker whose antigen
 // happens to also be a common English word/fragment would hit the exact same failure, and
-// there's no way to enumerate every such word in advance. This filters NY's raw response
-// dynamically instead, for any term: a record only counts as a real match if the query's own
-// (already antigen-narrowed) word actually appears as a distinct whole word somewhere in the
-// returned analyte text, not merely as a substring — no per-word knowledge required, so it
-// applies equally to whichever biomarker is searched, not just ones already seen and patched.
-function ldtRecordMatchesQuery(record, queryTerm) {
+// there's no way to enumerate every such word in advance. This filters every source's raw
+// response dynamically instead, for any term: a record only counts as a real match if the
+// query's own (already antigen-narrowed) word actually appears as a distinct whole word
+// somewhere in the record's own searchable text, not merely as a substring — no per-word
+// knowledge required, so it applies equally to whichever biomarker is searched AND to whichever
+// source returned the record (ARUP/LabCorp/Quest's own search relevance is no more trustworthy
+// than NY's turned out to be, so the same defensive filter applies to all four rather than
+// assuming only NY needed it).
+function textMatchesQueryWords(haystack, queryTerm) {
   const words = queryTerm.split(/\s+/).filter(Boolean);
-  const haystack = record.analyte || '';
-  return words.some(w => new RegExp(`\\b${escapeRegExp(w)}\\b`, 'i').test(haystack));
+  const text = haystack || '';
+  return words.some(w => new RegExp(`\\b${escapeRegExp(w)}\\b`, 'i').test(text));
 }
 
-async function fetchLdtBiomarker(term, proxyUrl) {
+function ldtRecordMatchesQuery(record, queryTerm) {
+  return textMatchesQueryWords(record.analyte || '', queryTerm);
+}
+
+// ARUP/LabCorp/Quest's own JSON fields routinely embed raw HTML (highlight spans, formatted
+// paragraphs) meant for their own site's rendering, not for this tool's plain-text table cells
+// or for the whole-word matching above (an HTML tag between two words would otherwise break the
+// \b boundary check). Stripped once, centrally, rather than in each source's own fetcher.
+function stripHtml(s) {
+  return (s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// The four LDT-adjacent sources this tool can check. `kind` drives how a match is labeled in
+// the UI: 'regulatory' (NY only) is an actual state-issued LDT permit/approval record — a real
+// regulatory fact. 'catalog' (ARUP/LabCorp/Quest) just means the term appears in that lab's own
+// commercial test menu — real signal that *someone* already offers a similar test, but not a
+// regulatory approval, and conflating the two would misrepresent what a hit actually means.
+// Confirmed live (2026-08-27) before adding each: ARUP's search API sends
+// Access-Control-Allow-Origin: * (no proxy needed); LabCorp's does too via a public
+// search-only Algolia key; Quest's actively 403s any foreign Origin, so it goes through the new
+// quest-proxy.js Worker, same pattern as NY's own ldt-proxy.js.
+const LDT_SOURCES = [
+  { id: 'ny', label: 'NY State (Wadsworth)', kind: 'regulatory' },
+  { id: 'arup', label: 'ARUP', kind: 'catalog' },
+  { id: 'labcorp', label: 'LabCorp', kind: 'catalog' },
+  { id: 'quest', label: 'Quest', kind: 'catalog' },
+];
+const DEFAULT_LDT_SOURCE_IDS = LDT_SOURCES.map(s => s.id);
+
+function getSelectedLdtSourceIds() {
+  const saved = localStorage.getItem('ldt_source_ids');
+  // null (never saved) is the only case that should fall back to "all 4" — an empty array is a
+  // deliberate, valid choice (the user unchecked everything) and must be respected as-is, not
+  // silently treated as if nothing were saved. Confirmed live this was a real bug: unchecking
+  // every box saved "[]", but the old `parsed.length ? parsed : DEFAULT...` check treated that
+  // falsy .length the same as corrupted/missing data and quietly re-selected all 4 sources
+  // behind the user's back — the "select at least one source" guard in runLdtSearch could never
+  // actually fire, and a deliberate all-off state was impossible to reach.
+  if (saved === null) return DEFAULT_LDT_SOURCE_IDS.slice();
+  try {
+    const parsed = JSON.parse(saved);
+    return Array.isArray(parsed) ? parsed : DEFAULT_LDT_SOURCE_IDS.slice();
+  } catch {
+    return DEFAULT_LDT_SOURCE_IDS.slice();
+  }
+}
+
+function getSelectedLdtSources() {
+  const ids = getSelectedLdtSourceIds();
+  return LDT_SOURCES.filter(s => ids.includes(s.id));
+}
+
+(function initLdtSourceCheckboxes() {
+  const selected = getSelectedLdtSourceIds();
+  document.querySelectorAll('.ldtSourceCheck').forEach((cb) => {
+    cb.checked = selected.includes(cb.dataset.source);
+    cb.addEventListener('change', () => {
+      const ids = Array.from(document.querySelectorAll('.ldtSourceCheck:checked')).map((el) => el.dataset.source);
+      localStorage.setItem('ldt_source_ids', JSON.stringify(ids));
+    });
+  });
+})();
+
+async function fetchNyLdt(term, proxyUrl) {
   const queryTerm = ldtQueryTerm(term);
   if (!queryTerm) {
     // Nothing safe left to search (see ldtQueryTerm's own comment) — skip the network call
     // rather than sending an empty/blocklisted query, and say why via `skipped` so the caller
     // can show an honest reason instead of a bare "0 results".
-    return { total: 0, count: 0, records: [], skipped: true };
+    return { source: 'ny', total: 0, records: [], skipped: true };
   }
+  if (!proxyUrl) return { source: 'ny', total: 0, records: [], skipped: true, configMissing: true };
   const params = new URLSearchParams({ q: queryTerm, status: 'All' });
   let res;
   try {
@@ -1982,7 +2077,112 @@ async function fetchLdtBiomarker(term, proxyUrl) {
   // display once real substring false-positives are filtered out of `records` here, so this
   // tool's own filtered count replaces it rather than showing two disagreeing numbers.
   const records = (body.records || []).filter(r => ldtRecordMatchesQuery(r, queryTerm));
-  return { ...body, total: records.length, count: records.length, records };
+  return { source: 'ny', total: records.length, records };
+}
+
+// Confirmed live: GET https://ltd.aruplab.com/api/ltdsearch?searchterm=<term> — unauthenticated,
+// CORS-open (Access-Control-Allow-Origin: *), response shape { resultList: { total, results: [{
+// testNumber, testName, testMnemonic, status ('A'/'I'), price, summary (HTML w/ <span class="hl">
+// highlights), referralLab, ... }] } }.
+async function fetchArupLdt(term) {
+  const queryTerm = ldtQueryTerm(term);
+  if (!queryTerm) return { source: 'arup', total: 0, records: [], skipped: true };
+  let res;
+  try {
+    res = await fetch(`https://ltd.aruplab.com/api/ltdsearch?searchterm=${encodeURIComponent(queryTerm)}`);
+  } catch (e) {
+    throw new Error("Network error reaching ARUP's test directory.");
+  }
+  if (!res.ok) throw new Error(`ARUP returned HTTP ${res.status}`);
+  const body = await res.json();
+  const all = (body.resultList && body.resultList.results) || [];
+  const records = all
+    .filter(r => textMatchesQueryWords(r.testName, queryTerm) || textMatchesQueryWords(stripHtml(r.summary), queryTerm))
+    .map(r => ({
+      testName: r.testName || '',
+      testNumber: r.testNumber || '',
+      status: r.status === 'A' ? 'Active' : (r.status === 'I' ? 'Inactive' : (r.status || '')),
+      price: r.price || '',
+      detailUrl: r.testNumber ? `https://ltd.aruplab.com/Tests/Pub/${encodeURIComponent(r.testNumber)}` : '',
+    }));
+  return { source: 'arup', total: records.length, records };
+}
+
+// Confirmed live: POST https://<appId>-dsn.algolia.net/1/indexes/testmenu_adobe_prd_labcorp/query
+// with a public search-only Algolia key embedded in LabCorp's own page JS (not a secret this
+// tool is extracting — it's shipped to every visitor's browser already) — CORS-open, response
+// shape { nbHits, hits: [{ test_name, labcorp_test_number, methodology (HTML), specimen, url
+// (site-relative), search_only_synonyms (HTML list), ... }] }.
+const LABCORP_ALGOLIA_APP_ID = '6PSKQ0ILJC';
+const LABCORP_ALGOLIA_SEARCH_KEY = 'cadf45af2e029a09c167e41b65f56394';
+const LABCORP_ALGOLIA_INDEX = 'testmenu_adobe_prd_labcorp';
+
+async function fetchLabcorpLdt(term) {
+  const queryTerm = ldtQueryTerm(term);
+  if (!queryTerm) return { source: 'labcorp', total: 0, records: [], skipped: true };
+  let res;
+  try {
+    res = await fetch(`https://${LABCORP_ALGOLIA_APP_ID}-dsn.algolia.net/1/indexes/${LABCORP_ALGOLIA_INDEX}/query`, {
+      method: 'POST',
+      headers: {
+        'X-Algolia-Application-Id': LABCORP_ALGOLIA_APP_ID,
+        'X-Algolia-API-Key': LABCORP_ALGOLIA_SEARCH_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: queryTerm, hitsPerPage: 25 }),
+    });
+  } catch (e) {
+    throw new Error("Network error reaching LabCorp's test menu.");
+  }
+  if (!res.ok) throw new Error(`LabCorp returned HTTP ${res.status}`);
+  const body = await res.json();
+  const all = body.hits || [];
+  const records = all
+    .filter(r => textMatchesQueryWords(r.test_name, queryTerm) || textMatchesQueryWords(stripHtml(r.search_only_synonyms), queryTerm))
+    .map(r => ({
+      testName: r.test_name || '',
+      testNumber: r.labcorp_test_number || '',
+      methodology: stripHtml(r.methodology),
+      specimen: r.specimen || '',
+      detailUrl: r.url ? `https://www.labcorp.com${r.url}` : '',
+    }));
+  return { source: 'labcorp', total: records.length, records };
+}
+
+// Unlike ARUP/LabCorp, Quest's search API actively rejects a foreign Origin (403 — confirmed
+// live), so this goes through quest-proxy.js (worker/quest-proxy.js), same reason NY needs
+// ldt-proxy.js. The proxy already reshapes Quest's raw Solr response into { term, total, count,
+// records: [{ testName, orderCode, performingLab, aliases, cptCodes, status, id }] }.
+async function fetchQuestLdt(term, proxyUrl) {
+  const queryTerm = ldtQueryTerm(term);
+  if (!queryTerm) return { source: 'quest', total: 0, records: [], skipped: true };
+  if (!proxyUrl) return { source: 'quest', total: 0, records: [], skipped: true, configMissing: true };
+  let res;
+  try {
+    res = await fetch(`${proxyUrl}?${new URLSearchParams({ q: queryTerm }).toString()}`);
+  } catch (e) {
+    throw new Error('Network error — could not reach the Quest proxy. Check the Worker URL in Settings and your connection.');
+  }
+  if (!res.ok) {
+    let msg = `Quest proxy returned HTTP ${res.status}`;
+    try { const b = await res.json(); if (b?.error) msg = b.detail ? `${b.error}: ${b.detail}` : b.error; } catch {}
+    throw new Error(msg);
+  }
+  const body = await res.json();
+  const records = (body.records || [])
+    .filter(r => textMatchesQueryWords(r.testName, queryTerm) || textMatchesQueryWords(r.aliases, queryTerm))
+    .map(r => ({ ...r }));
+  return { source: 'quest', total: records.length, records };
+}
+
+async function fetchLdtFromSource(sourceId, term, config) {
+  switch (sourceId) {
+    case 'ny': return fetchNyLdt(term, config.ldtProxyUrl);
+    case 'arup': return fetchArupLdt(term);
+    case 'labcorp': return fetchLabcorpLdt(term);
+    case 'quest': return fetchQuestLdt(term, config.questProxyUrl);
+    default: throw new Error(`Unknown LDT source: ${sourceId}`);
+  }
 }
 
 // LDT search is term-match only — no AI-expansion query. Confirmed live this was actively
@@ -2605,11 +2805,98 @@ function renderChart(valid) {
 // data shape and "key information" columns per the NY State tool's own result output.
 
 function getLdtRanked(targetState = ldtState) {
+  // Ranked by total matches summed across every source that was actually searched — a
+  // commercial lab already offering a similar test is just as real a competition signal as an
+  // NY regulatory approval, so this no longer privileges NY's approved/conditional counts the
+  // way the single-source version did; a term with more selected sources isn't penalized either,
+  // since "fewest total matches across however many sources were checked" is still the same
+  // "least competition" signal it always was.
   const valid = targetState.filter(s => !s.error)
     .slice()
-    .sort((a, b) => (a.approved + a.conditional) - (b.approved + b.conditional) || a.term.localeCompare(b.term));
+    .sort((a, b) => a.total - b.total || a.term.localeCompare(b.term));
   const errored = targetState.filter(s => s.error);
   return { valid, errored };
+}
+
+// Compact per-source summary chips for the main results row — NY shows its actual
+// approved/conditional regulatory breakdown (that distinction is real and worth keeping
+// visible), the three catalog sources just show a plain match count, and every chip's label
+// makes clear which source it's from so a "5" from ARUP is never mistaken for a "5" from NY.
+function ldtSourceChips(s) {
+  return LDT_SOURCES
+    .filter(src => s.bySource && s.bySource[src.id])
+    .map(src => {
+      const r = s.bySource[src.id];
+      if (r.error) return `<span class="badge err" title="${escapeHtml(r.error)}">${src.label} error</span>`;
+      if (r.configMissing) return `<span class="badge" style="color:var(--tx3)" title="Proxy Worker URL not set in Settings">${src.label} not set up</span>`;
+      if (r.skipped) return `<span class="badge" style="color:var(--tx3)" title="Term too generic/filler-only for a safe direct lookup">${src.label} skipped</span>`;
+      if (src.id === 'ny') {
+        const approved = r.records.filter(x => classifyLdt(x.status) === 'approved').length;
+        const conditional = r.records.filter(x => classifyLdt(x.status) === 'conditional').length;
+        return `<span class="badge ${approved >= HIGH_APPROVAL_THRESHOLD ? 'high' : (r.total > 0 ? 'low' : '')}" title="NY State: ${approved} approved, ${conditional} conditionally approved">${src.label} ${approved}A/${conditional}C</span>`;
+      }
+      return `<span class="badge ${r.total > 0 ? 'low' : ''}" style="${r.total > 0 ? '' : 'color:var(--tx3)'}" title="${src.label}: ${r.total} match(es) in their test catalog — not a regulatory approval">${src.label} ${r.total}</span>`;
+    }).join(' ');
+}
+
+// One labeled sub-table per source that was actually searched for this term, each with its own
+// source-appropriate columns rather than forcing every source's very different fields (NY's
+// facility/permit/method vs. ARUP's price/status vs. LabCorp's methodology/specimen vs. Quest's
+// performing-lab/aliases) into one shared shape. `kindNote` is what keeps a catalog hit from
+// ever reading as a regulatory approval it isn't.
+function ldtSourceDetailSection(src, result) {
+  if (!result) return '';
+  const kindNote = src.kind === 'regulatory'
+    ? 'a real NY State regulatory LDT record'
+    : "appears in this lab's own commercial test catalog — not a regulatory approval";
+  const heading = `<div class="dnote" style="font-weight:600;color:var(--tx);margin-top:10px">${escapeHtml(src.label)} <span style="font-weight:400;color:var(--tx3)">— ${kindNote}</span></div>`;
+
+  if (result.error) return heading + `<div class="dnote">Search failed — ${escapeHtml(result.error)}</div>`;
+  if (result.configMissing) return heading + `<div class="dnote">Proxy Worker URL not configured in Settings — see the gear icon.</div>`;
+  if (result.skipped) return heading + `<div class="dnote">Term's antigen core is too generic/filler-only for a safe direct lookup.</div>`;
+  if (!result.records.length) return heading + `<div class="dnote">No matches.</div>`;
+
+  let headHtml, rowsHtml;
+  if (src.id === 'ny') {
+    headHtml = '<th>Facility</th><th>Analyte</th><th>Specimen Type</th><th>Permit Category</th><th>Status</th><th>Detail</th>';
+    rowsHtml = result.records.map(r => `<tr>
+      <td>${escapeHtml(r.facilityName || '—')}</td>
+      <td>${escapeHtml(r.analyte || '—')}</td>
+      <td>${escapeHtml(r.specimenType || '—')}</td>
+      <td>${escapeHtml(r.permitCategory || '—')}</td>
+      <td>${ldtStatusBadge(r.status)}</td>
+      <td>${r.detailLink ? `<a href="${escapeHtml(r.detailLink)}" target="_blank" rel="noopener">View ↗</a>` : '—'}</td>
+    </tr>`).join('');
+  } else if (src.id === 'arup') {
+    headHtml = '<th>Test Name</th><th>Test #</th><th>Status</th><th>Price</th><th>Detail</th>';
+    rowsHtml = result.records.map(r => `<tr>
+      <td>${escapeHtml(r.testName || '—')}</td>
+      <td>${escapeHtml(r.testNumber || '—')}</td>
+      <td>${escapeHtml(r.status || '—')}</td>
+      <td>${r.price ? '$' + escapeHtml(r.price) : '—'}</td>
+      <td>${r.detailUrl ? `<a href="${escapeHtml(r.detailUrl)}" target="_blank" rel="noopener">View ↗</a>` : '—'}</td>
+    </tr>`).join('');
+  } else if (src.id === 'labcorp') {
+    headHtml = '<th>Test Name</th><th>Test #</th><th>Methodology</th><th>Specimen</th><th>Detail</th>';
+    rowsHtml = result.records.map(r => `<tr>
+      <td>${escapeHtml(r.testName || '—')}</td>
+      <td>${escapeHtml(r.testNumber || '—')}</td>
+      <td>${escapeHtml(r.methodology || '—')}</td>
+      <td>${escapeHtml(r.specimen || '—')}</td>
+      <td>${r.detailUrl ? `<a href="${escapeHtml(r.detailUrl)}" target="_blank" rel="noopener">View ↗</a>` : '—'}</td>
+    </tr>`).join('');
+  } else { // quest — no public per-test detail URL exposed by their search API
+    headHtml = '<th>Test Name</th><th>Order Code</th><th>Performing Lab</th><th>Aliases</th>';
+    rowsHtml = result.records.map(r => `<tr>
+      <td>${escapeHtml(r.testName || '—')}</td>
+      <td>${escapeHtml(r.orderCode || '—')}</td>
+      <td>${escapeHtml(stripHtml(r.performingLab) || '—')}</td>
+      <td>${escapeHtml(r.aliases || '—')}</td>
+    </tr>`).join('');
+  }
+  const shownNote = result.records.length < result.total
+    ? `<div class="dnote">Showing ${result.records.length} of ${result.total} total matches (capped).</div>` : '';
+  return `${heading}<table class="dtable"><thead><tr>${headHtml}</tr></thead><tbody>${rowsHtml}</tbody></table>${shownNote}`;
 }
 
 function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptions = true } = {}) {
@@ -2626,13 +2913,12 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
     $('chartHint').textContent = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
     $('resultsCaptag').textContent = 'Table 1';
     $('resultsTitle').textContent = 'LDT results, ranked by fewest matches';
-    $('resultsHint').textContent = 'Rank 1 = fewest matching LDTs in NY State\'s CLEP database (least competition / most opportunity).';
+    $('resultsHint').textContent = 'Rank 1 = fewest total matches summed across every source you selected (least competition / most opportunity). Only NY State is an actual regulatory approval — the rest just mean the term is in that lab\'s own commercial catalog.';
     $('resultsHead').innerHTML = `<tr>
       <th style="width:44px">Rank</th>
-      <th style="width:30%">Biomarker</th>
-      <th>Total LDT Matches</th>
-      <th>Approved</th>
-      <th>Conditionally Approved</th>
+      <th style="width:26%">Biomarker</th>
+      <th>Total Matches</th>
+      <th>Sources</th>
       <th></th>
     </tr>`;
   }
@@ -2649,8 +2935,7 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
       <td class="rankcell">${rank}</td>
       <td><div class="biocell"><span class="chev">▸</span>${escapeHtml(s.term)}</div></td>
       <td>${s.total}</td>
-      <td><span class="badge ${s.approved >= HIGH_APPROVAL_THRESHOLD ? 'high' : 'low'}">${s.approved}</span></td>
-      <td>${s.conditional}</td>
+      <td><div class="biocell">${ldtSourceChips(s)}</div></td>
       <td></td>`;
     tbody.appendChild(mainRow);
 
@@ -2658,32 +2943,13 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
     detailRow.className = 'detailrow';
     const wrap = document.createElement('div');
     wrap.className = 'detailwrap';
-    if (s.records.length) {
-      const shownNote = s.records.length < s.total
-        ? `<div class="dnote">Showing ${s.records.length} of ${s.total} total matches (capped).</div>` : '';
-      // Key information only, per the NY tool's own result output — facility, matched
-      // analyte name, specimen type, permit category, status, and a link to the full record.
-      const rows = s.records.map(r => `
-        <tr>
-          <td>${escapeHtml(r.facilityName || '—')}</td>
-          <td>${escapeHtml(r.analyte || '—')}</td>
-          <td>${escapeHtml(r.specimenType || '—')}</td>
-          <td>${escapeHtml(r.permitCategory || '—')}</td>
-          <td>${ldtStatusBadge(r.status)}</td>
-          <td>${r.detailLink ? `<a href="${escapeHtml(r.detailLink)}" target="_blank" rel="noopener">View ↗</a>` : '—'}</td>
-        </tr>`).join('');
-      wrap.innerHTML = `
-        <table class="dtable">
-          <thead><tr><th>Facility</th><th>Analyte</th><th>Specimen Type</th><th>Permit Category</th><th>Status</th><th>Detail</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>${shownNote}
-        <div class="dnote">NY's list only covers labs holding a NY permit — a small slice of all
-          labs nationally. ${googleLdtSearchLink(s.term)}</div>`;
-    } else {
-      wrap.innerHTML = `<div class="dnote">No matching LDTs found. ${googleLdtSearchLink(s.term)}</div>`;
-    }
+    const sections = LDT_SOURCES
+      .filter(src => s.bySource && s.bySource[src.id])
+      .map(src => ldtSourceDetailSection(src, s.bySource[src.id]))
+      .join('');
+    wrap.innerHTML = sections + `<div class="dnote" style="margin-top:10px">NY's list only covers labs holding a NY permit, and the catalog sources only cover that one lab each — none of this is exhaustive. ${googleLdtSearchLink(s.term)}</div>`;
     const td = document.createElement('td');
-    td.colSpan = 6;
+    td.colSpan = 5;
     td.appendChild(wrap);
     detailRow.appendChild(td);
     tbody.appendChild(detailRow);
@@ -2704,7 +2970,7 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
     mainRow.innerHTML = `
       <td class="rankcell">—</td>
       <td><div class="biocell">${escapeHtml(s.term)}</div></td>
-      <td colspan="3"><span class="badge err">Search failed</span> <span class="errline">${escapeHtml(s.error)}</span></td>
+      <td colspan="2"><span class="badge err">Search failed</span> <span class="errline">${escapeHtml(s.error)}</span></td>
       <td></td>`;
     tbody.appendChild(mainRow);
   });
@@ -2771,34 +3037,43 @@ function renderLdtChart(valid) {
 // to it.
 async function runLdtSearchForTerms(terms, onProgress, logToTerminal) {
   const results = [];
-  const proxyUrl = getLdtProxyUrl();
+  const sources = getSelectedLdtSources();
+  const config = { ldtProxyUrl: getLdtProxyUrl(), questProxyUrl: getQuestProxyUrl() };
   for (let i = 0; i < terms.length; i++) {
     const term = terms[i];
     onProgress(i, terms.length, term);
-    if (logToTerminal) termLine(`ldt:${term}  starting…`, 't-meta');
+    if (logToTerminal) termLine(`ldt:${term}  starting… (${sources.map(s => s.label).join(', ') || 'no sources selected'})`, 't-meta');
     const trace = new LiveTrace(logToTerminal ? (entry) => termLineForStage(term, entry, 'ldt') : null);
-    try {
-      const t0 = performance.now();
-      const { total, records, skipped } = await fetchLdtBiomarker(term, proxyUrl);
-      pushTrace(trace, 'ldt:term-query', skipped ? 'skipped' : (total > 0 ? 'hit' : 'miss'),
-        skipped
-          ? "term's antigen core is too generic/filler-only for a safe direct LDT lookup"
-          : `${total} result(s)`,
-        Math.round(performance.now() - t0));
 
-      const approved = records.filter(r => classifyLdt(r.status) === 'approved').length;
-      const conditional = records.filter(r => classifyLdt(r.status) === 'conditional').length;
-      const item = { term, total, approved, conditional, records, trace: trace.entries, error: null };
-      results.push(item);
-      if (logToTerminal) termLine(`ldt:${term}  done — ${total} result(s)`, 't-meta');
-    } catch (e) {
-      const item = {
-        term, total: 0, approved: 0, conditional: 0, records: [],
-        trace: trace.entries, error: e.message || String(e),
-      };
-      results.push(item);
-      if (logToTerminal) termLine(`ldt:${term}  failed — ${item.error}`, 't-error');
+    const bySource = {};
+    for (const src of sources) {
+      const t0 = performance.now();
+      try {
+        const result = await fetchLdtFromSource(src.id, term, config);
+        bySource[src.id] = result;
+        pushTrace(trace, src.id, result.skipped ? 'skipped' : (result.total > 0 ? 'hit' : 'miss'),
+          result.skipped
+            ? (result.configMissing ? `${src.label} proxy Worker URL not configured` : "term's antigen core is too generic/filler-only for a safe direct lookup")
+            : `${result.total} result(s)`,
+          Math.round(performance.now() - t0));
+      } catch (e) {
+        bySource[src.id] = { source: src.id, total: 0, records: [], error: e.message || String(e) };
+        pushTrace(trace, src.id, 'error', e.message || String(e), Math.round(performance.now() - t0));
+      }
     }
+
+    const total = Object.values(bySource).reduce((sum, r) => sum + (r.total || 0), 0);
+    // Only the whole term counts as a hard failure if every selected source errored out — a
+    // partial failure (say, Quest's proxy is down) still leaves real data from the rest worth
+    // showing, so it's surfaced per-source (see ldtSourceChips/ldtSourceDetailSection) instead
+    // of hiding the whole row behind one error.
+    const erroredSources = sources.filter(s => bySource[s.id] && bySource[s.id].error);
+    const allErrored = sources.length > 0 && erroredSources.length === sources.length;
+    const item = allErrored
+      ? { term, total: 0, bySource, trace: trace.entries, error: bySource[sources[0].id].error }
+      : { term, total, bySource, trace: trace.entries, error: null };
+    results.push(item);
+    if (logToTerminal) termLine(`ldt:${term}  done — ${total} total result(s) across ${sources.length} source(s)`, 't-meta');
     if (i < terms.length - 1) await sleep(250);
   }
   return results;
@@ -2807,7 +3082,7 @@ async function runLdtSearchForTerms(terms, onProgress, logToTerminal) {
 async function runLdtSearch() {
   const terms = parseTerms($('biomarkers').value);
   if (!terms.length) { alert('Enter at least one biomarker.'); return; }
-  if (!getLdtProxyUrl()) { alert('Add your LDT proxy Worker URL in Settings (gear icon) first.'); return; }
+  if (!getSelectedLdtSources().length) { alert('Check at least one data source above (NY State, ARUP, LabCorp, or Quest).'); return; }
   localStorage.setItem('biomarker_terms', $('biomarkers').value);
 
   $('searchBtn').disabled = true;
@@ -2832,16 +3107,16 @@ async function runLdtSearch() {
 let crossState = [];
 
 $('crossCheckBtn').addEventListener('click', async () => {
-  if (!getLdtProxyUrl()) { alert('Add your LDT proxy Worker URL in Settings (gear icon) first.'); return; }
+  if (!getSelectedLdtSources().length) { alert('Check at least one data source on the LDT tab first.'); return; }
   const terms = state.filter(isLdtCrossCheckCandidate).map(s => s.term);
   if (!terms.length) return;
 
   $('crossCheckBtn').disabled = true;
   $('crossCard').style.display = 'block';
-  $('crossBody').innerHTML = `<tr><td colspan="6" class="dnote" style="padding:12px 10px">Searching LDT database for ${terms.length} biomarker(s)…</td></tr>`;
+  $('crossBody').innerHTML = `<tr><td colspan="5" class="dnote" style="padding:12px 10px">Searching LDT sources for ${terms.length} biomarker(s)…</td></tr>`;
 
   crossState = await runLdtSearchForTerms(terms, (i, n, term) => {
-    $('crossBody').innerHTML = `<tr><td colspan="6" class="dnote" style="padding:12px 10px">Searching LDT ${i + 1} of ${n}: ${escapeHtml(term)}…</td></tr>`;
+    $('crossBody').innerHTML = `<tr><td colspan="5" class="dnote" style="padding:12px 10px">Searching LDT ${i + 1} of ${n}: ${escapeHtml(term)}…</td></tr>`;
   });
 
   renderLdtResults(crossState, { tbodyId: 'crossBody', chartAndCaptions: false });
@@ -2907,17 +3182,36 @@ $('searchBtn').addEventListener('click', runSearch);
 // Google Search column is populated for every row, matches or not (see googleLdtSearchUrl's own
 // comment) — NY's database is one state's list, never the full picture, so it's worth a manual
 // cross-check regardless of what NY returned.
+// Plain-text equivalent of ldtSourceChips (HTML) for the Excel export — same per-source
+// breakdown, just as one flat cell string since a spreadsheet cell can't hold styled badges.
+function ldtSourceBreakdownText(s) {
+  return LDT_SOURCES
+    .filter(src => s.bySource && s.bySource[src.id])
+    .map(src => {
+      const r = s.bySource[src.id];
+      if (r.error) return `${src.label}: error`;
+      if (r.configMissing) return `${src.label}: not set up`;
+      if (r.skipped) return `${src.label}: skipped`;
+      if (src.id === 'ny') {
+        const approved = r.records.filter(x => classifyLdt(x.status) === 'approved').length;
+        const conditional = r.records.filter(x => classifyLdt(x.status) === 'conditional').length;
+        return `${src.label}: ${approved}A/${conditional}C`;
+      }
+      return `${src.label}: ${r.total}`;
+    }).join(' · ');
+}
+
 function ldtSummaryRows(targetState) {
   const { valid, errored } = getLdtRanked(targetState);
   return [
     ...valid.map((s, i) => ({
-      Rank: i + 1, Biomarker: s.term, 'Total LDT Matches': s.total,
-      Approved: s.approved, 'Conditionally Approved': s.conditional, Error: '',
+      Rank: i + 1, Biomarker: s.term, 'Total Matches': s.total,
+      'Source Breakdown': ldtSourceBreakdownText(s), Error: '',
       'Google Search': googleLdtSearchUrl(s.term)
     })),
     ...errored.map(s => ({
-      Rank: '', Biomarker: s.term, 'Total LDT Matches': '',
-      Approved: '', 'Conditionally Approved': '', Error: s.error,
+      Rank: '', Biomarker: s.term, 'Total Matches': '',
+      'Source Breakdown': '', Error: s.error,
       'Google Search': googleLdtSearchUrl(s.term)
     }))
   ];
@@ -2926,15 +3220,19 @@ function ldtSummaryRows(targetState) {
 function ldtDetailRows(targetState) {
   const detailRows = [];
   targetState.filter(s => !s.error).forEach(s => {
-    s.records.forEach(r => {
-      detailRows.push({
-        Biomarker: s.term,
-        'Facility Name': r.facilityName || '',
-        Analyte: r.analyte || '',
-        'Specimen Type': r.specimenType || '',
-        'Permit Category': r.permitCategory || '',
-        Status: r.status || '',
-        'Detail Link': r.detailLink || ''
+    LDT_SOURCES.forEach(src => {
+      const result = s.bySource && s.bySource[src.id];
+      if (!result || !result.records) return;
+      result.records.forEach(r => {
+        detailRows.push({
+          Biomarker: s.term,
+          Source: src.label,
+          'Test / Analyte Name': r.analyte || r.testName || '',
+          'Facility / Performing Lab': r.facilityName || stripHtml(r.performingLab) || '',
+          'Specimen Type': r.specimenType || r.specimen || '',
+          Status: r.status || '',
+          'Detail Link': r.detailLink || r.detailUrl || ''
+        });
       });
     });
   });
@@ -3012,7 +3310,7 @@ function formatSheet(ws, colWidths) {
 function buildSearchInfoRows() {
   const rows = [
     ['Exported', new Date().toLocaleString()],
-    ['Search mode', searchMode === 'ldt' ? 'LDT (NY State)' : 'FDA 510(k)'],
+    ['Search mode', searchMode === 'ldt' ? `LDT (${getSelectedLdtSources().map(s => s.label).join(', ') || 'no sources selected'})` : 'FDA 510(k)'],
     ['Biomarkers searched', parseTerms($('biomarkers').value).join(', ') || '(none)']
   ];
   if (searchMode !== 'ldt') {
@@ -3050,7 +3348,7 @@ function exportToExcel() {
   if (searchMode === 'ldt') {
     if (!ldtState.length) return;
     XLSX.utils.book_append_sheet(wb, styleSheet(XLSX.utils.aoa_to_sheet(buildSearchInfoRows())), 'Search Info');
-    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(ldtState)), [8, 26, 16, 12, 20, 24, 50]), 'LDT Summary');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(ldtState)), [8, 26, 14, 40, 24, 50]), 'LDT Summary');
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtDetailRows(ldtState)), [22, 34, 26, 18, 18, 16, 50]), 'LDT Details');
     XLSX.writeFile(wb, `NY_LDT_Biomarker_Search_${ts}.xlsx`);
     return;
@@ -3135,7 +3433,7 @@ function exportToExcel() {
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(panelRows), [22, 16, 14, 40, 30, 20, 14, 12, 50]), 'Unconfirmed Matches');
   }
   if (crossState.length) {
-    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(crossState)), [8, 26, 16, 12, 20, 24, 50]), 'LDT Cross-Check');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(crossState)), [8, 26, 14, 40, 24, 50]), 'LDT Cross-Check');
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtDetailRows(crossState)), [22, 34, 26, 18, 18, 16, 50]), 'LDT Cross-Check Details');
   }
   XLSX.writeFile(wb, `FDA_510k_Biomarker_Search_${ts}.xlsx`);

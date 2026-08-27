@@ -37,7 +37,7 @@ the reduced/fallback mode.
   - [Checking a specific device's paperwork ("Measurand")](#checking-a-specific-devices-paperwork-measurand)
   - [CLI](#cli)
 - [Automatic abbreviation lookup (UMLS and AI crosscheck)](#automatic-abbreviation-lookup-umls-and-ai-crosscheck)
-- [Searching lab-developed tests (LDT) in New York State](#searching-lab-developed-tests-ldt-in-new-york-state)
+- [Searching lab-developed tests (LDT)](#searching-lab-developed-tests-ldt)
 - [Things to keep in mind](#things-to-keep-in-mind)
 - [Glossary](#glossary)
 - [For developers](#for-developers)
@@ -109,8 +109,8 @@ Related optional extras, each documented in its own section:
   search-grounded AI crosscheck.
 - **["Check Measurand"](#checking-a-specific-devices-paperwork-measurand)** — confirm what a
   specific device actually measures by reading its official FDA paperwork.
-- **[LDT search](#searching-lab-developed-tests-ldt-in-new-york-state)** — check New York
-  State's lab-developed-test database for biomarkers with few or no FDA-cleared devices.
+- **[LDT search](#searching-lab-developed-tests-ldt)** — check up to 4 lab-developed-test
+  sources (NY State, ARUP, LabCorp, Quest) for biomarkers with few or no FDA-cleared devices.
 
 ## Install
 
@@ -338,29 +338,41 @@ since they default to a long internal chain-of-thought before answering (confirm
 a database entry, so it's kept more cautious than a UMLS-resolved match and worth a sanity check
 via **Check Measurand**.
 
-## Searching lab-developed tests (LDT) in New York State
+## Searching lab-developed tests (LDT)
 
 A biomarker with 0 FDA-cleared devices doesn't necessarily mean nobody tests for it — it might
-be an LDT (a test a lab builds and runs in-house; see the [Glossary](#glossary)). New York State
-keeps a public list, searchable here too, by term match only (no AI expansion on this side — an
+be an LDT (a test a lab builds and runs in-house; see the [Glossary](#glossary)). This tool can
+check up to 4 sources at once, all term-match only (no AI expansion on this side — an
 AI-resolved synonym's phrasing turned out to cause more false matches than it prevented against
-New York's simpler "any word" search).
+these sites' own simpler "any word"/relevance search):
 
-**Directly:** click the **LDT** tab and search the same way.
+| Source | What a match means | Setup needed |
+|---|---|---|
+| **NY State** (Wadsworth Center CLEP) | A real, state-issued LDT approval/permit record — the only source here that's an actual regulatory fact. | LDT proxy Worker (works out of the box via a shared instance) |
+| **ARUP** | The term appears in ARUP's own commercial test catalog. | None — direct, no setup |
+| **LabCorp** | Same, LabCorp's own catalog. **Read the note in Settings before relying on this commercially** — LabCorp's Terms of Use restrict automated/commercial reuse of their test-menu content. | None — direct, no setup |
+| **Quest** | Same, Quest's own catalog. **Read the note in Settings before relying on this commercially** — Quest's Terms of Use restrict non-educational reuse without written permission. | Quest proxy Worker (no shared instance — deploy your own, see `worker/README.md`) |
+
+Only NY State is a regulatory approval; the other three just mean *someone* already offers a
+similar test commercially — real competitive signal, but not the same kind of fact, and the
+tool never conflates the two (each source gets its own labeled result, never folded into one
+"Approved" count).
+
+**Directly:** click the **LDT** tab, pick which sources to check in the "Data sources" row, and
+search the same way as an FDA search.
 
 **Automatically after an FDA search:** if any biomarker showed **2 or fewer** FDA-cleared
-devices, a button appears offering to check all of them against New York's list in one pass — a
-low-but-nonzero count can still point to a real LDT-only opportunity, not just a strict zero.
-
-**Already works out of the box** — same reason and same shared-instance caveats as Measurand
-above.
+devices, a button appears offering to check it against whichever LDT sources are currently
+checked, in one pass — a low-but-nonzero count can still point to a real LDT-only opportunity,
+not just a strict zero.
 
 ### If nothing turns up
 
-New York's list only covers labs holding a New York permit — a small slice of all labs
-nationally. "No matching LDTs found" doesn't mean nobody offers it. A **Search Google for
-"&lt;name&gt; LDT"** link then appears, which often surfaces the actual offering lab (ARUP, Mayo
-Clinic Laboratories, LabCorp, etc.).
+None of these four sources is exhaustive — NY's list only covers labs holding a New York permit,
+and each commercial source only covers that one lab. "No matches" doesn't mean nobody offers it.
+A **Search Google for "&lt;name&gt; LDT"** link always appears too, for the labs outside all
+four (Mayo Clinic Laboratories among them — its site has no clean public search API this tool
+could integrate directly).
 
 ## Things to keep in mind
 
@@ -502,7 +514,7 @@ one term past its cache (see [Things to keep in mind](#things-to-keep-in-mind)):
 - [Tavily](https://tavily.com) and [Ollama](https://ollama.com) — the search-grounded AI
   crosscheck for abbreviations UMLS doesn't cover.
 - [Cloudflare Workers](https://workers.cloudflare.com/) — the small proxies that let the browser
-  tool reach FDA-paperwork PDFs and New York's LDT list directly (see
+  tool reach FDA-paperwork PDFs, New York's LDT list, and Quest's test directory directly (see
   [worker/README.md](worker/README.md)).
 
 ## Contributing
