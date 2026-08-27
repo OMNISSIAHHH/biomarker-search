@@ -27,10 +27,15 @@
   --acc:#0066B3;--acc2:#1B7A4D;--red:#DC2626;--yel:#946E00;--bk:#fff;
 }
 html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--tx);font-size:15px;line-height:1.55}
-.app{max-width:1080px;margin:0 auto;min-height:100vh;background:var(--bg3);padding:0 0 60px}
+.app{min-height:100vh;background:var(--bg3);padding:0 0 60px}
+
+/* Shared content-column width — the page now spans the full viewport (no more centered
+   1080px .app), but header/banner/layout all line up to this same cap so long lines of text
+   and the header title/gear don't stretch edge-to-edge on very wide monitors. */
+.pagewrap{max-width:1900px;margin:0 auto;padding-left:22px;padding-right:22px}
 
 .hdr{background:var(--bk);position:sticky;top:0;z-index:10;border-bottom:3px solid var(--acc)}
-.hdr-top{display:flex;align-items:center;justify-content:space-between;padding:17px 22px 15px}
+.hdr-top{display:flex;align-items:center;justify-content:space-between;padding:17px 0 15px}
 .hdr-title{font-family:var(--font);font-size:21px;font-weight:700;color:var(--tx);letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
 .hdr-title .ti{color:var(--acc)}
 .hdr-sub{font-family:var(--mono);font-size:10.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:.14em;margin-top:4px}
@@ -38,7 +43,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .logo{height:26px;width:auto;display:block}
 .gear{background:none;border:1px solid var(--br2);cursor:pointer;font-size:15px;color:var(--tx2);padding:5px 8px;line-height:1;transition:all .15s}
 .gear:hover{color:var(--acc);border-color:var(--acc)}
-.spanel{display:none;background:var(--bg2);border-top:1px solid var(--br);padding:12px 22px}
+.spanel{display:none;background:var(--bg2);border-top:1px solid var(--br);padding:12px 0}
 .spanel.open{display:block}
 .srow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .sinfo{font-size:12.5px;color:var(--tx2);flex:1;min-width:220px}
@@ -46,8 +51,17 @@ html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--
 .skey{font-family:var(--mono);font-size:12px;padding:6px 10px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);width:260px}
 .skey::placeholder{color:var(--tx3)}
 
-.content{padding:22px}
-.card{background:var(--bg);border:1px solid var(--br);border-radius:3px;padding:19px 20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(10,40,70,.05)}
+/* Two-region dashboard layout: a fixed-width sidebar (search controls, settings-adjacent
+   activity log) beside a fluid main column (chart/results/LDT tables) that actually grows to
+   use the extra width on wide monitors, replacing the old single centered column. Collapses to
+   one stacked column below 980px, sidebar first, same as before this redesign. */
+.content{padding:22px;max-width:1900px;margin:0 auto;display:grid;grid-template-columns:340px minmax(0,1fr);gap:20px;align-items:start}
+.sidebar{display:flex;flex-direction:column;gap:16px;min-width:0}
+.main{display:flex;flex-direction:column;gap:16px;min-width:0}
+@media (max-width:980px){
+  .content{grid-template-columns:1fr}
+}
+.card{background:var(--bg);border:1px solid var(--br);border-radius:3px;padding:19px 20px;margin-bottom:0;box-shadow:0 1px 2px rgba(10,40,70,.05)}
 .captag{display:block;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--acc);text-transform:uppercase;letter-spacing:.12em;margin-bottom:3px}
 .stitle{font-family:var(--font);font-size:16px;font-weight:700;color:var(--tx);margin:0 0 13px;padding-bottom:9px;border-bottom:2px solid var(--acc)}
 
@@ -155,7 +169,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
 <body>
 <div class="app">
   <div class="hdr">
-    <div class="hdr-top">
+    <div class="hdr-top pagewrap">
       <div>
         <div class="hdr-title"><i class="ti ti-dna-2"></i> Biomarker Search</div>
         <div class="hdr-sub">openFDA Device Clearance + Lab Developed Tests Lookup</div>
@@ -165,7 +179,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <button class="gear" id="gearBtn" title="Settings"><i class="ti ti-settings"></i></button>
       </div>
     </div>
-    <div class="spanel" id="spanel">
+    <div class="spanel pagewrap" id="spanel">
       <div class="srow">
         <div class="sinfo">Uses the public <a href="https://open.fda.gov/apis/device/510k/" target="_blank" rel="noopener">openFDA device 510(k) API</a>. No key: 1,000 requests/day. Add a free key for 120,000/day.</div>
         <input class="skey" id="apiKey" placeholder="openFDA API key (optional)">
@@ -207,7 +221,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
     </div>
   </div>
 
-  <div id="localIndexNudge" style="display:none;max-width:1100px;margin:0 auto 14px;padding:10px 14px;border:1px solid #d9a441;border-radius:8px;background:#fdf6e8;color:#6b4e0a;font-size:13px">
+  <div id="localIndexNudge" style="display:none;max-width:1900px;margin:0 auto 14px;padding:10px 14px;border:1px solid #d9a441;border-radius:8px;background:#fdf6e8;color:#6b4e0a;font-size:13px">
     <strong>Running in fallback mode.</strong> The default workflow for this tool includes a
     local cross-check backend — without it, the plain search below misses real FDA approvals
     in ways that are structural, not occasional (bundled multi-antigen kits that never name the
@@ -217,11 +231,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
   </div>
 
   <div class="content">
-    <div class="card" id="activityCard">
-      <div class="stitle">Platform activity</div>
-      <div id="activityTerminal" class="terminal"></div>
-    </div>
-
+    <div class="sidebar">
     <div class="card">
       <div class="stitle">Biomarkers</div>
       <div class="modetabs">
@@ -257,6 +267,13 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
       </div>
     </div>
 
+    <div class="card" id="activityCard">
+      <div class="stitle">Platform activity</div>
+      <div id="activityTerminal" class="terminal"></div>
+    </div>
+    </div>
+
+    <div class="main">
     <div class="card" id="chartCard" style="display:none">
       <span class="captag" id="chartCaptag">Figure 1</span>
       <div class="stitle" id="chartTitle">Cleared products by biomarker, ranked fewest first</div>
@@ -338,6 +355,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
     </div>
 
     <div class="empty" id="emptyState">Enter biomarkers above and click Search.</div>
+    </div>
   </div>
 </div>
 
