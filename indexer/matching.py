@@ -220,6 +220,27 @@ def abbreviate_greek_spelled(text: str) -> str:
 # other variants here (an exact-phrase match still has to actually occur).
 TRAILING_BARE_A_RE = re.compile(r"([A-Za-z0-9])A$")
 
+# WHO/IUIS Allergen Nomenclature ("Genus species#", e.g. "Bet v 1", "Der p 1", "Can f 4", "Phl p
+# 5.0101") names one specific protein from one specific source organism, but real FDA/Phadia
+# ImmunoCAP device names never spell it out bare — confirmed live: K190315's actual device name
+# is "...Allergen Component rCan f 4 Dog...", K150597's is "...Allergen component rDer p 1,House
+# dust mite..." — a lowercase "r" (recombinant, expressed rather than purified from the real
+# source) or "n" (native) isoform marker is fused directly onto the genus token with no space,
+# same "prefix glues onto the first word, no separator" convention build_fused_anti_expr already
+# handles for "anti-". None of generate_orthographic_variants's existing transforms produce this,
+# since the prefix isn't a case/spacing change to the antigen itself — it's an added isoform
+# marker a plain user-typed term never includes. Anchored to the full string so this only fires
+# for the actual 3-part "genus species number" shape, not any other short-first-word term.
+ALLERGEN_NOMENCLATURE_RE = re.compile(r"^([A-Z][a-z]{1,3})(\s+[a-z]{1,2}\s+\d+(?:\.\d+)?)$")
+
+
+def _allergen_isoform_variants(antigen: str) -> list[str]:
+    m = ALLERGEN_NOMENCLATURE_RE.match(antigen)
+    if not m:
+        return []
+    genus, rest = m.group(1), m.group(2)
+    return [f"r{genus}{rest}", f"n{genus}{rest}"]
+
 
 def generate_orthographic_variants(antigen: str) -> list[str]:
     variants: list[str] = []
@@ -249,6 +270,9 @@ def generate_orthographic_variants(antigen: str) -> list[str]:
 
     if TRAILING_BARE_A_RE.search(antigen):
         add(antigen + "b")
+
+    for v in _allergen_isoform_variants(antigen):
+        add(v)
 
     return variants
 
@@ -313,6 +337,21 @@ def build_paren_alternates_expr(term: str) -> str | None:
     before_paren = term[:paren_start].strip()
     candidates = ([before_paren] if before_paren else []) + alternates
     clauses = [build_exact_expr(c) for c in candidates if c]
+    # Confirmed live: "Can f 4 (Can f 4 allergen, Canis familiaris)" still missed K190315 even
+    # after the isoform-prefix fix above, because this tier only ever checked each candidate as
+    # a literal exact phrase — generate_orthographic_variants (isoform prefixes, camelCase
+    # splits, hyphen/space swaps, Greek-letter abbreviations, ...) never ran on paren-derived
+    # candidates at all, only on the wordform tier's own un-parenthesized antigen. Any term that
+    # combines a parenthetical clarification with a naming convention needing variant handling
+    # fell through this gap, not just allergen terms. Added on top of (not replacing) the exact-
+    # phrase clauses above, same additive/no-regression posture as every other variant here.
+    for candidate in candidates:
+        if not candidate:
+            continue
+        for variant in generate_orthographic_variants(candidate):
+            tokens = split_tokens(variant)
+            if tokens:
+                clauses.append(cross_field_tokens_clause(tokens))
     if not clauses:
         return None
     return "(" + " OR ".join(clauses) + ")"

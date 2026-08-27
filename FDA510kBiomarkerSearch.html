@@ -1043,6 +1043,25 @@ function abbreviateGreekSpelled(text) {
 // the others here.
 const TRAILING_BARE_A_RE = /[A-Za-z0-9]A$/;
 
+// WHO/IUIS Allergen Nomenclature ("Genus species#", e.g. "Bet v 1", "Der p 1", "Can f 4", "Phl p
+// 5.0101") names one specific protein from one specific source organism, but real FDA/Phadia
+// ImmunoCAP device names never spell it out bare — confirmed live: K190315's actual device name
+// is "...Allergen Component rCan f 4 Dog...", K150597's is "...Allergen component rDer p 1,House
+// dust mite..." — a lowercase "r" (recombinant) or "n" (native) isoform marker is fused directly
+// onto the genus token with no space, same "prefix glues onto the first word, no separator"
+// convention buildFusedAntiExpr already handles for "anti-". None of this function's existing
+// transforms produce this, since the prefix isn't a case/spacing change to the antigen itself —
+// it's an added isoform marker a plain user-typed term never includes. Anchored to the full
+// string so this only fires for the actual 3-part "genus species number" shape.
+const ALLERGEN_NOMENCLATURE_RE = /^([A-Z][a-z]{1,3})(\s+[a-z]{1,2}\s+\d+(?:\.\d+)?)$/;
+
+function allergenIsoformVariants(antigen) {
+  const m = ALLERGEN_NOMENCLATURE_RE.exec(antigen);
+  if (!m) return [];
+  const [, genus, rest] = m;
+  return [`r${genus}${rest}`, `n${genus}${rest}`];
+}
+
 function generateOrthographicVariants(antigen) {
   const variants = new Set();
 
@@ -1070,6 +1089,8 @@ function generateOrthographicVariants(antigen) {
   }
 
   if (TRAILING_BARE_A_RE.test(antigen)) variants.add(antigen + 'b');
+
+  for (const v of allergenIsoformVariants(antigen)) variants.add(v);
 
   variants.delete(antigen); // identity form is already covered by the antigen-only tier
   return Array.from(variants);
@@ -1124,6 +1145,21 @@ function buildParenAlternatesExpr(term) {
   const beforeParen = term.slice(0, term.indexOf('(')).trim();
   const candidates = (beforeParen ? [beforeParen] : []).concat(alternates);
   const clauses = candidates.filter(Boolean).map(buildExactExpr);
+  // Confirmed live: "Can f 4 (Can f 4 allergen, Canis familiaris)" still missed K190315 even
+  // after the isoform-prefix fix above, because this tier only ever checked each candidate as a
+  // literal exact phrase — generateOrthographicVariants (isoform prefixes, camelCase splits,
+  // hyphen/space swaps, Greek-letter abbreviations, ...) never ran on paren-derived candidates
+  // at all, only on the wordform tier's own un-parenthesized antigen. Any term combining a
+  // parenthetical clarification with a naming convention needing variant handling fell through
+  // this gap, not just allergen terms. Added on top of (not replacing) the exact-phrase clauses
+  // above, mirrors indexer/matching.py's identical fix.
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    for (const variant of generateOrthographicVariants(candidate)) {
+      const tokens = splitTokens(variant);
+      if (tokens.length) clauses.push(crossFieldTokensClause(tokens));
+    }
+  }
   if (!clauses.length) return null;
   return '(' + clauses.join(' OR ') + ')';
 }
