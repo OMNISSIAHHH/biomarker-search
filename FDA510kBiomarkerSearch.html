@@ -3324,6 +3324,65 @@ function buildSearchInfoRows() {
   return [['Field', 'Value'], ...rows];
 }
 
+// Which lab(s) actually offer a matched LDT, per source. NY's own records already list a real
+// per-record facility, so those are used as-is; ARUP/LabCorp's search only ever returns "is this
+// in their catalog," not which of their own sites offers it, so the source itself (their own
+// name) is the provider; Quest's API does give a real per-record performing lab, used the same
+// way NY's is when present — confirmed live this is inconsistently populated (varies well under
+// half to well over half of results depending on the term) — falling back to "Quest Diagnostics"
+// for whichever records leave it blank.
+function ldtProvidersList(crossItem) {
+  const providers = new Set();
+  LDT_SOURCES.forEach(src => {
+    const result = crossItem.bySource && crossItem.bySource[src.id];
+    if (!result || !result.records || !result.records.length) return;
+    if (src.id === 'ny') {
+      result.records.forEach(r => { if (r.facilityName) providers.add(r.facilityName); });
+    } else if (src.id === 'quest') {
+      result.records.forEach(r => providers.add(stripHtml(r.performingLab) || 'Quest Diagnostics'));
+    } else {
+      providers.add(src.label);
+    }
+  });
+  return Array.from(providers).sort();
+}
+
+// The single combined "how does this biomarker look overall" row per biomarker the user asked
+// for — 510(k) approval count/applicants next to the LDT cross-check outcome, in one place,
+// rather than needing to cross-reference the separate Summary/Biomarker Applicants/LDT
+// Cross-Check sheets by hand. LDT Count/Providers are only ever populated for a biomarker that
+// actually qualified for the automatic cross-check (isLdtCrossCheckCandidate — few enough FDA
+// approvals) AND was actually searched (the "Check LDT database" button was clicked and
+// crossState has a real, non-error result for it); left blank otherwise, distinguishing "did the
+// LDT cross-check run for this one" from "it ran and genuinely found nothing" (0, a real number)
+// rather than conflating the two into the same blank/zero.
+function buildBiomarkerOverviewRows(valid) {
+  return valid.map(s => {
+    const clearedRecords = s.records.filter(r => classify(r.decision_description) === 'se');
+    const applicantNames = Array.from(new Set(clearedRecords.map(r => r.applicant || 'Unknown'))).sort();
+    let ldtCount = '';
+    let ldtProviders = '';
+    if (isLdtCrossCheckCandidate(s)) {
+      const crossItem = crossState.find(c => c.term === s.term);
+      if (crossItem && crossItem.error) {
+        ldtCount = 'Search failed';
+      } else if (crossItem) {
+        ldtCount = crossItem.total;
+        ldtProviders = ldtProvidersList(crossItem).join(', ');
+      } else {
+        ldtCount = 'Not checked';
+      }
+    }
+    return {
+      'Name of Biomarker': s.term,
+      'Unique 510(k) Approval Count': clearedRecords.length,
+      '510(k) Applicant Names': applicantNames.join(', '),
+      'LDT Count': ldtCount,
+      'LDT Providers': ldtProviders
+    };
+  });
+}
+
 // One row per applicant across every biomarker currently in view — the Submitted By filter
 // exists because the same company can file multiple times for one biomarker, so a saved export
 // should let that pattern be seen at a glance without building a pivot table by hand.
@@ -3421,6 +3480,7 @@ function exportToExcel() {
   });
 
   XLSX.utils.book_append_sheet(wb, styleSheet(XLSX.utils.aoa_to_sheet(buildSearchInfoRows())), 'Search Info');
+  XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(buildBiomarkerOverviewRows(valid)), [26, 16, 50, 12, 40]), 'Biomarker Overview');
   const summarySheet = formatSheet(XLSX.utils.json_to_sheet(summaryRows), [8, 22, 30, 16, 16, 16, 20, 30]);
   colorThresholdColumn(summarySheet, 'Cleared (Approved)');
   XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
