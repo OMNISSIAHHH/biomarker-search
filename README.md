@@ -77,8 +77,13 @@ The backend does two things the browser alone structurally can't:
   of on every search — the browser alone has to make an extra network call per biomarker for
   this, which is noticeably slower.
 
-510(k)-only, same as the browser search — no GUDID/UDI device-registration cross-check, no PMA
-(Premarket Approval, a different FDA pathway for higher-risk Class III devices).
+Both the backend and the browser search also include **PMA (Premarket Approval)** — FDA's
+separate pathway for higher-risk Class III devices, absent from the 510(k) dataset entirely.
+This matters in practice: many companion diagnostics (e.g. HER2, EGFR mutation tests) are
+PMA-only and would otherwise show as having zero FDA approvals. PMA records are folded into the
+same results/totals as 510(k) — see the **"PMA-only match"** tag in [Reading your
+results](#reading-your-results) for when a biomarker's approvals come from PMA alone. Not
+included: GUDID/UDI device-registration cross-check.
 
 **Confirmed-match results work immediately for any biomarker, right after step 2 of**
 [Install](#install) — nothing to wait on. The predicate-chain ("inferred via predicate") tier is
@@ -209,7 +214,8 @@ A bar chart and a table show the same results two ways.
 | Unique Applicants | Distinct companies behind those submissions — lower than Total Submissions means a company filed more than once (see the [Submitted by filter](#filtering-and-narrowing-your-results)) |
 
 Click a row to expand it: device name, submitting company, decision, approval date, an FDA
-detail link, and a **Check Measurand** button ([below](#checking-a-specific-devices-paperwork-measurand)).
+detail link, and (510(k)/De Novo devices only — not yet available for PMA) a **Check Measurand**
+button ([below](#checking-a-specific-devices-paperwork-measurand)).
 
 **Tags next to a biomarker name** (none mean the result is wrong — they signal match
 confidence; an exact match is always most reliable):
@@ -227,6 +233,9 @@ confidence; an exact match is always most reliable):
 - **Alternate wordform match** — FDA device names aren't consistent about spacing/hyphens (e.g.
   "DS DNA" split apart vs. "dsDNA" fused); the tool automatically tries splitting fused words,
   swapping hyphens for spaces (and back), and fusing multi-word terms
+- **PMA-only match** — no 510(k)/De Novo clearance found at all, but the term matched FDA's
+  separate PMA (Premarket Approval) pathway (see the [Glossary](#glossary)). Common for companion
+  diagnostics (e.g. HER2, EGFR mutation tests), which are routinely PMA-only.
 
 ### Sorting your results
 
@@ -413,7 +422,8 @@ could integrate directly).
 | **Biomarker** | A measurable substance in the body (a protein, antibody, hormone, etc.) used to test for a disease or condition. |
 | **FDA 510(k)** | A pathway the FDA uses to clear most lab tests and medical devices for sale, by showing a new device is "substantially equivalent" to one already on the market. Each cleared device gets a reference number starting with **K** (e.g. `K123456`). |
 | **De Novo (DEN)** | A different FDA pathway, used for genuinely novel devices that have nothing existing to compare against. These get a reference number starting with **DEN** instead of K. This tool treats them the same as 510(k) devices in its results. |
-| **Cleared / Approved** | The FDA decided the device is "Substantially Equivalent" and it can be legally sold. |
+| **PMA (Premarket Approval)** | FDA's separate pathway for higher-risk Class III devices — a stricter, more involved review than 510(k), and the *only* pathway for some device types (many companion diagnostics have no 510(k) equivalent at all). These get a reference number starting with **P** instead of K. This tool checks PMA alongside 510(k) automatically and folds the results together — see the **"PMA-only match"** tag when a biomarker's approvals come entirely from PMA. |
+| **Cleared / Approved** | The FDA decided the device is "Substantially Equivalent" (510(k)) or granted a **PMA approval** — either way, it can be legally sold. |
 | **LDT (Lab-Developed Test)** | A test that a single laboratory designs, builds, and runs in-house, rather than buying a ready-made FDA-cleared kit. These are regulated differently than FDA-cleared devices — some states, like New York, require their own separate approval for them. |
 | **Decision Summary** | The FDA's official write-up explaining why a specific device was cleared — usually a PDF, a few pages long, with a standard structure. |
 | **FDA review panel (advisory committee)** | The medical specialty group inside the FDA that reviewed a given device — e.g. Immunology, Clinical Chemistry, General Surgery. Every cleared device is routed to one; genuine lab tests almost always land in a handful of diagnostic-related panels, never a surgical/hardware one. |

@@ -12,6 +12,7 @@ PAGE_LIMIT = 100
 MAX_RECORDS = 300
 
 DEVICE_510K = "https://api.fda.gov/device/510k.json"
+DEVICE_PMA = "https://api.fda.gov/device/pma.json"
 
 
 class OpenFdaError(Exception):

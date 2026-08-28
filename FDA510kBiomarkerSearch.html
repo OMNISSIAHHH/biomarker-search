@@ -185,7 +185,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="apiKey" placeholder="openFDA API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">LDT search checks up to 4 sources — pick which ones in the "Data sources" row on the LDT tab. <strong>NY State</strong> search calls a small proxy Worker (NY's LDT site has no CORS support, so this tool can't reach it directly) — pre-filled below with a donated, shared instance, ready to use immediately. It runs on one person's free Cloudflare account with a shared daily limit and no uptime guarantee — fine to try the tool, but deploy your own instead (see <code>worker/README.md</code>, ~5 min, no coding required) if you're using this regularly, then just overwrite this field. <strong>ARUP and LabCorp need no setup at all</strong> — both allow direct cross-origin requests from this tool. Unlike ARUP, though, <strong>LabCorp's Terms of Use explicitly restrict automated/commercial reuse of their test-menu content</strong> (including using it to inform a competing product) — a real consideration, not just a technical one, if you're relying on those results commercially.</div>
+        <div class="sinfo">LDT search checks up to 4 sources — pick which ones in the "LDT data sources" row on the LDT tab. <strong>NY State</strong> search calls a small proxy Worker (NY's LDT site has no CORS support, so this tool can't reach it directly) — pre-filled below with a donated, shared instance, ready to use immediately. It runs on one person's free Cloudflare account with a shared daily limit and no uptime guarantee — fine to try the tool, but deploy your own instead (see <code>worker/README.md</code>, ~5 min, no coding required) if you're using this regularly, then just overwrite this field. <strong>ARUP and LabCorp need no setup at all</strong> — both allow direct cross-origin requests from this tool. Unlike ARUP, though, <strong>LabCorp's Terms of Use explicitly restrict automated/commercial reuse of their test-menu content</strong> (including using it to inform a competing product) — a real consideration, not just a technical one, if you're relying on those results commercially.</div>
         <input class="skey" id="ldtProxyUrl" placeholder="LDT proxy Worker URL (NY State)">
       </div>
       <div class="srow" style="margin-top:8px">
@@ -243,7 +243,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <button class="modetab" id="modeLdt" type="button">LDT</button>
       </div>
       <div class="datefilter" id="ldtSourcesRow" title="NY State is the only source that's a real regulatory approval record — ARUP/LabCorp/Quest just mean the term appears in that lab's own commercial test catalog. Only used when the LDT tab is active, but left visible so you can set your preferred sources ahead of time.">
-        <span>Data sources:</span>
+        <span>LDT data sources:</span>
         <label><input type="checkbox" class="ldtSourceCheck" data-source="ny"> NY State</label>
         <label><input type="checkbox" class="ldtSourceCheck" data-source="arup"> ARUP</label>
         <label><input type="checkbox" class="ldtSourceCheck" data-source="labcorp"> LabCorp</label>
@@ -260,7 +260,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
           <li>If an exact/broad/antigen-only search finds nothing, a UMLS API key (set in Settings) can look up the term's spelled-out medical name automatically instead of returning nothing — flagged as <span class="mmtag" style="cursor:default">UMLS-resolved match</span> since that name hasn't been manually verified.</li>
         </ul>
         <ul class="hint" id="hintLdt" style="display:none">
-          <li>Checks up to 4 sources at once — pick which ones in the "Data sources" row above. Only <strong>NY State</strong> is an actual regulatory LDT approval record; <strong>ARUP</strong>, <strong>LabCorp</strong>, and <strong>Quest</strong> just mean the term appears in that lab's own commercial test catalog — real signal, but not a regulatory fact.</li>
+          <li>Checks up to 4 sources at once — pick which ones in the "LDT data sources" row above. Only <strong>NY State</strong> is an actual regulatory LDT approval record; <strong>ARUP</strong>, <strong>LabCorp</strong>, and <strong>Quest</strong> just mean the term appears in that lab's own commercial test catalog — real signal, but not a regulatory fact.</li>
           <li>NY State and Quest each need a proxy Worker URL configured in Settings (gear icon) — both sites block direct requests from this tool. ARUP and LabCorp need no setup at all.</li>
           <li>Each source's own search casts a wide net, so this tool then requires every one of the term's significant words to actually appear in a record before counting it as a real match (not just any one of them) — a multi-word term like "Beta-2 Glycoprotein I Domain 1" won't match a record that only happens to mention "Domain" or "Glycoprotein" on its own.</li>
         </ul>
@@ -372,15 +372,26 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
 
 <script>
 const OPENFDA_BASE = 'https://api.fda.gov/device/510k.json';
+// PMA (Premarket Approval) — FDA's separate pathway for higher-risk Class III devices, e.g.
+// companion diagnostics like HER2/EGFR that are routinely PMA-only with no 510(k) at all. See
+// fetchPmaMatches below; mirrors indexer/matching.py's fetch_pma_matches.
+const OPENFDA_PMA_BASE = 'https://api.fda.gov/device/pma.json';
 // openFDA's 510k dataset also includes De Novo classification grants (k_number starting
 // "DEN...", e.g. DEN050002) alongside real 510(k)s (k_number starting "K..."). These are a
 // different FDA review pathway with their own detail page — pmn.cfm (built for K-numbers)
-// returns nothing for a DEN number, so the link must switch to denovo.cfm instead.
+// returns nothing for a DEN number, so the link must switch to denovo.cfm instead. PMA numbers
+// (starting "P...", e.g. P100027) are a third pathway with their own detail page in turn.
+// NOTE: the PMA URL pattern below follows FDA's well-established public convention for this
+// page but could not be freshly re-verified live this session (accessdata.fda.gov has been
+// blocking automated requests from this dev environment, including on already-confirmed-working
+// pmn.cfm URLs, so this isn't specific evidence against the pattern) — worth a quick manual
+// click-through once you can.
 const PMN_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm?ID=';
 const DENOVO_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/denovo.cfm?ID=';
+const PMA_DETAIL_BASE = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfpma/pma.cfm?id=';
 function detailUrlFor(kNumber) {
   const num = kNumber || '';
-  const base = /^DEN/i.test(num) ? DENOVO_DETAIL_BASE : PMN_DETAIL_BASE;
+  const base = /^P/i.test(num) ? PMA_DETAIL_BASE : /^DEN/i.test(num) ? DENOVO_DETAIL_BASE : PMN_DETAIL_BASE;
   return base + encodeURIComponent(num);
 }
 const PAGE_LIMIT = 100;
@@ -582,6 +593,11 @@ function classify(decisionDescription) {
   if (!d) return 'other';
   if (d.includes('not substantially equivalent')) return 'nse';
   if (d.includes('substantially equivalent')) return 'se';
+  // A PMA approval is a different pathway (see normalizePmaRecord) but the same real-world
+  // outcome as a 510(k) "substantially equivalent" clearance — a device on the market. Without
+  // this, PMA records would show up in the table but never count toward "Cleared (Approved)"
+  // totals, silently defeating the point of including PMA at all.
+  if (d.includes('approved (pma)')) return 'se';
   return 'other';
 }
 
@@ -617,7 +633,7 @@ function buildRecordRows(records, term) {
       <td>${declBadge(r.decision_description)}</td>
       <td>${escapeHtml(r.decision_date || '—')}</td>
       <td><a href="${escapeHtml(detailUrlFor(r.k_number))}" target="_blank" rel="noopener">${escapeHtml(r.k_number || '')} ↗</a></td>
-      <td>${r.k_number
+      <td>${r.k_number && r.clearance_type !== 'PMA'
         ? `<button class="measurand-btn" data-knumber="${escapeHtml(r.k_number)}" data-term="${escapeHtml(term)}">Check Measurand</button><span class="measurand-result"></span>`
         : '—'}</td>
     </tr>`).join('');
@@ -876,12 +892,16 @@ function toSearchTerm(term) {
 // each only attempted if the previous one found nothing, from most to least precise.
 const SEARCH_FIELDS = ['device_name', 'statement_or_summary', 'openfda.device_name'];
 
-function fieldOr(build) {
-  return '(' + SEARCH_FIELDS.map(build).join(' OR ') + ')';
+// `fields` defaults to the 510(k) field set everywhere below — every existing call site is
+// unaffected; fetchPmaMatches is the only caller that ever passes PMA_SEARCH_FIELDS instead,
+// reusing this same tier logic rather than duplicating it. Mirrors indexer/matching.py's
+// identical parametrization.
+function fieldOr(build, fields = SEARCH_FIELDS) {
+  return '(' + fields.map(build).join(' OR ') + ')';
 }
 
-function buildExactExpr(term) {
-  return fieldOr(f => `${f}:"${term}"`);
+function buildExactExpr(term, fields = SEARCH_FIELDS) {
+  return fieldOr(f => `${f}:"${term}"`, fields);
 }
 
 function stripAntiPrefix(term) {
@@ -912,8 +932,8 @@ function antiSynonymClause(field) {
 // entirely. The anti/antibody requirement is checked across all three fields independently
 // instead — it just has to be true *somewhere* on the record, not in the same field as the
 // antigen name.
-function crossFieldAntiClause() {
-  return '(' + SEARCH_FIELDS.map(antiSynonymClause).join(' OR ') + ')';
+function crossFieldAntiClause(fields = SEARCH_FIELDS) {
+  return '(' + fields.map(antiSynonymClause).join(' OR ') + ')';
 }
 
 const ISOTYPE_SUFFIX = /\s+Ig[AGME][1-4]?$/i;
@@ -948,8 +968,8 @@ function strictAntibodyClause(field) {
   return '(' + STRICT_ANTIBODY_WORDS.map(w => `${field}:"${w}"`).join(' OR ') + ')';
 }
 
-function crossFieldStrictAntibodyClause() {
-  return '(' + SEARCH_FIELDS.map(strictAntibodyClause).join(' OR ') + ')';
+function crossFieldStrictAntibodyClause(fields = SEARCH_FIELDS) {
+  return '(' + fields.map(strictAntibodyClause).join(' OR ') + ')';
 }
 
 // 'explicit' — term literally started with "Anti-"; 'implied' — no "Anti-" prefix, but an
@@ -982,25 +1002,25 @@ function tokenClause(field, tokens) {
 // openfda.device_name (FDA's classification text) and "Domain1" only in device_name; requiring
 // all three within one field (like tokenClause does) misses it even though every word is
 // genuinely present on that same device.
-function crossFieldTokensClause(tokens) {
-  return '(' + tokens.map(tok => fieldOr(f => `${f}:"${tok}"`)).join(' AND ') + ')';
+function crossFieldTokensClause(tokens, fields = SEARCH_FIELDS) {
+  return '(' + tokens.map(tok => fieldOr(f => `${f}:"${tok}"`, fields)).join(' AND ') + ')';
 }
 
-function withCrossFieldAnti(mainExpr, mode) {
-  if (mode === 'explicit') return `(${mainExpr} AND ${crossFieldAntiClause()})`;
-  if (mode === 'implied') return `(${mainExpr} AND ${crossFieldStrictAntibodyClause()})`;
+function withCrossFieldAnti(mainExpr, mode, fields = SEARCH_FIELDS) {
+  if (mode === 'explicit') return `(${mainExpr} AND ${crossFieldAntiClause(fields)})`;
+  if (mode === 'implied') return `(${mainExpr} AND ${crossFieldStrictAntibodyClause(fields)})`;
   return mainExpr;
 }
 
 // Tier 2: same words, adjacency/order no longer required (still requires every word to
 // appear somewhere in the same field — an anti/antibody synonym, when the term implies one,
 // is checked separately across all fields, not tied to that same field).
-function buildBroadExpr(term) {
+function buildBroadExpr(term, fields = SEARCH_FIELDS) {
   const mode = antiRequirementMode(term);
   const tokens = splitTokens(stripAntiPrefix(term));
   if (!tokens.length) return null;
   if (mode === 'none' && tokens.length < 2) return null;
-  return withCrossFieldAnti(fieldOr(f => tokenClause(f, tokens)), mode);
+  return withCrossFieldAnti(fieldOr(f => tokenClause(f, tokens), fields), mode, fields);
 }
 
 // Tier 3: also drop the Ig-class suffix — many cleared assays don't state the isotype in
@@ -1144,12 +1164,12 @@ function generateOrthographicVariants(antigen) {
   return Array.from(variants);
 }
 
-function buildWordformExpr(term) {
+function buildWordformExpr(term, fields = SEARCH_FIELDS) {
   const antigen = stripAntiPrefix(stripIsotypeSuffix(term)).trim();
   if (!antigen) return null;
   const variants = generateOrthographicVariants(antigen);
   if (!variants.length) return null;
-  const clauses = variants.map(v => crossFieldTokensClause(splitTokens(v))).filter(Boolean);
+  const clauses = variants.map(v => crossFieldTokensClause(splitTokens(v), fields)).filter(Boolean);
   if (!clauses.length) return null;
   return '(' + clauses.join(' OR ') + ')';
 }
@@ -1192,7 +1212,7 @@ function buildParenAlternatesExpr(term) {
   if (!alternates.length) return null;
   const beforeParen = term.slice(0, term.indexOf('(')).trim();
   const candidates = (beforeParen ? [beforeParen] : []).concat(alternates);
-  const clauses = candidates.filter(Boolean).map(buildExactExpr);
+  const clauses = candidates.filter(Boolean).map(c => buildExactExpr(c));
   // Confirmed live: "Can f 4 (Can f 4 allergen, Canis familiaris)" still missed K190315 even
   // after the isoform-prefix fix above, because this tier only ever checked each candidate as a
   // literal exact phrase — generateOrthographicVariants (isoform prefixes, camelCase splits,
@@ -1313,7 +1333,7 @@ function isBareShortToken(tokens) {
   return tokens.length === 1 && tokens[0].length <= 4;
 }
 
-function buildExpansionExpr(expansion, mode) {
+function buildExpansionExpr(expansion, mode, fields = SEARCH_FIELDS) {
   if (!expansion) return null;
   const phrase = expansion.search || expansion.full;
   const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length)
@@ -1323,10 +1343,10 @@ function buildExpansionExpr(expansion, mode) {
   const antiRequiredGroups = groups.filter(g => !groupImpliesAnti(g));
   const parts = [];
   if (antiRequiredGroups.length) {
-    parts.push(withCrossFieldAnti('(' + antiRequiredGroups.map(crossFieldTokensClause).join(' OR ') + ')', mode));
+    parts.push(withCrossFieldAnti('(' + antiRequiredGroups.map(g => crossFieldTokensClause(g, fields)).join(' OR ') + ')', mode, fields));
   }
   if (antiExemptGroups.length) {
-    parts.push('(' + antiExemptGroups.map(crossFieldTokensClause).join(' OR ') + ')');
+    parts.push('(' + antiExemptGroups.map(g => crossFieldTokensClause(g, fields)).join(' OR ') + ')');
   }
   return '(' + parts.join(' OR ') + ')';
 }
@@ -1403,13 +1423,13 @@ async function fetchOpenFdaWithRetry(url) {
   }
 }
 
-async function runOpenFdaQuery(expr, apiKey) {
+async function runOpenFdaQuery(expr, apiKey, base = OPENFDA_BASE) {
   let skip = 0, total = 0;
   const records = [];
   do {
     const params = new URLSearchParams({ search: expr, limit: String(PAGE_LIMIT), skip: String(skip) });
     if (apiKey) params.set('api_key', apiKey);
-    const res = await fetchOpenFdaWithRetry(`${OPENFDA_BASE}?${params.toString()}`);
+    const res = await fetchOpenFdaWithRetry(`${base}?${params.toString()}`);
     if (res.status === 404) { total = 0; break; }
     if (!res.ok) {
       let msg = `Request failed with HTTP ${res.status}`;
@@ -1445,6 +1465,122 @@ function mergeQueryResults(a, b) {
   const records = Array.from(byK.values());
   const total = Math.max(a.total, b.total, records.length);
   return { total, records };
+}
+
+// --- PMA (Premarket Approval) — mirrors indexer/matching.py's fetch_pma_matches -------------
+// FDA's separate pathway for higher-risk Class III devices, absent from device/510k.json
+// entirely — e.g. companion diagnostics like HER2/EGFR are routinely PMA-only. Reuses the same
+// field-parametrized tier builders as the 510(k) pipeline above, just pointed at PMA's field
+// names and endpoint instead.
+const PMA_SEARCH_FIELDS = ['trade_name', 'generic_name', 'openfda.device_name'];
+// PMA's public dataset has one row PER SUPPLEMENT (tens of thousands of rows across all
+// history: label changes, manufacturing updates, ...) — filtering to a blank supplement_number
+// isolates just the distinct ORIGINAL approvals, the same records a 510(k) comparison should
+// actually count/list. Mirrors indexer/matching.py's identical filter and its own census-backed
+// reasoning (every decision_code the live dataset actually returns for these — APPR/APWD/APRL/
+// APCB/APCV — was confirmed via a full census to represent a genuine approval).
+const PMA_ORIGINAL_ONLY = 'supplement_number:""';
+
+function normalizePmaRecord(r) {
+  return {
+    k_number: r.pma_number,
+    device_name: r.trade_name || r.generic_name || '',
+    applicant: r.applicant,
+    decision_description: 'Approved (PMA)',
+    decision_date: r.decision_date,
+    decision_code: r.decision_code || '',
+    advisory_committee: r.advisory_committee,
+    advisory_committee_description: r.advisory_committee_description,
+    product_code: r.product_code,
+    openfda: r.openfda || {},
+    clearance_type: 'PMA',
+  };
+}
+
+// Each raw record is normalized immediately after its own fetch, before any tier merge —
+// mergeQueryResults keys by k_number, but a raw PMA record only has pma_number until
+// normalizePmaRecord runs; normalizing late (once, at the very end) caused a real crash the
+// first time this was tested live on the Python side. This mirrors the fix, not just the
+// feature.
+async function fetchPmaMatches(searchTerm, expansion, apiKey, mode, trace) {
+  const pmaExpr = inner => `(${inner}) AND ${PMA_ORIGINAL_ONLY}`;
+  async function timedPmaQuery(expr) {
+    const t0 = performance.now();
+    const raw = await runOpenFdaQuery(pmaExpr(expr), apiKey, OPENFDA_PMA_BASE);
+    return {
+      result: { total: raw.total, records: raw.records.map(normalizePmaRecord) },
+      elapsedMs: Math.round(performance.now() - t0),
+    };
+  }
+
+  let best = null;
+
+  const { result: exact, elapsedMs: exactMs } = await timedPmaQuery(buildExactExpr(searchTerm, PMA_SEARCH_FIELDS));
+  if (exact.total > 0) {
+    best = { ...exact, matchMode: 'exact' };
+    pushTrace(trace, 'pma:exact', 'hit', `${exact.total} result(s)`, exactMs);
+  } else {
+    pushTrace(trace, 'pma:exact', 'miss', '0 results', exactMs);
+  }
+
+  if (!best) {
+    const broadExpr = buildBroadExpr(searchTerm, PMA_SEARCH_FIELDS);
+    if (broadExpr) {
+      await sleep(150);
+      const { result: broad, elapsedMs } = await timedPmaQuery(broadExpr);
+      if (broad.total > 0) {
+        best = { ...broad, matchMode: 'broad' };
+        pushTrace(trace, 'pma:broad', 'hit', `${broad.total} result(s)`, elapsedMs);
+      } else {
+        pushTrace(trace, 'pma:broad', 'miss', '0 results', elapsedMs);
+      }
+    } else {
+      pushTrace(trace, 'pma:broad', 'skipped', 'term too short/single-token for a broad query');
+    }
+  } else {
+    pushTrace(trace, 'pma:broad', 'skipped', 'an earlier tier already matched');
+  }
+
+  const wordformExpr = buildWordformExpr(searchTerm, PMA_SEARCH_FIELDS);
+  if (wordformExpr) {
+    await sleep(150);
+    const { result: wordform, elapsedMs } = await timedPmaQuery(wordformExpr);
+    if (wordform.total > 0) {
+      const mergedMode = best ? best.matchMode : 'wordform';
+      best = best ? { ...mergeQueryResults(best, wordform), matchMode: best.matchMode } : { ...wordform, matchMode: 'wordform' };
+      const detail = mergedMode === 'wordform'
+        ? `${wordform.total} result(s) — first tier to match`
+        : `${wordform.total} result(s), merged into existing ${mergedMode} match`;
+      pushTrace(trace, 'pma:wordform', 'hit', detail, elapsedMs);
+    } else {
+      pushTrace(trace, 'pma:wordform', 'miss', '0 results', elapsedMs);
+    }
+  } else {
+    pushTrace(trace, 'pma:wordform', 'skipped', 'no orthographic variants generated for this term');
+  }
+
+  if (!best && expansion) {
+    const expansionExpr = buildExpansionExpr(expansion, mode, PMA_SEARCH_FIELDS);
+    if (expansionExpr) {
+      await sleep(150);
+      const { result: resolved, elapsedMs } = await timedPmaQuery(expansionExpr);
+      if (resolved.total > 0) {
+        best = { ...resolved, matchMode: 'expansion' };
+        pushTrace(trace, 'pma:expansion', 'hit', `${resolved.total} result(s) — first tier to match`, elapsedMs);
+      } else {
+        pushTrace(trace, 'pma:expansion', 'miss', '0 results', elapsedMs);
+      }
+    } else {
+      pushTrace(trace, 'pma:expansion', 'skipped', 'resolved expansion produced no usable query');
+    }
+  } else if (!best) {
+    pushTrace(trace, 'pma:expansion', 'skipped', 'no expansion resolved for this term');
+  } else {
+    pushTrace(trace, 'pma:expansion', 'skipped', 'an earlier tier already matched');
+  }
+
+  if (!best) return { total: 0, records: [], matchMode: null };
+  return { total: best.records.length, records: best.records, matchMode: best.matchMode };
 }
 
 // --- Platform activity terminal (see indexer/trace.py's identical shape on the backend) -----
@@ -1873,6 +2009,22 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage, 
     pushTrace(trace, 'expansion:umls', 'skipped', 'an earlier tier already matched');
     pushTrace(trace, 'expansion:local-llm', 'skipped', 'an earlier tier already matched');
     pushTrace(trace, 'match:expansion', 'skipped', 'an earlier tier already matched');
+  }
+
+  // PMA (Premarket Approval) — checked unconditionally, after the 510(k) tier chain above has
+  // settled, mirroring indexer/lookup.py's compute_and_cache_result: PMA covers device types
+  // 510(k) doesn't (higher-risk Class III, e.g. companion diagnostics like HER2/EGFR), so it's
+  // always worth checking, then merged in as new records only — never overriding an existing
+  // 510(k) matchMode unless 510(k) found nothing at all.
+  const pmaResult = await fetchPmaMatches(searchTerm, resultExpansion, apiKey, antiRequirementMode(searchTerm), trace);
+  if (pmaResult.records.length) {
+    const existingKNumbers = new Set((best ? best.records : []).map(r => r.k_number));
+    const newPmaRecords = pmaResult.records.filter(r => !existingKNumbers.has(r.k_number));
+    if (newPmaRecords.length) {
+      best = best
+        ? { ...best, records: best.records.concat(newPmaRecords), total: best.total + newPmaRecords.length }
+        : { total: newPmaRecords.length, records: newPmaRecords, matchMode: 'pma' };
+    }
   }
 
   // No client-side equivalent — predicate propagation needs the crawled predicates table,
@@ -2483,7 +2635,8 @@ const MATCH_MODE_LABEL = {
   'ai-suggested': 'AI-suggested match',
   'fused-anti': 'Fused-word match',
   wordform: 'Alternate wordform match',
-  'paren-alternates': 'Parenthetical alternate match'
+  'paren-alternates': 'Parenthetical alternate match',
+  pma: 'PMA-only match'
 };
 const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
@@ -2492,7 +2645,8 @@ const MATCH_MODE_TITLE = {
   'ai-suggested': 'No match on the abbreviation itself, and no UMLS entry either — the cross-check backend searched the web for it and had a local AI model extract the full name from those search results (not from the model\'s own memorized guess). More grounded than a cold guess, but still not a database lookup — worth a manual check, e.g. via Check Measurand.',
   'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
   wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.',
-  'paren-alternates': 'Your term has a "Name (Alt1/Alt2)" shape (e.g. "Centromere (CENP-A/B)") — matched on one of the parenthetical alternatives independently (e.g. "CENP-B" alone), since real device names often use only one of these names, never all of them together.'
+  'paren-alternates': 'Your term has a "Name (Alt1/Alt2)" shape (e.g. "Centromere (CENP-A/B)") — matched on one of the parenthetical alternatives independently (e.g. "CENP-B" alone), since real device names often use only one of these names, never all of them together.',
+  pma: 'No 510(k) clearance found — matched on FDA\'s separate PMA (Premarket Approval) pathway instead, used for higher-risk Class III devices (e.g. many companion diagnostics never go through 510(k) at all).'
 };
 
 function matchModeTag(mode) {

@@ -10,7 +10,7 @@ import re
 import time
 import unicodedata
 
-from indexer.openfda import run_query
+from indexer.openfda import DEVICE_PMA, run_query
 
 
 def _trace(trace: list[dict] | None, stage: str, outcome: str, detail: str,
@@ -22,6 +22,12 @@ def _trace(trace: list[dict] | None, stage: str, outcome: str, detail: str,
         trace.append({"stage": stage, "outcome": outcome, "detail": detail, "elapsedMs": elapsed_ms})
 
 SEARCH_FIELDS = ["device_name", "statement_or_summary", "openfda.device_name"]
+
+# PMA (Premarket Approval — the separate, higher-risk-device FDA pathway; see fetch_pma_matches's
+# own docstring for why this exists at all) has no device_name/statement_or_summary fields —
+# confirmed live against a real record: it uses trade_name + generic_name instead, plus the same
+# openfda.device_name classification field 510(k) records also have.
+PMA_SEARCH_FIELDS = ["trade_name", "generic_name", "openfda.device_name"]
 
 GREEK_TO_LATIN = {
     "α": "alpha", "Α": "Alpha", "β": "beta", "Β": "Beta",
@@ -54,12 +60,15 @@ def to_search_term(term: str) -> str:
     return strip_diacritics(_replace_greek_letters(term))
 
 
-def field_or(build) -> str:
-    return "(" + " OR ".join(build(f) for f in SEARCH_FIELDS) + ")"
+# `fields` defaults to the 510(k) field set everywhere below — every existing call site is
+# unaffected by this parametrization; fetch_pma_matches is the only caller that ever passes
+# PMA_SEARCH_FIELDS instead, reusing this same tier logic rather than duplicating it.
+def field_or(build, fields: list[str] = SEARCH_FIELDS) -> str:
+    return "(" + " OR ".join(build(f) for f in fields) + ")"
 
 
-def build_exact_expr(term: str) -> str:
-    return field_or(lambda f: f'{f}:"{term}"')
+def build_exact_expr(term: str, fields: list[str] = SEARCH_FIELDS) -> str:
+    return field_or(lambda f: f'{f}:"{term}"', fields)
 
 
 ANTI_PREFIX_RE = re.compile(r"^anti[-\s]+", re.IGNORECASE)
@@ -100,19 +109,19 @@ def _synonym_clause(field: str, words: list[str]) -> str:
     return "(" + " OR ".join(f'{field}:"{w}"' for w in words) + ")"
 
 
-def cross_field_anti_clause() -> str:
-    return "(" + " OR ".join(_synonym_clause(f, ANTI_SYNONYMS) for f in SEARCH_FIELDS) + ")"
+def cross_field_anti_clause(fields: list[str] = SEARCH_FIELDS) -> str:
+    return "(" + " OR ".join(_synonym_clause(f, ANTI_SYNONYMS) for f in fields) + ")"
 
 
-def cross_field_strict_antibody_clause() -> str:
-    return "(" + " OR ".join(_synonym_clause(f, STRICT_ANTIBODY_WORDS) for f in SEARCH_FIELDS) + ")"
+def cross_field_strict_antibody_clause(fields: list[str] = SEARCH_FIELDS) -> str:
+    return "(" + " OR ".join(_synonym_clause(f, STRICT_ANTIBODY_WORDS) for f in fields) + ")"
 
 
-def with_cross_field_anti(main_expr: str, mode: str) -> str:
+def with_cross_field_anti(main_expr: str, mode: str, fields: list[str] = SEARCH_FIELDS) -> str:
     if mode == "explicit":
-        return f"({main_expr} AND {cross_field_anti_clause()})"
+        return f"({main_expr} AND {cross_field_anti_clause(fields)})"
     if mode == "implied":
-        return f"({main_expr} AND {cross_field_strict_antibody_clause()})"
+        return f"({main_expr} AND {cross_field_strict_antibody_clause(fields)})"
     return main_expr
 
 
@@ -129,19 +138,19 @@ def token_clause(field: str, tokens: list[str]) -> str:
     return "(" + " AND ".join(f'{field}:"{t}"' for t in tokens) + ")"
 
 
-def cross_field_tokens_clause(tokens: list[str]) -> str:
-    return "(" + " AND ".join(field_or(lambda f, tok=tok: f'{f}:"{tok}"') for tok in tokens) + ")"
+def cross_field_tokens_clause(tokens: list[str], fields: list[str] = SEARCH_FIELDS) -> str:
+    return "(" + " AND ".join(field_or(lambda f, tok=tok: f'{f}:"{tok}"', fields) for tok in tokens) + ")"
 
 
-def build_broad_expr(term: str) -> str | None:
+def build_broad_expr(term: str, fields: list[str] = SEARCH_FIELDS) -> str | None:
     mode = anti_requirement_mode(term)
     tokens = split_tokens(strip_anti_prefix(term))
     if not tokens:
         return None
     if mode == "none" and len(tokens) < 2:
         return None
-    main_expr = field_or(lambda f: token_clause(f, tokens))
-    return with_cross_field_anti(main_expr, mode)
+    main_expr = field_or(lambda f: token_clause(f, tokens), fields)
+    return with_cross_field_anti(main_expr, mode, fields)
 
 
 def build_antigen_expr(term: str) -> str | None:
@@ -277,14 +286,14 @@ def generate_orthographic_variants(antigen: str) -> list[str]:
     return variants
 
 
-def build_wordform_expr(term: str) -> str | None:
+def build_wordform_expr(term: str, fields: list[str] = SEARCH_FIELDS) -> str | None:
     antigen = strip_anti_prefix(strip_isotype_suffix(term)).strip()
     if not antigen:
         return None
     variants = generate_orthographic_variants(antigen)
     if not variants:
         return None
-    clauses = [cross_field_tokens_clause(split_tokens(v)) for v in variants]
+    clauses = [cross_field_tokens_clause(split_tokens(v), fields) for v in variants]
     clauses = [c for c in clauses if c]
     if not clauses:
         return None
@@ -491,7 +500,7 @@ def _is_bare_short_token(tokens: list[str]) -> bool:
     return len(tokens) == 1 and len(tokens[0]) <= 4
 
 
-def build_expansion_expr(expansion: dict, mode: str) -> str | None:
+def build_expansion_expr(expansion: dict, mode: str, fields: list[str] = SEARCH_FIELDS) -> str | None:
     phrase = expansion.get("search") or expansion["full"]
     groups = [split_expansion_tokens(g) for g in phrase.split("/")]
     groups = [g for g in groups if g]
@@ -502,10 +511,10 @@ def build_expansion_expr(expansion: dict, mode: str) -> str | None:
     anti_required = [g for g in groups if not group_implies_anti(g)]
     parts = []
     if anti_required:
-        required_expr = "(" + " OR ".join(cross_field_tokens_clause(g) for g in anti_required) + ")"
-        parts.append(with_cross_field_anti(required_expr, mode))
+        required_expr = "(" + " OR ".join(cross_field_tokens_clause(g, fields) for g in anti_required) + ")"
+        parts.append(with_cross_field_anti(required_expr, mode, fields))
     if anti_exempt:
-        parts.append("(" + " OR ".join(cross_field_tokens_clause(g) for g in anti_exempt) + ")")
+        parts.append("(" + " OR ".join(cross_field_tokens_clause(g, fields) for g in anti_exempt) + ")")
     if not parts:
         return None
     return "(" + " OR ".join(parts) + ")"
@@ -654,3 +663,148 @@ async def fetch_biomarker_matches(client, endpoint: str, term: str, expansion: d
         return {**best, "expansion": expansion}
 
     return {**exact, "match_mode": "exact", "expansion": expansion}
+
+
+# Reported live: this tool structurally could never find a biomarker whose only FDA clearance
+# is via PMA (Premarket Approval — the separate pathway for higher-risk Class III devices),
+# since it only ever queried device/510k.json. Confirmed this genuinely matters, not just in
+# theory: companion diagnostics (a drug-paired test — e.g. an EGFR/HER2 mutation test that
+# determines who qualifies for a specific cancer therapy) are routinely PMA-cleared, never
+# 510(k), and real biomarker searches hit this — HER2 (6 real PMA devices, all invisible before
+# this), EGFR (5), PSA (18, spanning 1986 through a device approved in 2026).
+PMA_ORIGINAL_ONLY = 'supplement_number:""'
+
+
+def normalize_pma_record(r: dict) -> dict:
+    """Reshapes a raw PMA record into the same shape 510(k) records already have, so every
+    downstream consumer (db.upsert_device, the JS renderer, Excel export, detail-link
+    generation) needs zero PMA-specific branching beyond recognizing the "P" k_number prefix the
+    same way it already recognizes "DEN" for De Novo grants.
+    """
+    decision_code = r.get("decision_code") or ""
+    # Confirmed live against a full census of all 1,476 original (supplement_number == "") PMA
+    # records currently in the dataset: every single one uses one of exactly five decision_code
+    # values (APPR, APWD, APRL, APCB, APCV — all five checked, all five are real granted
+    # approvals per their own ao_statement text), zero denial-shaped codes among them. Unlike
+    # 510(k) (where "Not Substantially Equivalent" is a real, recorded outcome), a PMA
+    # application that's denied never gets a public PMA record at all — so a record showing up
+    # here at all already IS the approval, without needing to enumerate every one of PMA's own
+    # internal approval-type sub-codes (an allowlist here would only ever risk silently missing
+    # a legitimate one, the way this one first shipped without "APCB"/"APCV"). "Approved (PMA)",
+    # not "Substantially Equivalent" (510(k)-specific, and actively wrong terminology for a
+    # pathway that isn't an equivalence review at all) — classify()/its JS mirror need to
+    # recognize this exact phrase to count these as "Cleared (Approved)".
+    decision_description = "Approved (PMA)"
+    return {
+        "k_number": r.get("pma_number"),
+        "device_name": r.get("trade_name") or r.get("generic_name") or "",
+        "applicant": r.get("applicant"),
+        "decision_description": decision_description,
+        "decision_date": r.get("decision_date"),
+        "decision_code": decision_code,
+        "advisory_committee": r.get("advisory_committee"),
+        "advisory_committee_description": r.get("advisory_committee_description"),
+        "product_code": r.get("product_code"),
+        "openfda": r.get("openfda") or {},
+        "clearance_type": "PMA",
+    }
+
+
+async def fetch_pma_matches(client, term: str, expansion: dict | None, api_key: str | None = None,
+                             trace: list[dict] | None = None) -> dict:
+    """Mirrors fetch_biomarker_matches's tier structure (exact -> broad -> wordform ->
+    expansion) but against PMA_SEARCH_FIELDS/device/pma.json instead, and always ANDs in
+    `supplement_number:""` — PMA's dataset has one row per *supplement* (every later
+    modification to an already-approved device gets its own row: confirmed live, 56,995 total
+    PMA rows vs. 1,476 once narrowed to original approvals only), so without this filter the
+    same device would appear once per modification it's ever had, wildly inflating counts.
+
+    Deliberately narrower than the 510(k) pipeline — no antigen-only/fused-anti/paren-alternates
+    tiers — since PMA is a much smaller, more curated dataset (thousands, not hundreds of
+    thousands, of devices) where the core tiers already found every real match in testing; can
+    be extended if a real gap turns up, the same way each 510(k) tier was added one at a time.
+
+    Returns {total, records} only (no match_mode/expansion) — the caller (indexer/lookup.py)
+    merges these records into the 510(k) result rather than replacing it, so there's no need for
+    this to carry its own top-level match_mode the way fetch_biomarker_matches's return value
+    does.
+    """
+    search_term = to_search_term(term)
+    best = None
+
+    def pma_expr(inner: str) -> str:
+        return f"({inner}) AND {PMA_ORIGINAL_ONLY}"
+
+    # Records are normalized (pma_number -> k_number, among other fields) immediately after each
+    # fetch, not just once at the very end — confirmed live this is load-bearing, not cosmetic:
+    # merge_query_results dedupes by record["k_number"], and a raw (un-normalized) PMA record
+    # only ever has "pma_number", so merging two raw tiers' results together raised a bare
+    # KeyError before every tier's output was normalized at the same point 510(k) records already
+    # effectively are (openFDA's own raw records already use "k_number" natively).
+    async def timed_pma_query(expr: str) -> tuple[dict, int]:
+        raw, elapsed_ms = await _timed_query(client, DEVICE_PMA, pma_expr(expr), api_key)
+        return {**raw, "records": [normalize_pma_record(r) for r in raw["records"]]}, elapsed_ms
+
+    exact, elapsed = await timed_pma_query(build_exact_expr(search_term, PMA_SEARCH_FIELDS))
+    if exact["total"] > 0:
+        best = {**exact, "match_mode": "exact"}
+        _trace(trace, "pma:exact", "hit", f"{exact['total']} result(s)", elapsed)
+    else:
+        _trace(trace, "pma:exact", "miss", "0 results", elapsed)
+
+    if not best:
+        broad_expr = build_broad_expr(search_term, PMA_SEARCH_FIELDS)
+        if broad_expr:
+            broad, elapsed = await timed_pma_query(broad_expr)
+            if broad["total"] > 0:
+                best = {**broad, "match_mode": "broad"}
+                _trace(trace, "pma:broad", "hit", f"{broad['total']} result(s)", elapsed)
+            else:
+                _trace(trace, "pma:broad", "miss", "0 results", elapsed)
+        else:
+            _trace(trace, "pma:broad", "skipped", "term too short/single-token for a broad query")
+    else:
+        _trace(trace, "pma:broad", "skipped", "an earlier tier already matched")
+
+    wordform_expr = build_wordform_expr(search_term, PMA_SEARCH_FIELDS)
+    if wordform_expr:
+        wordform, elapsed = await timed_pma_query(wordform_expr)
+        if wordform["total"] > 0:
+            if best:
+                merged = merge_query_results(best, wordform)
+                best = {**merged, "match_mode": best["match_mode"]}
+                _trace(trace, "pma:wordform", "hit",
+                       f"{wordform['total']} result(s), merged into existing {best['match_mode']} match", elapsed)
+            else:
+                best = {**wordform, "match_mode": "wordform"}
+                _trace(trace, "pma:wordform", "hit", f"{wordform['total']} result(s) — first tier to match", elapsed)
+        else:
+            _trace(trace, "pma:wordform", "miss", "0 results", elapsed)
+    else:
+        _trace(trace, "pma:wordform", "skipped", "no orthographic variants generated for this term")
+
+    if expansion:
+        expansion_expr = build_expansion_expr(expansion, anti_requirement_mode(search_term), PMA_SEARCH_FIELDS)
+        if expansion_expr:
+            exp, elapsed = await timed_pma_query(expansion_expr)
+            if exp["total"] > 0:
+                if best:
+                    merged = merge_query_results(best, exp)
+                    best = {**merged, "match_mode": best["match_mode"]}
+                    _trace(trace, "pma:expansion", "hit",
+                           f"{exp['total']} result(s), merged into existing {best['match_mode']} match", elapsed)
+                else:
+                    best = {**exp, "match_mode": "expansion"}
+                    _trace(trace, "pma:expansion", "hit", f"{exp['total']} result(s) — first tier to match", elapsed)
+            else:
+                _trace(trace, "pma:expansion", "miss", "0 results", elapsed)
+        else:
+            _trace(trace, "pma:expansion", "skipped", "resolved expansion produced no usable query")
+    else:
+        _trace(trace, "pma:expansion", "skipped", "no expansion resolved for this term")
+
+    if not best:
+        return {"total": 0, "records": [], "match_mode": None}
+
+    # Already normalized by timed_pma_query at fetch time — no second pass needed here.
+    return {"total": len(best["records"]), "records": best["records"], "match_mode": best["match_mode"]}

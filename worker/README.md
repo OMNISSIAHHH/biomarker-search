@@ -234,7 +234,10 @@ Notes for anyone modifying this:
 
 `GET <worker-url>?k=<K number, e.g. K051061>` → the raw bytes of a 510(k) review document PDF
 (`Content-Type: application/pdf`), or a JSON error if neither exists (HTTP 404) or something
-else went wrong.
+else went wrong. Accepts 510(k) (`K123456`) and De Novo (`DEN123456`) numbers only — **PMA
+numbers (`P123456`) aren't supported yet** (PMA's review document lives at a different URL
+pattern this Worker doesn't know), which is why the app hides the Check Measurand button on PMA
+rows rather than sending a request that would just 400.
 
 FDA's own detail page (`pmn.cfm?ID=...`) labels this document inconsistently across devices —
 "Summary", "FDA Review", "Review Summary", "Decision Summary" have all been seen — but that

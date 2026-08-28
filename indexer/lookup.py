@@ -19,7 +19,10 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from indexer import ai_expansion, db, panel_crawl
-from indexer.matching import expansion_key, fetch_biomarker_matches, panel_candidate_search_token_groups, to_search_term
+from indexer.matching import (
+    expansion_key, fetch_biomarker_matches, fetch_pma_matches,
+    panel_candidate_search_token_groups, to_search_term,
+)
 from indexer.openfda import DEVICE_510K
 from indexer.predicate_graph import propagate_predicate_matches
 from indexer.trace import TraceSink
@@ -199,8 +202,31 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
         match_mode = EXPANSION_SOURCE_MATCH_MODE.get(source, "umls")
     else:
         match_mode = result["match_mode"]
+
+    # Reported live: this tool structurally could never find a biomarker whose only FDA
+    # clearance is via PMA (Premarket Approval, the separate higher-risk-device pathway) —
+    # confirmed real gap, not theoretical: companion diagnostics (HER2, EGFR mutation tests,
+    # etc.) are routinely PMA-only. Queried unconditionally (not gated behind "510(k) found
+    # nothing" the way the Tavily escalation above is) since it's the same free, unmetered
+    # openFDA API 510(k) itself already uses — there's no cost reason to hold it back, and a
+    # biomarker can legitimately have real clearances on both pathways at once. had_510k_match
+    # is captured before merging PMA in specifically so a 510(k)-total-zero result doesn't
+    # inherit fetch_biomarker_matches' own literal fallback match_mode ("exact", returned even
+    # when the exact tier itself found nothing) — that would mislabel a PMA-only result as an
+    # exact 510(k) phrase match it never was.
+    had_510k_match = result["total"] > 0
+    pma_result = await fetch_pma_matches(client, term, expansion, api_key, trace=trace)
+    if pma_result["records"]:
+        existing_k_numbers = {r["k_number"] for r in result["records"]}
+        new_pma_records = [r for r in pma_result["records"] if r["k_number"] not in existing_k_numbers]
+        if new_pma_records:
+            result = {**result, "records": result["records"] + new_pma_records,
+                      "total": result["total"] + len(new_pma_records)}
+            if not had_510k_match:
+                match_mode = "pma"
+
     for r in result["records"]:
-        db.upsert_device(conn, r, source="510k")
+        db.upsert_device(conn, r, source="pma" if r.get("clearance_type") == "PMA" else "510k")
         db.insert_match(conn, r["k_number"], key, match_mode, "confirmed")
 
     # local join over already-crawled predicates/devices, no network call — safe to run
