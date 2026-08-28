@@ -640,12 +640,20 @@ function sortRecordsByDateDesc(records) {
   return records.slice().sort((a, b) => (b.decision_date || '').localeCompare(a.decision_date || ''));
 }
 
+// The FDA medical-specialty group that reviewed a device (Immunology, Clinical Chemistry, ...)
+// — advisory_committee_description is the human-readable name; advisory_committee is just its
+// 2-letter code (e.g. "IM"), used as a fallback for the rare record missing the description.
+function reviewPanelLabel(r) {
+  return r.advisory_committee_description || r.advisory_committee || '—';
+}
+
 function buildRecordRows(records, term) {
   const sorted = sortRecordsByDateDesc(records);
   return sorted.map(r => `
     <tr>
       <td>${escapeHtml(r.device_name || '—')}</td>
       <td>${escapeHtml(r.applicant || '—')}</td>
+      <td>${escapeHtml(reviewPanelLabel(r))}</td>
       <td>${declBadge(r.decision_description)}</td>
       <td>${escapeHtml(r.decision_date || '—')}</td>
       <td><a href="${escapeHtml(detailUrlFor(r.k_number))}" target="_blank" rel="noopener">${escapeHtml(r.k_number || '')} ↗</a></td>
@@ -666,6 +674,7 @@ function buildInferredRows(inferredMatches, term) {
     <tr>
       <td>${escapeHtml(r.device_name || '—')}<div class="dnote" style="margin-top:2px">cites predicate ${escapeHtml(viaKNumber || '—')}</div></td>
       <td>${escapeHtml(r.applicant || '—')}</td>
+      <td>${escapeHtml(reviewPanelLabel(r))}</td>
       <td>${declBadge(r.decision_description)}</td>
       <td>${escapeHtml(r.decision_date || '—')}</td>
       <td><a href="${escapeHtml(detailUrlFor(r.k_number))}" target="_blank" rel="noopener">${escapeHtml(r.k_number || '')} ↗</a></td>
@@ -3062,7 +3071,7 @@ function renderResults() {
         ? `<div class="dnote">${escapeHtml(MATCH_MODE_TITLE[s.matchMode] || '')}</div>` : '';
       wrap.innerHTML = `
         <table class="dtable">
-          <thead><tr><th>Device Name</th><th>Submitted By</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
+          <thead><tr><th>Device Name</th><th>Submitted By</th><th>Review Panel</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
           <tbody>${buildRecordRows(s.records, s.term)}</tbody>
         </table>${shownNote}${modeNote}`;
     } else {
@@ -3074,7 +3083,7 @@ function renderResults() {
       wrap.innerHTML += `
         <div class="dnote" style="margin-top:10px"><strong>${s.panelCandidates.length} possible panel device(s)</strong> — these mention a multi-antigen panel/profile in a plausibly related category, but don't confirm "${escapeHtml(s.term)}" specifically anywhere in FDA's structured data (common for bundled multiplex kits, which only list individual antigens in the actual summary document). Not counted above — verify manually, e.g. via Check Measurand.</div>
         <table class="dtable">
-          <thead><tr><th>Device Name</th><th>Submitted By</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
+          <thead><tr><th>Device Name</th><th>Submitted By</th><th>Review Panel</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
           <tbody>${buildRecordRows(s.panelCandidates, s.term)}</tbody>
         </table>`;
     }
@@ -3082,12 +3091,12 @@ function renderResults() {
       wrap.innerHTML += `
         <div class="dnote" style="margin-top:10px"><strong>${s.inferredMatches.length} device(s) inferred via predicate chain</strong> — these cite an already-confirmed "${escapeHtml(s.term)}" device as their FDA predicate (from the local index's crawl of decision summary PDFs), but don't name "${escapeHtml(s.term)}" anywhere in FDA's structured data themselves. A cited predicate doesn't always mean an identical analyte panel, so treat these the same as possible panel matches — not counted above, verify manually.</div>
         <table class="dtable">
-          <thead><tr><th>Device Name</th><th>Submitted By</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
+          <thead><tr><th>Device Name</th><th>Submitted By</th><th>Review Panel</th><th>Decision</th><th>Approve Date</th><th>Detail</th><th>Measurand</th></tr></thead>
           <tbody>${buildInferredRows(s.inferredMatches, s.term)}</tbody>
         </table>`;
     }
     const td = document.createElement('td');
-    td.colSpan = 6;
+    td.colSpan = 7;
     td.appendChild(wrap);
     detailRow.appendChild(td);
     tbody.appendChild(detailRow);
@@ -3905,6 +3914,7 @@ function exportToExcel() {
         Biomarker: s.term,
         'Device Name': r.device_name || '',
         'Submitted By': r.applicant || '',
+        'Review Panel': reviewPanelLabel(r),
         Decision: r.decision_description || '',
         'Approve Date': r.decision_date || '',
         'K Number': r.k_number || '',
@@ -3918,6 +3928,7 @@ function exportToExcel() {
         'Via K Number': '',
         'Device Name': r.device_name || '',
         'Submitted By': r.applicant || '',
+        'Review Panel': reviewPanelLabel(r),
         Decision: r.decision_description || '',
         'Approve Date': r.decision_date || '',
         'K Number': r.k_number || '',
@@ -3931,6 +3942,7 @@ function exportToExcel() {
         'Via K Number': viaKNumber || '',
         'Device Name': r.device_name || '',
         'Submitted By': r.applicant || '',
+        'Review Panel': reviewPanelLabel(r),
         Decision: r.decision_description || '',
         'Approve Date': r.decision_date || '',
         'K Number': r.k_number || '',
@@ -3948,9 +3960,9 @@ function exportToExcel() {
   if (applicantRows.length) {
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(applicantRows), [30, 16, 16, 60]), 'Biomarker Applicants');
   }
-  XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(detailRows), [22, 40, 30, 20, 14, 12, 50]), 'Details');
+  XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(detailRows), [22, 40, 30, 22, 20, 14, 12, 50]), 'Details');
   if (panelRows.length) {
-    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(panelRows), [22, 16, 14, 40, 30, 20, 14, 12, 50]), 'Unconfirmed Matches');
+    XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(panelRows), [22, 16, 14, 40, 30, 22, 20, 14, 12, 50]), 'Unconfirmed Matches');
   }
   if (crossState.length) {
     XLSX.utils.book_append_sheet(wb, formatSheet(XLSX.utils.json_to_sheet(ldtSummaryRows(crossState)), [8, 26, 14, 40, 24, 50]), 'LDT Cross-Check');
