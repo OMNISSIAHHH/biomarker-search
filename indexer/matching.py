@@ -442,7 +442,13 @@ EXPANSION_STOPWORDS = {
 # such decomposition, so it's a no-op on them) and into a quoted query, triggering the exact
 # same "Search not supported" openFDA rejection strip_diacritics exists to prevent.
 def split_expansion_tokens(phrase: str) -> list[str]:
-    parts = re.split(r"[\s/,()]+", strip_diacritics(_replace_greek_letters(phrase)))
+    # strip_anti_prefix per-token, not just on the whole phrase up front: the main split only
+    # breaks on whitespace/slash/comma/parens, never a bare hyphen, so a hyphenated "Anti-X" (the
+    # form AI-resolved text commonly uses, e.g. "Anti-mitochondrial") stays fused as one token and
+    # never matches "anti" against EXPANSION_STOPWORDS below — confirmed live this let a stray
+    # "Anti-" prefix survive into a match requirement that real device/LDT text (typically spelled
+    # "Mitochondrial", not "Anti-mitochondrial") could never satisfy, silently losing real matches.
+    parts = [strip_anti_prefix(p) for p in re.split(r"[\s/,()]+", strip_diacritics(_replace_greek_letters(phrase)))]
     return [
         p for p in parts
         if p and p.lower() not in EXPANSION_STOPWORDS and not BARE_ISOTYPE_RE.match(p)

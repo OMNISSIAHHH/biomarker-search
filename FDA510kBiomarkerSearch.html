@@ -189,7 +189,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="ldtProxyUrl" placeholder="LDT proxy Worker URL (NY State)">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo"><strong>Quest</strong> is the one other LDT source that needs its own proxy Worker — its search API blocks cross-origin requests outright, the same reason NY needs one above. Note: Quest's test-directory content is governed by their own Terms of Use, which restricts reuse beyond noncommercial/educational purposes without written permission — this tool queries it the same way a browser visiting their site does, but that's a real consideration if you're using results commercially, not just a technical detail.</div>
+        <div class="sinfo"><strong>Quest</strong> is the one other LDT source that needs its own proxy Worker — its search API blocks cross-origin requests outright, the same reason NY needs one above. Pre-filled with a donated, shared instance (same caveats as NY's above — shared daily limit, no uptime guarantee; deploy your own via <code>worker/README.md</code> if you're using this regularly). Note: Quest's test-directory content is governed by their own Terms of Use, which restricts reuse beyond noncommercial/educational purposes without written permission — this tool queries it the same way a browser visiting their site does, but that's a real consideration if you're using results commercially, not just a technical detail.</div>
         <input class="skey" id="questProxyUrl" placeholder="Quest proxy Worker URL">
       </div>
       <div class="srow" style="margin-top:8px">
@@ -201,7 +201,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <input class="skey" id="ldtCrosscheckThreshold" type="number" min="0" step="1" placeholder="2" style="width:70px;text-align:center">
       </div>
       <div class="srow" style="margin-top:8px">
-        <div class="sinfo">Optional: when an exact/broad/antigen-only search finds nothing, an <a href="https://uts.nlm.nih.gov/uts/license" target="_blank" rel="noopener">NLM UMLS Terminology Services</a> API key lets it look up the spelled-out medical name automatically instead of returning nothing. Free, but NLM manually reviews each request — allow up to 3 business days after signing up before the key works. No proxy Worker needed for this one.</div>
+        <div class="sinfo">When an exact/broad/antigen-only search finds nothing, an <a href="https://uts.nlm.nih.gov/uts/license" target="_blank" rel="noopener">NLM UMLS Terminology Services</a> API key lets it look up the spelled-out medical name automatically instead of returning nothing. Pre-filled with a donated, individual key (works immediately) — NLM keys are personal/free but manually reviewed (allow up to 3 business days after signing up), so get your own instead if you're using this regularly, and definitely before relying on this for anything beyond casual/personal use. No proxy Worker needed for this one.</div>
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
       <div class="srow" style="margin-top:8px">
@@ -242,7 +242,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <button class="modetab active" id="modeFda" type="button">FDA 510(k)</button>
         <button class="modetab" id="modeLdt" type="button">LDT</button>
       </div>
-      <div class="datefilter" id="ldtSourcesRow" style="display:none" title="NY State is the only source that's a real regulatory approval record — ARUP/LabCorp/Quest just mean the term appears in that lab's own commercial test catalog.">
+      <div class="datefilter" id="ldtSourcesRow" title="NY State is the only source that's a real regulatory approval record — ARUP/LabCorp/Quest just mean the term appears in that lab's own commercial test catalog. Only used when the LDT tab is active, but left visible so you can set your preferred sources ahead of time.">
         <span>Data sources:</span>
         <label><input type="checkbox" class="ldtSourceCheck" data-source="ny"> NY State</label>
         <label><input type="checkbox" class="ldtSourceCheck" data-source="arup"> ARUP</label>
@@ -397,8 +397,12 @@ const savedKey = localStorage.getItem('openfda_api_key');
 if (savedKey) $('apiKey').value = savedKey;
 $('apiKey').addEventListener('change', (e) => localStorage.setItem('openfda_api_key', e.target.value.trim()));
 
+// Donated shared key, same reasoning/caveats as the shared proxy Worker instances below (a
+// free, individual NLM-issued key made public here at the account owner's own request) — works
+// immediately with zero signup, overwritten the moment a user pastes in their own.
+const DEFAULT_UMLS_API_KEY = '66aada8c-9e04-42d6-bcbe-9f54af66f47b';
 const savedUmlsKey = localStorage.getItem('umls_api_key');
-if (savedUmlsKey) $('umlsApiKey').value = savedUmlsKey;
+$('umlsApiKey').value = savedUmlsKey || DEFAULT_UMLS_API_KEY;
 $('umlsApiKey').addEventListener('change', (e) => localStorage.setItem('umls_api_key', e.target.value.trim()));
 
 function getUmlsApiKey() {
@@ -423,6 +427,7 @@ function normalizeProxyUrl(raw) {
 // these defaults only ever apply when nothing's been saved yet.
 const DEFAULT_LDT_PROXY_URL = 'https://ldt-proxy.francis121026.workers.dev';
 const DEFAULT_FDA_PDF_PROXY_URL = 'https://fda-pdf-proxyjs.francis121026.workers.dev';
+const DEFAULT_QUEST_PROXY_URL = 'https://quest-proxy.francis121026.workers.dev';
 
 const savedLdtUrl = localStorage.getItem('ldt_proxy_url');
 $('ldtProxyUrl').value = normalizeProxyUrl(savedLdtUrl || DEFAULT_LDT_PROXY_URL);
@@ -432,12 +437,8 @@ $('ldtProxyUrl').addEventListener('change', (e) => {
   localStorage.setItem('ldt_proxy_url', url);
 });
 
-// No donated shared instance for this one (unlike LDT/FDA-PDF above) — Quest support is brand
-// new, so there's nothing pre-existing to default to yet. Starts blank, same posture as
-// localIndexUrl: NY/ARUP/LabCorp all still work with this left empty, Quest search just skips
-// itself (see fetchQuestLdt's configMissing case) until a Worker URL is set here.
 const savedQuestUrl = localStorage.getItem('quest_proxy_url');
-if (savedQuestUrl) $('questProxyUrl').value = normalizeProxyUrl(savedQuestUrl);
+$('questProxyUrl').value = normalizeProxyUrl(savedQuestUrl || DEFAULT_QUEST_PROXY_URL);
 $('questProxyUrl').addEventListener('change', (e) => {
   const url = normalizeProxyUrl(e.target.value);
   e.target.value = url;
@@ -549,7 +550,8 @@ function setSearchMode(mode) {
   $('modeLdt').classList.toggle('active', mode === 'ldt');
   $('hintFda').style.display = mode === 'fda' ? 'block' : 'none';
   $('hintLdt').style.display = mode === 'ldt' ? 'block' : 'none';
-  $('ldtSourcesRow').style.display = mode === 'ldt' ? 'flex' : 'none';
+  // ldtSourcesRow stays visible in both modes now (user request: set source preferences ahead
+  // of switching to the LDT tab, rather than the row appearing/disappearing on mode switch).
   // Switching modes invalidates the currently-displayed results/chart (different shape) —
   // hide them rather than show stale data under the wrong headers.
   $('chartCard').style.display = 'none';
@@ -1247,8 +1249,20 @@ const EXPANSION_STOPWORDS = new Set([
 // stripDiacritics (which only strips combining marks off Latin letters, a no-op on Greek ones)
 // and into a quoted query, triggering the same "Search not supported" openFDA rejection
 // stripDiacritics exists to prevent.
+// stripAntiPrefix per-token, not just on the whole phrase up front: the main split only breaks
+// on whitespace/slash/comma/parens, never a bare hyphen, so a hyphenated "Anti-X" (the form
+// AI-resolved text commonly uses, e.g. "Anti-mitochondrial") stays fused as one token and never
+// matches "anti" against EXPANSION_STOPWORDS below — confirmed live this let a stray "Anti-"
+// prefix survive into a match requirement that real LDT/device text (typically spelled
+// "Mitochondrial", not "Anti-mitochondrial") could never satisfy, silently losing real matches
+// (found while re-enabling LDT expansion search: an "AMA-M2" resolution's own trimmed 2-word
+// candidate stayed "Anti-mitochondrial M2" instead of "mitochondrial M2", missing a real ARUP
+// match that the untrimmed word alone would have found). Mirrors indexer/matching.py's identical
+// fix.
 function splitExpansionTokens(phrase) {
   return stripDiacritics(replaceGreekLetters(phrase)).split(/[\s/,()]+/).map(s => s.trim()).filter(Boolean)
+    .map(tok => stripAntiPrefix(tok))
+    .filter(Boolean)
     .filter(tok => !EXPANSION_STOPWORDS.has(tok.toLowerCase()) && !BARE_ISOTYPE_RE.test(tok));
 }
 
@@ -1931,6 +1945,116 @@ function ldtQueryTerm(term) {
   return cleaned || null;
 }
 
+// Resolves a term's full name/synonyms via the local index server's GET /expansion/{term} —
+// the same UMLS/Tavily resolution the FDA side already does, server-side only (LDT search has
+// no server component of its own to hide credentials behind, so this is skipped entirely with
+// no local index server configured — LDT search still works fine without it, just without this
+// one extra fallback). Deliberately never sends refresh=true: this reuses whatever expansion an
+// earlier FDA search of the same term already cached server-side rather than spending a second
+// Tavily call for the identical answer — confirmed this is exactly the caching behavior
+// GET /expansion/{term} already has by default (db.get_expansion_cache_entry checked before any
+// network work), so no extra plumbing was needed to get this for free. Returns null (a no-op)
+// on any failure — unreachable server, no credentials configured, genuinely nothing resolved.
+async function fetchExpansionForLdt(term) {
+  const baseUrl = getLocalIndexUrl();
+  if (!baseUrl) return null;
+  const umlsApiKey = getUmlsApiKey();
+  const params = new URLSearchParams();
+  if (umlsApiKey) params.set('umls_api_key', umlsApiKey);
+  const qs = params.toString();
+  try {
+    const res = await fetch(`${baseUrl}/expansion/${encodeURIComponent(term)}${qs ? `?${qs}` : ''}`);
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body.expansion || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// The expansion's own {full, search} phrase(s), reduced to LDT-safe candidate phrases — reuses
+// splitExpansionTokens/isBareShortToken verbatim (the exact same stopword/bare-isotype/
+// bare-short-token guards the FDA-side expansion tier already relies on: EXPANSION_STOPWORDS
+// alone drops "Serum"/"Profile"/"Measurement"-style generic words an AI/UMLS resolution
+// routinely includes, confirmed live to have caused real damage the one other time this project
+// fed AI-resolved text into LDT search unguarded). What makes re-enabling this safe now, unlike
+// when it was disabled: textMatchesQueryWords requires EVERY word of a candidate phrase present,
+// not just one, so even an imperfectly-filtered phrase can only narrow a search, never
+// single-handedly explode it into matching thousands of unrelated records the way a lone bare
+// "G"/"Serum"/"AMA" token used to.
+function ldtExpansionCandidateGroups(expansion) {
+  if (!expansion) return [];
+  const phrase = expansion.search || expansion.full;
+  if (!phrase) return [];
+  const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length && !isBareShortToken(g));
+  const out = [];
+  for (const g of groups) {
+    out.push(g.join(' '));
+    // Confirmed live: the full AI-resolved phrase ("Anti-mitochondrial M2 positivity") matched
+    // nothing on LabCorp even after stripping "anti"/"antibody" — its own extra descriptive
+    // words ("positivity", "subtype") don't literally appear in LabCorp's actual (terse) test
+    // name ("Mitochondrial (M2) Antibody"), so requiring ALL of them together over-constrained
+    // it — the first two significant words alone ("mitochondrial M2") did find both real
+    // matches. LDT catalog test names tend to be short in a way FDA's own device_name/
+    // statement_or_summary text isn't, so a multi-word AI phrase is more often over-specific
+    // here than it is on the FDA side. Only added when there's a real 3rd+ word to drop —
+    // for a 2-word (or shorter) group this would just duplicate the phrase already pushed above.
+    if (g.length > 2) out.push(g.slice(0, 2).join(' '));
+  }
+  return out;
+}
+
+// Confirmed live: searching LDT for "AMA-M2" found real matches on ARUP/Quest but missed a real
+// LabCorp match — LabCorp's own search returns 0 hits for the literal hyphenated "AMA-M2" but 5
+// real hits for the space-separated "AMA M2" (Algolia tokenizes a hyphenated word as one glued
+// token, same class of gap generateOrthographicVariants already exists to close on the FDA
+// side), and even that phrasing still can't succeed against textMatchesQueryWords' AND
+// requirement alone — "AMA" the initialism never appears literally in LabCorp's own text, only
+// its spelled-out form ("Mitochondrial (M2) Antibody") does, which is exactly what expansion
+// resolution is for. This builds every phrase worth trying for a term: the plain noise-stripped
+// term (today's only phrase), orthographic variants of the antigen core, and — only when an
+// expansion actually resolved — its full name/synonyms. Order matters to callers: the first
+// entry is the cheap/precise phrase tried alone before anything else escalates (see
+// tryLdtCandidates below).
+function ldtQueryCandidates(term, expansion) {
+  const phrases = [];
+  const seen = new Set();
+  const add = (p) => {
+    const cleaned = stripLdtNoiseTokens(p || '').trim();
+    if (cleaned && !seen.has(cleaned.toLowerCase())) {
+      seen.add(cleaned.toLowerCase());
+      phrases.push(cleaned);
+    }
+  };
+  const base = ldtQueryTerm(term);
+  if (base) add(base);
+  const antigen = stripAntiPrefix(stripIsotypeSuffix(toSearchTerm(term))).trim();
+  if (antigen) generateOrthographicVariants(antigen).forEach(add);
+  ldtExpansionCandidateGroups(expansion).forEach(add);
+  return phrases;
+}
+
+// Shared escalation shape for every source's fetch function: try the first (cheapest/most
+// precise) candidate phrase alone — if it finds anything, that's the answer, zero behavior
+// change from before this feature existed for every term that already worked. Only escalates to
+// the remaining (broader/AI-resolved) phrases when the first one comes back empty, merging
+// whatever any of them find rather than stopping at the first hit, since at that point every
+// phrase is already a deliberate "cast wider" attempt. `fetchOne(phrase)` does the actual
+// network call + per-phrase filtering for one source; `dedupeKey(record)` identifies the same
+// underlying record across different phrasings so merging doesn't double-count it.
+async function tryLdtCandidates(candidates, fetchOne, dedupeKey) {
+  if (!candidates.length) return [];
+  const first = await fetchOne(candidates[0]);
+  if (first.length || candidates.length === 1) return first;
+  const merged = new Map();
+  for (const r of first) merged.set(dedupeKey(r), r);
+  for (const phrase of candidates.slice(1)) {
+    const more = await fetchOne(phrase);
+    for (const r of more) merged.set(dedupeKey(r), r);
+  }
+  return Array.from(merged.values());
+}
+
 // NY's CLEP database only covers labs holding a NY LDT permit — a small fraction of all LDTs
 // offered nationally. ARUP, LabCorp, and Quest are now queried directly too (see LDT_SOURCES
 // below) — but each is a commercial test catalog, not a state regulator, so between them there
@@ -2067,16 +2191,8 @@ function getSelectedLdtSources() {
   });
 })();
 
-async function fetchNyLdt(term, proxyUrl) {
-  const queryTerm = ldtQueryTerm(term);
-  if (!queryTerm) {
-    // Nothing safe left to search (see ldtQueryTerm's own comment) — skip the network call
-    // rather than sending an empty/blocklisted query, and say why via `skipped` so the caller
-    // can show an honest reason instead of a bare "0 results".
-    return { source: 'ny', total: 0, records: [], skipped: true };
-  }
-  if (!proxyUrl) return { source: 'ny', total: 0, records: [], skipped: true, configMissing: true };
-  const params = new URLSearchParams({ q: queryTerm, status: 'All' });
+async function fetchNyLdtForPhrase(phrase, proxyUrl) {
+  const params = new URLSearchParams({ q: phrase, status: 'All' });
   let res;
   try {
     res = await fetch(`${proxyUrl}?${params.toString()}`);
@@ -2092,7 +2208,23 @@ async function fetchNyLdt(term, proxyUrl) {
   // NY's own reported `total`/`count` reflect its fuzzy, unfiltered match — not trustworthy for
   // display once real substring false-positives are filtered out of `records` here, so this
   // tool's own filtered count replaces it rather than showing two disagreeing numbers.
-  const records = (body.records || []).filter(r => ldtRecordMatchesQuery(r, queryTerm));
+  return (body.records || []).filter(r => textMatchesQueryWords(r.analyte || '', phrase));
+}
+
+async function fetchNyLdt(term, proxyUrl, expansion) {
+  if (!proxyUrl) return { source: 'ny', total: 0, records: [], skipped: true, configMissing: true };
+  const candidates = ldtQueryCandidates(term, expansion);
+  if (!candidates.length) {
+    // Nothing safe left to search (see ldtQueryTerm's own comment) — skip the network call
+    // rather than sending an empty/blocklisted query, and say why via `skipped` so the caller
+    // can show an honest reason instead of a bare "0 results".
+    return { source: 'ny', total: 0, records: [], skipped: true };
+  }
+  const records = await tryLdtCandidates(
+    candidates,
+    (phrase) => fetchNyLdtForPhrase(phrase, proxyUrl),
+    (r) => r.detailLink || JSON.stringify(r),
+  );
   return { source: 'ny', total: records.length, records };
 }
 
@@ -2100,20 +2232,27 @@ async function fetchNyLdt(term, proxyUrl) {
 // CORS-open (Access-Control-Allow-Origin: *), response shape { resultList: { total, results: [{
 // testNumber, testName, testMnemonic, status ('A'/'I'), price, summary (HTML w/ <span class="hl">
 // highlights), referralLab, ... }] } }.
-async function fetchArupLdt(term) {
-  const queryTerm = ldtQueryTerm(term);
-  if (!queryTerm) return { source: 'arup', total: 0, records: [], skipped: true };
+async function fetchArupLdtForPhrase(phrase) {
   let res;
   try {
-    res = await fetch(`https://ltd.aruplab.com/api/ltdsearch?searchterm=${encodeURIComponent(queryTerm)}`);
+    res = await fetch(`https://ltd.aruplab.com/api/ltdsearch?searchterm=${encodeURIComponent(phrase)}`);
   } catch (e) {
     throw new Error("Network error reaching ARUP's test directory.");
   }
   if (!res.ok) throw new Error(`ARUP returned HTTP ${res.status}`);
   const body = await res.json();
   const all = (body.resultList && body.resultList.results) || [];
-  const records = all
-    .filter(r => textMatchesQueryWords(r.testName, queryTerm) || textMatchesQueryWords(stripHtml(r.summary), queryTerm))
+  // Confirmed live: matching against ARUP's own `summary` field (a highlighted excerpt of free
+  // clinical-context prose, not a curated name/synonym list) let a disease-name expansion
+  // candidate ("Primary biliary cholangitis") match "Albumin, Body Fluid" and two dozen other
+  // unrelated liver-panel tests — none of them actually about AMA-M2, matched purely because
+  // ARUP's own ordering-recommendation text mentions PBC in passing on a broad liver workup.
+  // testName-only avoids this: real test names are short and specific, so an antigen genuinely
+  // being what a test measures is reliably reflected there. Kept for the base/tier-1 phrase too
+  // (not just escalated candidates) — no confirmed-live case has actually needed the summary
+  // field, only evidence it caused harm.
+  return all
+    .filter(r => textMatchesQueryWords(r.testName, phrase))
     .map(r => ({
       testName: r.testName || '',
       testNumber: r.testNumber || '',
@@ -2121,6 +2260,12 @@ async function fetchArupLdt(term) {
       price: r.price || '',
       detailUrl: r.testNumber ? `https://ltd.aruplab.com/Tests/Pub/${encodeURIComponent(r.testNumber)}` : '',
     }));
+}
+
+async function fetchArupLdt(term, expansion) {
+  const candidates = ldtQueryCandidates(term, expansion);
+  if (!candidates.length) return { source: 'arup', total: 0, records: [], skipped: true };
+  const records = await tryLdtCandidates(candidates, fetchArupLdtForPhrase, (r) => r.testNumber || r.testName);
   return { source: 'arup', total: records.length, records };
 }
 
@@ -2133,9 +2278,7 @@ const LABCORP_ALGOLIA_APP_ID = '6PSKQ0ILJC';
 const LABCORP_ALGOLIA_SEARCH_KEY = 'cadf45af2e029a09c167e41b65f56394';
 const LABCORP_ALGOLIA_INDEX = 'testmenu_adobe_prd_labcorp';
 
-async function fetchLabcorpLdt(term) {
-  const queryTerm = ldtQueryTerm(term);
-  if (!queryTerm) return { source: 'labcorp', total: 0, records: [], skipped: true };
+async function fetchLabcorpLdtForPhrase(phrase) {
   let res;
   try {
     res = await fetch(`https://${LABCORP_ALGOLIA_APP_ID}-dsn.algolia.net/1/indexes/${LABCORP_ALGOLIA_INDEX}/query`, {
@@ -2145,7 +2288,7 @@ async function fetchLabcorpLdt(term) {
         'X-Algolia-API-Key': LABCORP_ALGOLIA_SEARCH_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ query: queryTerm, hitsPerPage: 25 }),
+      body: JSON.stringify({ query: phrase, hitsPerPage: 25 }),
     });
   } catch (e) {
     throw new Error("Network error reaching LabCorp's test menu.");
@@ -2153,8 +2296,8 @@ async function fetchLabcorpLdt(term) {
   if (!res.ok) throw new Error(`LabCorp returned HTTP ${res.status}`);
   const body = await res.json();
   const all = body.hits || [];
-  const records = all
-    .filter(r => textMatchesQueryWords(r.test_name, queryTerm) || textMatchesQueryWords(stripHtml(r.search_only_synonyms), queryTerm))
+  return all
+    .filter(r => textMatchesQueryWords(r.test_name, phrase) || textMatchesQueryWords(stripHtml(r.search_only_synonyms), phrase))
     .map(r => ({
       testName: r.test_name || '',
       testNumber: r.labcorp_test_number || '',
@@ -2162,20 +2305,46 @@ async function fetchLabcorpLdt(term) {
       specimen: r.specimen || '',
       detailUrl: r.url ? `https://www.labcorp.com${r.url}` : '',
     }));
+}
+
+async function fetchLabcorpLdt(term, expansion) {
+  const candidates = ldtQueryCandidates(term, expansion);
+  if (!candidates.length) return { source: 'labcorp', total: 0, records: [], skipped: true };
+  const records = await tryLdtCandidates(candidates, fetchLabcorpLdtForPhrase, (r) => r.testNumber || r.testName);
   return { source: 'labcorp', total: records.length, records };
+}
+
+// Confirmed live: Quest's API returns one row PER PHYSICAL LOCATION that performs a test —
+// "Beta-2-Glycoprotein I-Domain 1 Antibody (IgG)", order code 12164, came back as 10 rows
+// differing only in which Quest facility performs it (some of those 10 were even byte-for-byte
+// identical location strings). Real data, not a bug on Quest's end, but 10 rows for what's
+// really "yes, Quest offers this one test" reads as noisy duplication rather than 10 distinct
+// matches. Consolidated to one row per distinct test — keyed by order code, falling back to test
+// name for the rare record with none — merging every distinct (deduped) performing-lab string
+// onto that one row instead of dropping the location detail entirely. This same order-code key
+// also serves as tryLdtCandidates' dedupe key, so a test found via two different candidate
+// phrases still only ever produces one merged row, not two.
+function dedupeQuestRecordsByTest(records) {
+  const byTest = new Map();
+  for (const r of records) {
+    const key = r.orderCode || r.testName;
+    if (!byTest.has(key)) byTest.set(key, { ...r, performingLabs: new Set() });
+    if (r.performingLab) byTest.get(key).performingLabs.add(r.performingLab);
+  }
+  return Array.from(byTest.values()).map(({ performingLabs, ...r }) => ({
+    ...r,
+    performingLab: Array.from(performingLabs).join('; '),
+  }));
 }
 
 // Unlike ARUP/LabCorp, Quest's search API actively rejects a foreign Origin (403 — confirmed
 // live), so this goes through quest-proxy.js (worker/quest-proxy.js), same reason NY needs
 // ldt-proxy.js. The proxy already reshapes Quest's raw Solr response into { term, total, count,
 // records: [{ testName, orderCode, performingLab, aliases, cptCodes, status, id }] }.
-async function fetchQuestLdt(term, proxyUrl) {
-  const queryTerm = ldtQueryTerm(term);
-  if (!queryTerm) return { source: 'quest', total: 0, records: [], skipped: true };
-  if (!proxyUrl) return { source: 'quest', total: 0, records: [], skipped: true, configMissing: true };
+async function fetchQuestLdtForPhrase(phrase, proxyUrl) {
   let res;
   try {
-    res = await fetch(`${proxyUrl}?${new URLSearchParams({ q: queryTerm }).toString()}`);
+    res = await fetch(`${proxyUrl}?${new URLSearchParams({ q: phrase }).toString()}`);
   } catch (e) {
     throw new Error('Network error — could not reach the Quest proxy. Check the Worker URL in Settings and your connection.');
   }
@@ -2186,35 +2355,31 @@ async function fetchQuestLdt(term, proxyUrl) {
   }
   const body = await res.json();
   const filtered = (body.records || [])
-    .filter(r => textMatchesQueryWords(r.testName, queryTerm) || textMatchesQueryWords(r.aliases, queryTerm));
+    .filter(r => textMatchesQueryWords(r.testName, phrase) || textMatchesQueryWords(r.aliases, phrase));
+  return dedupeQuestRecordsByTest(filtered);
+}
 
-  // Confirmed live: Quest's API returns one row PER PHYSICAL LOCATION that performs a test —
-  // "Beta-2-Glycoprotein I-Domain 1 Antibody (IgG)", order code 12164, came back as 10 rows
-  // differing only in which Quest facility performs it (some of those 10 were even byte-for-byte
-  // identical location strings). Real data, not a bug on Quest's end, but 10 rows for what's
-  // really "yes, Quest offers this one test" reads as noisy duplication rather than 10 distinct
-  // matches. Consolidated to one row per distinct test — keyed by order code, falling back to
-  // test name for the rare record with none — merging every distinct (deduped) performing-lab
-  // string onto that one row instead of dropping the location detail entirely.
-  const byTest = new Map();
-  for (const r of filtered) {
-    const key = r.orderCode || r.testName;
-    if (!byTest.has(key)) byTest.set(key, { ...r, performingLabs: new Set() });
-    if (r.performingLab) byTest.get(key).performingLabs.add(r.performingLab);
-  }
-  const records = Array.from(byTest.values()).map(({ performingLabs, ...r }) => ({
-    ...r,
-    performingLab: Array.from(performingLabs).join('; '),
-  }));
+async function fetchQuestLdt(term, proxyUrl, expansion) {
+  if (!proxyUrl) return { source: 'quest', total: 0, records: [], skipped: true, configMissing: true };
+  const candidates = ldtQueryCandidates(term, expansion);
+  if (!candidates.length) return { source: 'quest', total: 0, records: [], skipped: true };
+  // fetchQuestLdtForPhrase already dedupes locations within one phrase's own results;
+  // tryLdtCandidates' own dedupeKey (orderCode || testName) then keeps a test found via two
+  // different candidate phrases from appearing as two rows when escalating beyond the first.
+  const records = await tryLdtCandidates(
+    candidates,
+    (phrase) => fetchQuestLdtForPhrase(phrase, proxyUrl),
+    (r) => r.orderCode || r.testName,
+  );
   return { source: 'quest', total: records.length, records };
 }
 
-async function fetchLdtFromSource(sourceId, term, config) {
+async function fetchLdtFromSource(sourceId, term, config, expansion) {
   switch (sourceId) {
-    case 'ny': return fetchNyLdt(term, config.ldtProxyUrl);
-    case 'arup': return fetchArupLdt(term);
-    case 'labcorp': return fetchLabcorpLdt(term);
-    case 'quest': return fetchQuestLdt(term, config.questProxyUrl);
+    case 'ny': return fetchNyLdt(term, config.ldtProxyUrl, expansion);
+    case 'arup': return fetchArupLdt(term, expansion);
+    case 'labcorp': return fetchLabcorpLdt(term, expansion);
+    case 'quest': return fetchQuestLdt(term, config.questProxyUrl, expansion);
     default: throw new Error(`Unknown LDT source: ${sourceId}`);
   }
 }
@@ -3079,11 +3244,23 @@ async function runLdtSearchForTerms(terms, onProgress, logToTerminal) {
     if (logToTerminal) termLine(`ldt:${term}  starting… (${sources.map(s => s.label).join(', ') || 'no sources selected'})`, 't-meta');
     const trace = new LiveTrace(logToTerminal ? (entry) => termLineForStage(term, entry, 'ldt') : null);
 
+    // Resolved once per term, reused by every source below (see ldtQueryCandidates) — not
+    // per-source, since it's the same expansion regardless of which source is being searched.
+    // Cache-only (fetchExpansionForLdt never forces a fresh resolution), so this costs nothing
+    // extra when the term was already searched on the FDA side; null with no local index server
+    // configured, which just means every source falls back to the raw term + orthographic
+    // variants only, same as before this feature existed.
+    const expT0 = performance.now();
+    const expansion = await fetchExpansionForLdt(term);
+    if (expansion) {
+      pushTrace(trace, 'expansion', 'hit', `resolved: ${expansion.full}`, Math.round(performance.now() - expT0));
+    }
+
     const bySource = {};
     for (const src of sources) {
       const t0 = performance.now();
       try {
-        const result = await fetchLdtFromSource(src.id, term, config);
+        const result = await fetchLdtFromSource(src.id, term, config, expansion);
         bySource[src.id] = result;
         pushTrace(trace, src.id, result.skipped ? 'skipped' : (result.total > 0 ? 'hit' : 'miss'),
           result.skipped

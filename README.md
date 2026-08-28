@@ -356,7 +356,7 @@ Glycoprotein I Domain 1" was matching unrelated NY records purely for containing
 | **NY State** (Wadsworth Center CLEP) | A real, state-issued LDT approval/permit record — the only source here that's an actual regulatory fact. | LDT proxy Worker (works out of the box via a shared instance) |
 | **ARUP** | The term appears in ARUP's own commercial test catalog. | None — direct, no setup |
 | **LabCorp** | Same, LabCorp's own catalog. **Read the note in Settings before relying on this commercially** — LabCorp's Terms of Use restrict automated/commercial reuse of their test-menu content. | None — direct, no setup |
-| **Quest** | Same, Quest's own catalog. **Read the note in Settings before relying on this commercially** — Quest's Terms of Use restrict non-educational reuse without written permission. | Quest proxy Worker (no shared instance — deploy your own, see `worker/README.md`) |
+| **Quest** | Same, Quest's own catalog. **Read the note in Settings before relying on this commercially** — Quest's Terms of Use restrict non-educational reuse without written permission. | Quest proxy Worker (works out of the box via a shared instance) |
 
 Only NY State is a regulatory approval; the other three just mean *someone* already offers a
 similar test commercially — real competitive signal, but not the same kind of fact, and the

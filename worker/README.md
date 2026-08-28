@@ -39,14 +39,14 @@ Paste these directly into **Settings** (gear icon) and skip the deploy steps bel
 ```
 LDT proxy Worker URL:     https://ldt-proxy.francis121026.workers.dev
 FDA PDF proxy Worker URL: https://fda-pdf-proxyjs.francis121026.workers.dev
+Quest proxy Worker URL:   https://quest-proxy.francis121026.workers.dev
 ```
 
 These are donated, shared instances — convenient to try the tool immediately, but they run on
 one person's free Cloudflare account with a shared daily request limit across everyone using
 them, and no uptime guarantee. If you're using this tool regularly or for real work, deploy
 your own (below) — it's free, it's yours alone, and it takes about the same 5 minutes either
-way. There's no donated shared instance for `quest-proxy.js` yet — deploy your own if you want
-the Quest source (see the ToU note above first).
+way (read the ToU note above first for the Quest one).
 
 ## Deploy (no local Node/wrangler needed)
 
