@@ -88,6 +88,20 @@ CREATE TABLE IF NOT EXISTS searched_terms (
   term_key TEXT PRIMARY KEY,
   searched_at TEXT
 );
+
+-- How far indexer/panel_crawl.py has gotten populating one advisory committee's device list
+-- (via the `devices` table, same upsert_device() the full crawl uses) — see panel_crawl.py's own
+-- module docstring for why this exists: a bounded, incremental alternative to indexer/crawl.py's
+-- full 31,000+-device batch crawl, paying only a few hundred devices' worth of openFDA pagination
+-- per real search that actually needs it, resuming from `next_skip` rather than re-fetching a
+-- committee's already-populated devices on a later search. `fully_populated` short-circuits any
+-- further pagination for a committee once nothing's left to fetch.
+CREATE TABLE IF NOT EXISTS committee_scope (
+  committee TEXT PRIMARY KEY,
+  next_skip INTEGER NOT NULL DEFAULT 0,
+  fully_populated INTEGER NOT NULL DEFAULT 0,
+  last_scanned_at TEXT
+);
 """
 
 
@@ -192,6 +206,52 @@ def find_panel_candidates(conn: sqlite3.Connection, token_groups: list[list[str]
         params,
     ).fetchall()
     return [json.loads(r["raw_json"]) for r in rows]
+
+
+def get_committee_scope(conn: sqlite3.Connection, committee: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT next_skip, fully_populated FROM committee_scope WHERE committee = ?", (committee,)
+    ).fetchone()
+
+
+def upsert_committee_scope(conn: sqlite3.Connection, committee: str, next_skip: int,
+                            fully_populated: bool, scanned_at: str) -> None:
+    conn.execute(
+        """INSERT INTO committee_scope (committee, next_skip, fully_populated, last_scanned_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(committee) DO UPDATE SET
+             next_skip=excluded.next_skip, fully_populated=excluded.fully_populated,
+             last_scanned_at=excluded.last_scanned_at""",
+        (committee, next_skip, int(fully_populated), scanned_at),
+    )
+
+
+# The empirical signal indexer/panel_crawl.py uses to decide which devices are worth spending a
+# PDF fetch on: confirmed live, a bundled multi-antigen panel's device_name routinely either
+# joins its antigens with a slash ("ANTI-NRNP/SM" — K123261, the case that motivated this whole
+# feature) or uses one of these generic bundling words — checked against a random sample of 500
+# real Immunology-committee devices, this flags ~10% of them, not the whole committee, so it's a
+# genuinely small, targeted crawl target rather than "crawl everything" in disguise. SQLite's
+# LIKE is already case-insensitive for ASCII by default, so no UPPER()/LOWER() needed here.
+PANEL_LIKELY_KEYWORDS = ["panel", "profile", "connective", "multiplex", "combo", "combined", "screen"]
+
+
+def find_panel_likely_uncrawled(conn: sqlite3.Connection, committees: list[str],
+                                 limit: int = 15) -> list[dict]:
+    if not committees:
+        return []
+    keyword_clauses = " OR ".join("device_name LIKE ?" for _ in PANEL_LIKELY_KEYWORDS)
+    params: list = [f"%{kw}%" for kw in PANEL_LIKELY_KEYWORDS]
+    committee_placeholders = ",".join("?" * len(committees))
+    rows = conn.execute(
+        f"""SELECT k_number, device_name FROM devices
+            WHERE source = '510k' AND advisory_committee IN ({committee_placeholders})
+              AND (device_name LIKE '%/%' OR {keyword_clauses})
+              AND k_number NOT IN (SELECT k_number FROM pdf_text)
+            LIMIT ?""",
+        [*committees, *params, limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def insert_predicates(conn: sqlite3.Connection, device_k: str, predicates: list[dict]) -> None:

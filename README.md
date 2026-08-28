@@ -68,7 +68,10 @@ The backend does two things the browser alone structurally can't:
   the device's own decision-summary PDF. The backend reads every device's cited "predicate" out
   of that PDF; if a device cites an already-confirmed match as its predicate, it's surfaced too,
   tagged **"inferred via predicate"** — shown separately, not counted in totals, since a cited
-  predicate is a strong hint, not proof of an identical panel.
+  predicate is a strong hint, not proof of an identical panel. A search can also flag **"possible
+  panel match(es)"** the same way, when a device's own Measurand text mentions the searched
+  antigen even though its predicate citations don't — this one builds up automatically as you
+  search (see the note below), no manual crawl required.
 - **Precomputes the alternate-wordform check, so it's fast.** Same logic the browser runs live
   (see [Reading your results](#reading-your-results)), just computed once ahead of time instead
   of on every search — the browser alone has to make an extra network call per biomarker for
@@ -97,6 +100,16 @@ reload the page mid-crawl — reopening Settings picks the same crawl back up an
 progress so far, rather than losing it or starting over. A **Cancel** button appears while it's
 running; cancelling keeps everything already fetched (at most the batch in progress, up to 50
 devices, is lost).
+
+**Only the "inferred via predicate" tier needs this manual crawl** — "possible panel match(es)"
+doesn't. Whenever a search's own confirmed matches come back from a review panel (e.g.
+Immunology) that hasn't been checked for panel candidates yet, the backend automatically reads a
+small, bounded batch of that panel's own device PDFs in the background — just the ones whose
+device name itself looks panel-shaped (a slash-separated antigen list, or a word like "panel"/
+"profile"/"connective"/"multiplex"), not every device in scope. Coverage grows on its own as you
+search: the first search touching a given review panel pays a bit of extra time, and both the
+device list and whatever gets read stay cached for every later search, including ones for a
+*different* antigen the same bundled panel happens to also cover.
 
 Without the backend running (or if you skip it entirely), the tool still works from the browser
 alone — a banner reading "Running in fallback mode" shows when this is the case — just without

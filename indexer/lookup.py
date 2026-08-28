@@ -18,7 +18,7 @@ import json
 from datetime import datetime, timezone
 from typing import Callable
 
-from indexer import ai_expansion, db
+from indexer import ai_expansion, db, panel_crawl
 from indexer.matching import expansion_key, fetch_biomarker_matches, panel_candidate_search_token_groups, to_search_term
 from indexer.openfda import DEVICE_510K
 from indexer.predicate_graph import propagate_predicate_matches
@@ -206,6 +206,31 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
     # local join over already-crawled predicates/devices, no network call — safe to run
     # synchronously here
     propagate_predicate_matches(conn, key, trace=trace)
+
+    # Confirmed live: K123261's device_name ("ANTI-NRNP/SM") never mentions 6 of the 8 antigens
+    # its real PDF Measurand actually covers (Jo-1 among them) — invisible to every tier above,
+    # which only ever reads openFDA's structured text fields. indexer/crawl.py's full batch crawl
+    # can find this by reading every in-scope device's PDF, but running that first isn't
+    # practical for an on-demand search tool. This is the incremental alternative (see
+    # indexer/panel_crawl.py's own module docstring for the full reasoning): only worth the
+    # network cost when there's a committee to scope it to (this term's own confirmed matches'
+    # advisory_committee — no confirmed matches means no signal, so it's skipped, not guessed)
+    # AND the pure-local panel-candidate check (same one read_biomarker_result below will run
+    # again properly, with the correct exclude set) doesn't already have an answer — never
+    # redone once a committee's panel-shaped devices are fully crawled, which happens on its own
+    # since find_panel_likely_uncrawled only ever returns devices not yet in pdf_text.
+    token_groups = panel_candidate_search_token_groups(to_search_term(term))
+    if token_groups and not db.find_panel_candidates(conn, token_groups, exclude=set()):
+        committees = sorted({r.get("advisory_committee") for r in result["records"] if r.get("advisory_committee")})
+        if committees:
+            # Defense in depth on top of panel_crawl's own internal OpenFdaError handling: this
+            # whole feature is a best-effort enrichment on an already-complete search result, so
+            # nothing in here — however unexpected — should ever turn into a failed search.
+            try:
+                await panel_crawl.crawl_panel_candidates_incremental(client, conn, committees, api_key, trace=trace)
+            except Exception as e:
+                trace.append({"stage": "panel-crawl", "outcome": "error", "detail": str(e), "elapsedMs": None})
+
     db.mark_searched(conn, key, datetime.now(timezone.utc).isoformat())
     conn.commit()
 
