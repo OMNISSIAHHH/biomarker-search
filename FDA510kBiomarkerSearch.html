@@ -262,6 +262,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <ul class="hint" id="hintLdt" style="display:none">
           <li>Checks up to 4 sources at once — pick which ones in the "Data sources" row above. Only <strong>NY State</strong> is an actual regulatory LDT approval record; <strong>ARUP</strong>, <strong>LabCorp</strong>, and <strong>Quest</strong> just mean the term appears in that lab's own commercial test catalog — real signal, but not a regulatory fact.</li>
           <li>NY State and Quest each need a proxy Worker URL configured in Settings (gear icon) — both sites block direct requests from this tool. ARUP and LabCorp need no setup at all.</li>
+          <li>Each source's own search casts a wide net, so this tool then requires every one of the term's significant words to actually appear in a record before counting it as a real match (not just any one of them) — a multi-word term like "Beta-2 Glycoprotein I Domain 1" won't match a record that only happens to mention "Domain" or "Glycoprotein" on its own.</li>
         </ul>
       </div>
       <div class="actions">
@@ -1976,16 +1977,31 @@ function escapeRegExp(s) {
 // happens to also be a common English word/fragment would hit the exact same failure, and
 // there's no way to enumerate every such word in advance. This filters every source's raw
 // response dynamically instead, for any term: a record only counts as a real match if the
-// query's own (already antigen-narrowed) word actually appears as a distinct whole word
-// somewhere in the record's own searchable text, not merely as a substring — no per-word
+// query's own (already antigen-narrowed) words actually appear as distinct whole words
+// somewhere in the record's own searchable text, not merely as substrings — no per-word
 // knowledge required, so it applies equally to whichever biomarker is searched AND to whichever
 // source returned the record (ARUP/LabCorp/Quest's own search relevance is no more trustworthy
 // than NY's turned out to be, so the same defensive filter applies to all four rather than
 // assuming only NY needed it).
+//
+// Confirmed live, second failure mode: searching "Beta-2 Glycoprotein I Domain 1" returned 47
+// NY records and zero of them were actually about that antibody — every one matched purely
+// because it contained ONE of "Beta-2"/"Glycoprotein"/"Domain" in isolation (beta-2
+// microglobulin, myelin-associated glycoprotein, THSD7A antibody "domain-containing", an
+// unrelated SH2 "domain" gene test, EGFR kinase "domain" mutations, ...) — this function
+// originally required only ANY ONE word to match (word-boundary-correct, but still "any"),
+// which is exactly as loose as NY's own server-side "contains any word" retrieval query, so it
+// added zero real precision beyond the whole-word/substring fix above for a multi-word term
+// whose individual words are each independently common vocabulary. Now requires EVERY
+// significant word to be present (still each independently, anywhere in the text — order and
+// adjacency still don't matter, same as before) — the same AND-across-tokens semantics the
+// FDA-side wordform tier already uses successfully (cross_field_tokens_clause). A single-word
+// query behaves identically to before (some/every over one element are the same), so this only
+// changes behavior for genuinely multi-word terms, which is exactly where it was needed.
 function textMatchesQueryWords(haystack, queryTerm) {
   const words = queryTerm.split(/\s+/).filter(Boolean);
   const text = haystack || '';
-  return words.some(w => new RegExp(`\\b${escapeRegExp(w)}\\b`, 'i').test(text));
+  return words.length > 0 && words.every(w => new RegExp(`\\b${escapeRegExp(w)}\\b`, 'i').test(text));
 }
 
 function ldtRecordMatchesQuery(record, queryTerm) {
@@ -2169,9 +2185,27 @@ async function fetchQuestLdt(term, proxyUrl) {
     throw new Error(msg);
   }
   const body = await res.json();
-  const records = (body.records || [])
-    .filter(r => textMatchesQueryWords(r.testName, queryTerm) || textMatchesQueryWords(r.aliases, queryTerm))
-    .map(r => ({ ...r }));
+  const filtered = (body.records || [])
+    .filter(r => textMatchesQueryWords(r.testName, queryTerm) || textMatchesQueryWords(r.aliases, queryTerm));
+
+  // Confirmed live: Quest's API returns one row PER PHYSICAL LOCATION that performs a test —
+  // "Beta-2-Glycoprotein I-Domain 1 Antibody (IgG)", order code 12164, came back as 10 rows
+  // differing only in which Quest facility performs it (some of those 10 were even byte-for-byte
+  // identical location strings). Real data, not a bug on Quest's end, but 10 rows for what's
+  // really "yes, Quest offers this one test" reads as noisy duplication rather than 10 distinct
+  // matches. Consolidated to one row per distinct test — keyed by order code, falling back to
+  // test name for the rare record with none — merging every distinct (deduped) performing-lab
+  // string onto that one row instead of dropping the location detail entirely.
+  const byTest = new Map();
+  for (const r of filtered) {
+    const key = r.orderCode || r.testName;
+    if (!byTest.has(key)) byTest.set(key, { ...r, performingLabs: new Set() });
+    if (r.performingLab) byTest.get(key).performingLabs.add(r.performingLab);
+  }
+  const records = Array.from(byTest.values()).map(({ performingLabs, ...r }) => ({
+    ...r,
+    performingLab: Array.from(performingLabs).join('; '),
+  }));
   return { source: 'quest', total: records.length, records };
 }
 

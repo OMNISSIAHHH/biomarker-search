@@ -344,7 +344,12 @@ A biomarker with 0 FDA-cleared devices doesn't necessarily mean nobody tests for
 be an LDT (a test a lab builds and runs in-house; see the [Glossary](#glossary)). This tool can
 check up to 4 sources at once, all term-match only (no AI expansion on this side — an
 AI-resolved synonym's phrasing turned out to cause more false matches than it prevented against
-these sites' own simpler "any word"/relevance search):
+these sites' own simpler "any word"/relevance search). Each source's own search casts a wide
+net on purpose, so this tool then requires every one of the term's significant words to actually
+be present in a record before counting it as a real match — not just any single one of them,
+which turned out to let real noise through for multi-word terms (confirmed live: "Beta-2
+Glycoprotein I Domain 1" was matching unrelated NY records purely for containing "Domain" or
+"Glycoprotein" alone):
 
 | Source | What a match means | Setup needed |
 |---|---|---|
