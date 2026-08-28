@@ -31,7 +31,7 @@ import time
 
 import httpx
 
-from indexer.matching import split_expansion_tokens
+from indexer.matching import STRICT_ANTIBODY_WORDS, anti_requirement_mode, split_expansion_tokens
 
 UMLS_SEARCH_BASE = "https://uts-ws.nlm.nih.gov/rest/search/current"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
@@ -115,7 +115,21 @@ async def lookup_umls_expansion(client: httpx.AsyncClient, term: str, umls_api_k
             body = res.json()
             results = (body.get("result") or {}).get("results") or []
             usable = [r for r in results if r.get("ui") and r["ui"] != "NONE" and r.get("name")]
-            hit = next((r for r in usable if not _looks_like_loinc_code_name(r["name"])), None)
+            clean = [r for r in usable if not _looks_like_loinc_code_name(r["name"])]
+            # UMLS ranks by textual relevance, not clinical category — confirmed live, "Anti-HPV"
+            # ranked "Human Papilloma Virus Vaccine" (a Pharmacologic Substance) above "Human
+            # papillomavirus antibody" (the actual antibody-assay concept), because both match the
+            # search string about equally well. When the term itself signals an antibody test (an
+            # explicit "Anti-" prefix or an implied Ig-class suffix — see anti_requirement_mode),
+            # prefer a candidate whose own name says so too, same "unambiguous antibody wording"
+            # words already trusted elsewhere (matching.py's cross-field antibody clause) — a term
+            # with no antibody-worded UMLS concept at all still falls through to the first clean
+            # result exactly as before, so this can't regress an already-working lookup.
+            hit = None
+            if anti_requirement_mode(term) != "none":
+                hit = next((r for r in clean if any(w in r["name"].lower() for w in STRICT_ANTIBODY_WORDS)), None)
+            if not hit:
+                hit = next(iter(clean), None)
             if hit:
                 _trace(trace, "expansion:umls", "hit",
                        f"matched via searchType={search_type}: {hit['name']}", elapsed)

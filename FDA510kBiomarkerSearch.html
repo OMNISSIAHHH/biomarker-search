@@ -334,9 +334,10 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
       <table class="sumtable">
         <thead id="resultsHead"><tr>
           <th style="width:44px">Rank</th>
-          <th style="width:30%">Biomarker</th>
+          <th style="width:26%">Biomarker</th>
           <th>Total Submissions</th>
-          <th>Cleared (Approved)</th>
+          <th>510(k) Approved</th>
+          <th>PMA Approved</th>
           <th></th>
         </tr></thead>
         <tbody id="resultsBody"></tbody>
@@ -599,6 +600,21 @@ function classify(decisionDescription) {
   // totals, silently defeating the point of including PMA at all.
   if (d.includes('approved (pma)')) return 'se';
   return 'other';
+}
+
+// PMA covers device types 510(k) never sees at all (see fetchPmaMatches), so a single blended
+// "Cleared (Approved)" count hides which pathway a biomarker's approvals actually come from —
+// asked for explicitly after PMA support shipped ("display the 510k, PMA... result in different
+// channel"). Both counts still sum to the same combined total classify()/`approved` already
+// produced, so nothing downstream that relies on the combined figure (sorting, the LDT cross-
+// check threshold, the "≥10" saturation badge) needs to change.
+function countApprovedBySource(records) {
+  let approved510k = 0, approvedPma = 0;
+  for (const r of records) {
+    if (classify(r.decision_description) !== 'se') continue;
+    if (r.clearance_type === 'PMA') approvedPma++; else approved510k++;
+  }
+  return { approved510k, approvedPma };
 }
 
 function declBadge(decisionDescription) {
@@ -1039,6 +1055,24 @@ function buildAntigenExpr(term) {
   return withCrossFieldAnti(mainExpr, mode);
 }
 
+// Absolute last resort, only ever tried for a term that implied an antibody test (an "Anti-"
+// prefix or Ig-class suffix) AND for which every tier above — including the anti-required
+// broad/wordform/expansion tiers and the UMLS/AI expansion lookup — found nothing at all.
+// Confirmed live: "Anti-HPV" found 0 matches everywhere above even though openFDA has 283 real
+// HPV-related PMA records, because HPV testing in the FDA-cleared world is essentially all
+// nucleic-acid/DNA-based, never true antibody serology — no real device text was ever going to
+// satisfy the anti/antibody-wording requirement an explicit "Anti-" prefix normally enforces.
+// Rather than hide real, existing FDA data behind that requirement with no escape hatch, this
+// drops it and searches the antigen name alone — deliberately labeled as a distinct, lower-
+// confidence match (matchMode 'anti-unconfirmed') so a genuine antibody test (e.g. "Anti-dsDNA",
+// which already succeeds via the tiers above and never reaches this one) isn't weakened by it.
+function buildAntiUnconfirmedExpr(term, fields = SEARCH_FIELDS) {
+  const antigen = stripAntiPrefix(stripIsotypeSuffix(term));
+  if (!antigen) return null;
+  const tokens = splitTokens(antigen);
+  return tokens.length > 1 ? fieldOr(f => tokenClause(f, tokens), fields) : buildExactExpr(antigen, fields);
+}
+
 // Tier 3b: some FDA openfda.device_name classification text fuses "Anti" directly onto a
 // single-word antigen with no separator at all — e.g. "Anticardiolipin" (confirmed via curl
 // for K223093, a real cleared device with no other searchable "cardiolipin" text anywhere on
@@ -1370,8 +1404,16 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // such rather than treating it as equivalent to a hand-checked entry.
 const UMLS_SEARCH_BASE = 'https://uts-ws.nlm.nih.gov/rest/search/current';
 
+// Confirmed live: UMLS resolved "ama-m2" to "Mitochondria M2 Ab.IgG:ACnc:Pt:Ser:Qn" — a LOINC
+// code's own structured "Fully Specified Name" (Component:Property:Time:System:Scale[:Method]),
+// one of many source vocabularies UMLS' Metathesaurus aggregates. Never appears verbatim in real
+// FDA device text, so skipped in favor of the next usable result — mirrors
+// indexer/ai_expansion.py's identical fix.
+const LOINC_CODE_NAME_RE = /^[^:]+(?::[^:]+){2,}$/;
+
 async function lookupUmlsExpansion(term, umlsApiKey) {
   if (!umlsApiKey) return null;
+  const preferAntibody = antiRequirementMode(term) !== 'none';
   for (const searchType of ['exact', 'words']) {
     try {
       const params = new URLSearchParams({ string: term, apiKey: umlsApiKey, searchType, pageSize: '5' });
@@ -1379,7 +1421,18 @@ async function lookupUmlsExpansion(term, umlsApiKey) {
       if (!res.ok) continue; // bad/unapproved key, rate limit, etc. — treat as no match, not a hard error
       const body = await res.json();
       const results = body?.result?.results || [];
-      const hit = results.find(r => r.ui && r.ui !== 'NONE' && r.name);
+      const usable = results.filter(r => r.ui && r.ui !== 'NONE' && r.name);
+      const clean = usable.filter(r => !LOINC_CODE_NAME_RE.test(r.name));
+      // UMLS ranks by textual relevance, not clinical category — confirmed live, "Anti-HPV"
+      // ranked "Human Papilloma Virus Vaccine" (a Pharmacologic Substance) above "Human
+      // papillomavirus antibody" (the actual antibody-assay concept), since both match the search
+      // string about equally well. When the term itself signals an antibody test (an explicit
+      // "Anti-" prefix or an implied Ig-class suffix), prefer a candidate whose own name says so
+      // too — same unambiguous antibody wording already trusted elsewhere (crossFieldStrict
+      // AntibodyClause). A term with no antibody-worded UMLS concept at all still falls through to
+      // the first clean result exactly as before, so this can't regress an already-working lookup.
+      const hit = (preferAntibody && clean.find(r => STRICT_ANTIBODY_WORDS.some(w => r.name.toLowerCase().includes(w))))
+        || clean[0];
       if (hit) return { full: hit.name };
     } catch {
       // Network failure, CORS block if a key is somehow malformed, etc. — fall through to the
@@ -1502,15 +1555,20 @@ function normalizePmaRecord(r) {
 // normalizePmaRecord runs; normalizing late (once, at the very end) caused a real crash the
 // first time this was tested live on the Python side. This mirrors the fix, not just the
 // feature.
+// Shared by every PMA tier below and by fetchBiomarker's own last-resort anti-unconfirmed tier
+// (which needs to check PMA too, outside fetchPmaMatches' own tier chain) — always applies the
+// original-approvals-only filter and normalizes records immediately, so no caller can forget
+// either.
+async function runPmaQuery(expr, apiKey) {
+  const raw = await runOpenFdaQuery(`(${expr}) AND ${PMA_ORIGINAL_ONLY}`, apiKey, OPENFDA_PMA_BASE);
+  return { total: raw.total, records: raw.records.map(normalizePmaRecord) };
+}
+
 async function fetchPmaMatches(searchTerm, expansion, apiKey, mode, trace) {
-  const pmaExpr = inner => `(${inner}) AND ${PMA_ORIGINAL_ONLY}`;
   async function timedPmaQuery(expr) {
     const t0 = performance.now();
-    const raw = await runOpenFdaQuery(pmaExpr(expr), apiKey, OPENFDA_PMA_BASE);
-    return {
-      result: { total: raw.total, records: raw.records.map(normalizePmaRecord) },
-      elapsedMs: Math.round(performance.now() - t0),
-    };
+    const result = await runPmaQuery(expr, apiKey);
+    return { result, elapsedMs: Math.round(performance.now() - t0) };
   }
 
   let best = null;
@@ -2025,6 +2083,37 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage, 
         ? { ...best, records: best.records.concat(newPmaRecords), total: best.total + newPmaRecords.length }
         : { total: newPmaRecords.length, records: newPmaRecords, matchMode: 'pma' };
     }
+  }
+
+  // Last resort: only reached when a term that DOES imply an antibody test (an "Anti-" prefix
+  // or Ig-class suffix) still found nothing anywhere above, including PMA — see
+  // buildAntiUnconfirmedExpr's own comment for why this exists (confirmed live via "Anti-HPV").
+  // Checks both 510(k) and PMA, since either could hold the real device.
+  if (!best) {
+    const antiMode = antiRequirementMode(searchTerm);
+    const antiUnconfirmedExpr510k = antiMode !== 'none' ? buildAntiUnconfirmedExpr(searchTerm) : null;
+    if (antiUnconfirmedExpr510k) {
+      await sleep(150);
+      t0 = performance.now();
+      const [relaxed510k, relaxedPma] = await Promise.all([
+        runOpenFdaQuery(antiUnconfirmedExpr510k, apiKey),
+        runPmaQuery(buildAntiUnconfirmedExpr(searchTerm, PMA_SEARCH_FIELDS), apiKey),
+      ]);
+      const elapsed = Math.round(performance.now() - t0);
+      const merged = mergeQueryResults(relaxed510k, relaxedPma);
+      if (merged.records.length) {
+        best = { total: merged.records.length, records: merged.records, matchMode: 'anti-unconfirmed' };
+        pushTrace(trace, 'match:anti-unconfirmed', 'hit',
+          `${merged.records.length} result(s) on the antigen name alone — antibody/anti-context could not be confirmed on these records`, elapsed);
+      } else {
+        pushTrace(trace, 'match:anti-unconfirmed', 'miss', '0 results', elapsed);
+      }
+    } else {
+      pushTrace(trace, 'match:anti-unconfirmed', 'skipped',
+        antiMode === 'none' ? 'term has no anti-prefix/isotype signal' : 'no usable antigen tokens');
+    }
+  } else {
+    pushTrace(trace, 'match:anti-unconfirmed', 'skipped', 'an earlier tier already matched');
   }
 
   // No client-side equivalent — predicate propagation needs the crawled predicates table,
@@ -2590,15 +2679,16 @@ async function runFdaSearch() {
       const { total, records, matchMode, expansion, panelCandidates, inferredMatches, trace } =
         await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, (entry) => termLineForStage(term, entry), forceRefresh);
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
+      const { approved510k, approvedPma } = countApprovedBySource(records);
       const item = {
-        term, total, approved, records, matchMode, expansion,
+        term, total, approved, approved510k, approvedPma, records, matchMode, expansion,
         panelCandidates: panelCandidates || [], inferredMatches: inferredMatches || [],
         trace: trace || [], error: null,
       };
       state.push(item);
       termLine(`search:${term}  done — ${matchMode || 'exact'}, ${(trace || []).length} stage(s)`, 't-meta');
     } catch (e) {
-      const item = { term, total: 0, approved: 0, records: [], trace: [], error: e.message || String(e) };
+      const item = { term, total: 0, approved: 0, approved510k: 0, approvedPma: 0, records: [], trace: [], error: e.message || String(e) };
       state.push(item);
       termLine(`search:${term}  failed — ${item.error}`, 't-error');
     }
@@ -2636,7 +2726,8 @@ const MATCH_MODE_LABEL = {
   'fused-anti': 'Fused-word match',
   wordform: 'Alternate wordform match',
   'paren-alternates': 'Parenthetical alternate match',
-  pma: 'PMA-only match'
+  pma: 'PMA-only match',
+  'anti-unconfirmed': 'Antibody-context unconfirmed'
 };
 const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
@@ -2646,7 +2737,8 @@ const MATCH_MODE_TITLE = {
   'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
   wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.',
   'paren-alternates': 'Your term has a "Name (Alt1/Alt2)" shape (e.g. "Centromere (CENP-A/B)") — matched on one of the parenthetical alternatives independently (e.g. "CENP-B" alone), since real device names often use only one of these names, never all of them together.',
-  pma: 'No 510(k) clearance found — matched on FDA\'s separate PMA (Premarket Approval) pathway instead, used for higher-risk Class III devices (e.g. many companion diagnostics never go through 510(k) at all).'
+  pma: 'No 510(k) clearance found — matched on FDA\'s separate PMA (Premarket Approval) pathway instead, used for higher-risk Class III devices (e.g. many companion diagnostics never go through 510(k) at all).',
+  'anti-unconfirmed': 'Your term implies an antibody test ("Anti-..." or an IgG/IgA/IgM-class name), but no matching record anywhere — 510(k) or PMA — could confirm antibody wording alongside the target name. Matched on the target name alone instead; double-check these records actually test for an antibody, not just the target itself (e.g. a nucleic-acid/antigen test).'
 };
 
 function matchModeTag(mode) {
@@ -2688,7 +2780,7 @@ function applyDateFilter(rawState) {
     if (s.error) return s;
     const records = s.records.filter(inDateFilterRange);
     const approved = records.filter(r => classify(r.decision_description) === 'se').length;
-    return { ...s, records, approved, total: records.length };
+    return { ...s, records, approved, ...countApprovedBySource(records), total: records.length };
   });
 }
 
@@ -2719,7 +2811,7 @@ function applyApplicantFilter(rawState) {
     if (s.error) return s;
     const records = s.records.filter(r => r.applicant === applicantFilter);
     const approved = records.filter(r => classify(r.decision_description) === 'se').length;
-    return { ...s, records, approved, total: records.length };
+    return { ...s, records, approved, ...countApprovedBySource(records), total: records.length };
   });
 }
 
@@ -2746,7 +2838,7 @@ function applyShowOnlyFilter(rawState) {
       if (s.error || matchesShowOnly(s.term)) return s;
       const records = s.records.filter(r => matchesShowOnly(r.applicant));
       const approved = records.filter(r => classify(r.decision_description) === 'se').length;
-      return { ...s, records, approved, total: records.length };
+      return { ...s, records, approved, ...countApprovedBySource(records), total: records.length };
     });
 }
 
@@ -2782,7 +2874,7 @@ function applyCommitteeFilter(rawState) {
     if (s.error) return s;
     const records = s.records.filter(r => !excludedCommittees.has(r.advisory_committee));
     const approved = records.filter(r => classify(r.decision_description) === 'se').length;
-    return { ...s, records, approved, total: records.length };
+    return { ...s, records, approved, ...countApprovedBySource(records), total: records.length };
   });
 }
 
@@ -2924,9 +3016,10 @@ function renderResults() {
   }
   $('resultsHead').innerHTML = `<tr>
     <th style="width:44px">Rank</th>
-    <th style="width:30%">Biomarker</th>
+    <th style="width:26%">Biomarker</th>
     <th>Total Submissions</th>
-    <th>Cleared (Approved)</th>
+    <th title="Substantially Equivalent clearances via FDA's 510(k) pathway">510(k) Approved</th>
+    <th title="Approvals via FDA's separate PMA (Premarket Approval) pathway — higher-risk Class III devices, mostly companion diagnostics, that never go through 510(k) at all">PMA Approved</th>
     <th title="How many distinct companies these submissions come from — lower than Total Submissions means one or more companies filed more than once">Unique Applicants</th>
     <th></th>
   </tr>`;
@@ -2952,7 +3045,8 @@ function renderResults() {
       <td class="rankcell">${rank}</td>
       <td><div class="biocell"><span class="chev">▸</span>${escapeHtml(s.term)}${expansionTag(s.expansion)}${matchModeTag(s.matchMode)}${panelTag}${inferredTag}</div></td>
       <td>${s.total}</td>
-      <td><span class="badge ${s.approved >= HIGH_APPROVAL_THRESHOLD ? 'high' : 'low'}">${s.approved}</span></td>
+      <td><span class="badge ${s.approved510k >= HIGH_APPROVAL_THRESHOLD ? 'high' : 'low'}">${s.approved510k}</span></td>
+      <td><span class="badge ${s.approvedPma >= HIGH_APPROVAL_THRESHOLD ? 'high' : 'low'}">${s.approvedPma}</span></td>
       <td>${uniqueApplicantCount(s.records)}</td>
       <td></td>`;
     tbody.appendChild(mainRow);
@@ -3117,7 +3211,8 @@ function renderChart(valid) {
     data: {
       labels: valid.map(s => s.term),
       datasets: [
-        { label: 'Cleared (Approved)', data: valid.map(s => s.approved), backgroundColor: '#1B7A4D', minBarLength: 4 }
+        { label: '510(k) Approved', data: valid.map(s => s.approved510k), backgroundColor: '#1B7A4D', minBarLength: 4 },
+        { label: 'PMA Approved', data: valid.map(s => s.approvedPma), backgroundColor: '#0066B3', minBarLength: 4 }
       ]
     },
     options: {

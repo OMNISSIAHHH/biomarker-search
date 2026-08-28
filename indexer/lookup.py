@@ -20,10 +20,11 @@ from typing import Callable
 
 from indexer import ai_expansion, db, panel_crawl
 from indexer.matching import (
-    expansion_key, fetch_biomarker_matches, fetch_pma_matches,
-    panel_candidate_search_token_groups, to_search_term,
+    PMA_SEARCH_FIELDS, anti_requirement_mode, build_anti_unconfirmed_expr, expansion_key,
+    fetch_biomarker_matches, fetch_pma_matches, merge_query_results,
+    panel_candidate_search_token_groups, run_pma_query, to_search_term,
 )
-from indexer.openfda import DEVICE_510K
+from indexer.openfda import DEVICE_510K, run_query
 from indexer.predicate_graph import propagate_predicate_matches
 from indexer.trace import TraceSink
 
@@ -224,6 +225,39 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
                       "total": result["total"] + len(new_pma_records)}
             if not had_510k_match:
                 match_mode = "pma"
+
+    # Last resort: only reached when a term that DOES imply an antibody test (an "Anti-" prefix
+    # or Ig-class suffix) still found nothing anywhere above, including PMA. Confirmed live via
+    # "Anti-HPV" — see build_anti_unconfirmed_expr's own comment for the full reasoning. Checks
+    # both 510(k) and PMA, since either could hold the real device.
+    if result["total"] == 0:
+        anti_mode = anti_requirement_mode(to_search_term(term))
+        anti_unconfirmed_510k = build_anti_unconfirmed_expr(to_search_term(term)) if anti_mode != "none" else None
+        if anti_unconfirmed_510k:
+            relaxed_510k = await run_query(client, DEVICE_510K, anti_unconfirmed_510k, api_key)
+            relaxed_pma_raw, _ = await run_pma_query(
+                client, build_anti_unconfirmed_expr(to_search_term(term), PMA_SEARCH_FIELDS), api_key,
+            )
+            merged = merge_query_results(relaxed_510k, relaxed_pma_raw)
+            if merged["records"]:
+                result = {**result, "records": merged["records"], "total": len(merged["records"])}
+                match_mode = "anti-unconfirmed"
+                trace.append({
+                    "stage": "match:anti-unconfirmed", "outcome": "hit",
+                    "detail": f"{len(merged['records'])} result(s) on the antigen name alone — "
+                               "antibody/anti-context could not be confirmed on these records",
+                    "elapsedMs": None,
+                })
+            else:
+                trace.append({"stage": "match:anti-unconfirmed", "outcome": "miss", "detail": "0 results",
+                               "elapsedMs": None})
+        else:
+            trace.append({
+                "stage": "match:anti-unconfirmed", "outcome": "skipped",
+                "detail": "term has no anti-prefix/isotype signal" if anti_mode == "none"
+                          else "no usable antigen tokens",
+                "elapsedMs": None,
+            })
 
     for r in result["records"]:
         db.upsert_device(conn, r, source="pma" if r.get("clearance_type") == "PMA" else "510k")

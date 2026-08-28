@@ -166,6 +166,28 @@ def build_antigen_expr(term: str) -> str | None:
     return with_cross_field_anti(main_expr, mode)
 
 
+# Absolute last resort, only ever tried for a term that implied an antibody test (an "Anti-"
+# prefix or Ig-class suffix) AND for which every tier above — including the anti-required broad/
+# wordform/expansion tiers and the UMLS/AI expansion lookup — found nothing at all. Confirmed
+# live: "Anti-HPV" found 0 matches everywhere above even though openFDA has real HPV-related PMA
+# records, because HPV testing in the FDA-cleared world is essentially all nucleic-acid/DNA-based,
+# never true antibody serology — no real device text was ever going to satisfy the anti/antibody-
+# wording requirement an explicit "Anti-" prefix normally enforces. Rather than hide real,
+# existing FDA data behind that requirement with no escape hatch, this drops it and searches the
+# antigen name alone — deliberately labeled as a distinct, lower-confidence match (match_mode
+# 'anti-unconfirmed') so a genuine antibody test (e.g. "Anti-dsDNA", which already succeeds via
+# the tiers above and never reaches this one) isn't weakened by it. Mirrors
+# FDA510kBiomarkerSearch.html's identical buildAntiUnconfirmedExpr.
+def build_anti_unconfirmed_expr(term: str, fields: list[str] = SEARCH_FIELDS) -> str | None:
+    antigen = strip_anti_prefix(strip_isotype_suffix(term)).strip()
+    if not antigen:
+        return None
+    tokens = split_tokens(antigen)
+    if len(tokens) > 1:
+        return field_or(lambda f: token_clause(f, tokens), fields)
+    return build_exact_expr(antigen, fields)
+
+
 def build_fused_anti_expr(term: str) -> str | None:
     if anti_requirement_mode(term) == "none":
         return None
@@ -710,6 +732,15 @@ def normalize_pma_record(r: dict) -> dict:
     }
 
 
+# Shared by every PMA tier below and by lookup.py's own last-resort anti-unconfirmed check
+# (which needs to query PMA too, outside fetch_pma_matches' own tier chain) — always applies the
+# original-approvals-only filter and normalizes records immediately, so no caller can forget
+# either. Mirrors FDA510kBiomarkerSearch.html's identical runPmaQuery.
+async def run_pma_query(client, expr: str, api_key: str | None = None) -> tuple[dict, int]:
+    raw, elapsed_ms = await _timed_query(client, DEVICE_PMA, f"({expr}) AND {PMA_ORIGINAL_ONLY}", api_key)
+    return {**raw, "records": [normalize_pma_record(r) for r in raw["records"]]}, elapsed_ms
+
+
 async def fetch_pma_matches(client, term: str, expansion: dict | None, api_key: str | None = None,
                              trace: list[dict] | None = None) -> dict:
     """Mirrors fetch_biomarker_matches's tier structure (exact -> broad -> wordform ->
@@ -732,9 +763,6 @@ async def fetch_pma_matches(client, term: str, expansion: dict | None, api_key: 
     search_term = to_search_term(term)
     best = None
 
-    def pma_expr(inner: str) -> str:
-        return f"({inner}) AND {PMA_ORIGINAL_ONLY}"
-
     # Records are normalized (pma_number -> k_number, among other fields) immediately after each
     # fetch, not just once at the very end — confirmed live this is load-bearing, not cosmetic:
     # merge_query_results dedupes by record["k_number"], and a raw (un-normalized) PMA record
@@ -742,8 +770,7 @@ async def fetch_pma_matches(client, term: str, expansion: dict | None, api_key: 
     # KeyError before every tier's output was normalized at the same point 510(k) records already
     # effectively are (openFDA's own raw records already use "k_number" natively).
     async def timed_pma_query(expr: str) -> tuple[dict, int]:
-        raw, elapsed_ms = await _timed_query(client, DEVICE_PMA, pma_expr(expr), api_key)
-        return {**raw, "records": [normalize_pma_record(r) for r in raw["records"]]}, elapsed_ms
+        return await run_pma_query(client, expr, api_key)
 
     exact, elapsed = await timed_pma_query(build_exact_expr(search_term, PMA_SEARCH_FIELDS))
     if exact["total"] > 0:
