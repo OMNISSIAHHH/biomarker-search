@@ -80,8 +80,15 @@ async def crosscheck_ldt_candidates(client: httpx.AsyncClient, term: str, candid
     try:
         res = await client.post(
             f"{local_llm_url}/api/generate",
+            # Confirmed live: without pinning temperature, an identical request could come back
+            # "0: NO, 1: YES" one call and "0: YES, 1: NO" the next, for the same obviously-
+            # correct/incorrect pair (Glutamic Acid Decarboxylase Antibody vs. Hepatitis B
+            # Surface Antigen, searching "GADA") — pure sampling noise on a classification task
+            # that should be near-deterministic. temperature: 0 (greedy decoding) doesn't
+            # eliminate every inconsistency a 3B model can have on genuinely borderline cases,
+            # but removes the noise on the clear-cut ones.
             json={"model": local_llm_model, "prompt": _ldt_crosscheck_prompt(term, candidates),
-                  "stream": False, "think": False},
+                  "stream": False, "think": False, "options": {"temperature": 0}},
             timeout=LOCAL_LLM_TIMEOUT,
         )
         elapsed = int((time.monotonic() - t0) * 1000)
