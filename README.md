@@ -224,7 +224,9 @@ confidence; an exact match is always most reliable):
 - **Antigen-only match** — same, and also ignoring the antibody class (IgG/IgA/IgM)
 - **UMLS-resolved match** — nothing above matched, so the abbreviation's full name was looked up
   via UMLS (see [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck))
-- **AI-suggested match** — same, but UMLS didn't know it either, so the backend searched the web
+- **PubMed-resolved match** — UMLS didn't know it either, so the name was extracted automatically
+  from a PubMed abstract that defines this exact abbreviation
+- **AI-suggested match** — same, but UMLS and PubMed didn't know it either, so the backend searched the web
   and had a local AI model extract the name from those results. More grounded than a cold guess,
   but still a generated extraction, not a database entry — worth a sanity check via
   **Check Measurand**
@@ -342,8 +344,15 @@ tool) or `UMLS_API_KEY` in `.env` (backend) — no separate Worker needed. Flagg
 **UMLS-resolved match**, unverified since nobody's manually confirmed the lookup — a quick
 sanity check via **Check Measurand** is worthwhile.
 
-**Search-grounded AI crosscheck (backend only)** — for whatever UMLS doesn't cover, including
-the wait while a UMLS license is pending. It searches the web for the term first (via
+**PubMed precheck** — a free, no-setup step tried after UMLS and before the AI crosscheck below:
+searches PubMed abstracts for the exact abbreviation, then extracts whatever text precedes a
+matching "(ABBREV)" parenthetical — the standard convention for introducing an abbreviation on
+first use (e.g. "...zinc transporter 8 (ZnT8A) autoantibody..."). No API key, no proxy Worker
+(NLM's E-utilities API is CORS-open). Flagged **PubMed-resolved match**, unverified for the same
+reason a UMLS-resolved match is.
+
+**Search-grounded AI crosscheck (backend only)** — for whatever UMLS and PubMed don't cover,
+including the wait while a UMLS license is pending. It searches the web for the term first (via
 [Tavily](https://tavily.com), free tier: 1,000 searches/month, no card, instant signup), then
 has a local Ollama model extract the full name **from those actual search results** — not from
 its own memorized recall. A grounding check then confirms the model's answer actually traces
@@ -364,14 +373,15 @@ via **Check Measurand**.
 
 A biomarker with 0 FDA-cleared devices doesn't necessarily mean nobody tests for it — it might
 be an LDT (a test a lab builds and runs in-house; see the [Glossary](#glossary)). This tool can
-check up to 4 sources at once, all term-match only (no AI expansion on this side — an
-AI-resolved synonym's phrasing turned out to cause more false matches than it prevented against
-these sites' own simpler "any word"/relevance search). Each source's own search casts a wide
-net on purpose, so this tool then requires every one of the term's significant words to actually
-be present in a record before counting it as a real match — not just any single one of them,
-which turned out to let real noise through for multi-word terms (confirmed live: "Beta-2
-Glycoprotein I Domain 1" was matching unrelated NY records purely for containing "Domain" or
-"Glycoprotein" alone):
+check up to 4 sources at once. Each source's own search casts a wide net on purpose, so this tool
+requires every one of the term's significant words to actually be present in a record before
+counting it as a real match — not just any single one of them, which turned out to let real noise
+through for multi-word terms (confirmed live: "Beta-2 Glycoprotein I Domain 1" was matching
+unrelated NY records purely for containing "Domain" or "Glycoprotein" alone). When the plain term
+alone finds nothing, an AI/UMLS-resolved full name (same resolution as the FDA side, reused from
+its cache — never a separate lookup) is tried too, since a lab's own catalog often uses the
+spelled-out name, not the abbreviation a device search would (confirmed live: LabCorp had no
+"AMA-M2" test, but did have one named for its full spelled-out antibody name).
 
 | Source | What a match means | Setup needed |
 |---|---|---|
@@ -385,7 +395,17 @@ similar test commercially — real competitive signal, but not the same kind of 
 tool never conflates the two (each source gets its own labeled result, never folded into one
 "Approved" count).
 
-**Directly:** click the **LDT** tab, pick which sources to check in the "Data sources" row, and
+**AI cross-check (backend only)** — each source's own search can match on shared words without
+the test actually being for the same analyte. When a **Local index server URL** is set in
+Settings, every text-matched candidate across all 4 sources is sent in one batched request to the
+same local Ollama model already used for the FDA-side AI crosscheck, which reads each test's
+actual name and judges whether it's a genuine match — flagged **AI confirmed** (green) or
+**AI: not confirmed** (red) right on the row. This never removes a result, only labels it — the
+model can be wrong, especially on borderline cases (a general vs. a subtype-specific test, for
+example), so treat it as a second opinion worth a manual look, not a verdict. No local index
+server configured means every result simply stays unlabeled, same as before this existed.
+
+**Directly:** click the **LDT** tab, pick which sources to check in the "LDT data sources" row, and
 search the same way as an FDA search.
 
 **Automatically after an FDA search:** if any biomarker showed **2 or fewer** FDA-cleared
@@ -518,7 +538,8 @@ one term past its cache (see [Things to keep in mind](#things-to-keep-in-mind)):
 | `/health` | GET | Liveness check; also reports the `index.sqlite3` path in use. |
 | `/biomarker/{term}` | GET | The full tiered match pipeline for one term — confirmed matches, predicate-inferred matches, and the resolved expansion. Cached after first run; `?refresh=true` bypasses the cache. |
 | `/biomarker/{term}/stream` | GET | Same as above, but as Server-Sent Events — each match-tier/expansion stage streams the instant it happens, rather than only once the whole pipeline finishes. |
-| `/expansion/{term}` | GET | Just the resolved full-name/synonym expansion (UMLS or AI crosscheck), without running the FDA match tiers. `?refresh=true` bypasses the cache. |
+| `/expansion/{term}` | GET | Just the resolved full-name/synonym expansion (UMLS, PubMed, or AI crosscheck), without running the FDA match tiers. `?refresh=true` bypasses the cache. |
+| `/ldt-crosscheck` | POST | Body `{term, candidates: [{id, name}]}` — has the local LLM judge whether each already text-matched LDT candidate is a genuine match. Returns `{}` for every candidate if no local LLM is configured. |
 | `/crawl/start` | POST | Starts the device+PDF crawl in the background (optional `committees`, `api_key`). 409s if one is already running. |
 | `/crawl/stream` | GET | Server-Sent Events of crawl progress; replays everything so far on connect, then streams live. |
 | `/crawl/cancel` | POST | Cancels the running crawl. Already-committed batches (up to 50 devices at a time) are kept. |

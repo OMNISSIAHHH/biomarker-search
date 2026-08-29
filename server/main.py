@@ -31,9 +31,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from indexer import crawl as crawl_module
 from indexer.db import DB_PATH, app_base_dir, connect
+from indexer.ldt_crosscheck import crosscheck_ldt_candidates
 from indexer.lookup import compute_and_cache_result, resolve_and_cache_expansion, try_cached_result
 from indexer.matching import expansion_key
 from indexer.scope import ADVISORY_COMMITTEES
@@ -205,6 +207,34 @@ async def expansion(term: str, umls_api_key: str | None = None, refresh: bool = 
         return {"term": term, "expansion": resolved_expansion, "source": source, "trace": trace}
     finally:
         conn.close()
+
+
+class LdtCandidateIn(BaseModel):
+    id: int
+    name: str
+
+
+class LdtCrosscheckRequest(BaseModel):
+    term: str
+    candidates: list[LdtCandidateIn]
+
+
+@app.post("/ldt-crosscheck")
+async def ldt_crosscheck(body: LdtCrosscheckRequest):
+    """AI cross-check for LDT search results already fetched and text-matched by the browser
+    across whichever sources it searched (NY State, ARUP, LabCorp, Quest) — see
+    indexer/ldt_crosscheck.py for why this exists and how it's prompted. Uses the same local LLM
+    already configured for the FDA-side AI-suggested expansion tier (LOCAL_LLM_URL/
+    LOCAL_LLM_MODEL in .env); returns {} (every candidate left unconfirmed) if that isn't set up,
+    same graceful-degradation posture as every other optional AI tier in this tool.
+    """
+    trace: list[dict] = []
+    async with httpx.AsyncClient() as client:
+        results = await crosscheck_ldt_candidates(
+            client, body.term, [c.model_dump() for c in body.candidates],
+            AI_CONFIG.get("local_llm_url"), AI_CONFIG.get("local_llm_model"), trace=trace,
+        )
+    return {"results": {str(k): v for k, v in results.items()}, "trace": trace}
 
 
 class CrawlState:

@@ -3455,6 +3455,27 @@ function ldtSourceChips(s) {
     }).join(' ');
 }
 
+// NY's own field is `analyte`; ARUP/LabCorp/Quest all call theirs `testName` — this is the one
+// piece shared by every source's otherwise-different record shape, used both to build the AI
+// cross-check prompt and to render its result inline on each row (see aiConfirmedTag below).
+function ldtRecordDisplayName(srcId, r) {
+  return (srcId === 'ny' ? r.analyte : r.testName) || '';
+}
+
+// `aiConfirmed` is set by checkLdtCandidatesWithAi below: true/false once judged, left
+// `undefined` when no local index server is configured (nothing to show) or the model didn't
+// return a line for that specific candidate (a parse miss, not a "no" — shown as uncertain, not
+// silently treated as confirmed or hidden).
+function aiConfirmedTag(record) {
+  if (record.aiConfirmed === true) {
+    return ' <span class="mmtag" style="cursor:default;color:var(--acc2);border-color:var(--acc2)" title="A local AI model read this test\'s name and the searched term and judged this a genuine match — unverified, worth a sanity check, same as any other AI-suggested result in this tool.">AI confirmed</span>';
+  }
+  if (record.aiConfirmed === false) {
+    return ' <span class="mmtag" style="cursor:default;color:var(--red);border-color:var(--red)" title="A local AI model read this test\'s name and the searched term and judged this NOT a genuine match, despite the text search finding it — likely shares words with the search term without testing for the same thing. Not removed from the list since the model can be wrong too; verify manually.">AI: not confirmed</span>';
+  }
+  return '';
+}
+
 // One labeled sub-table per source that was actually searched for this term, each with its own
 // source-appropriate columns rather than forcing every source's very different fields (NY's
 // facility/permit/method vs. ARUP's price/status vs. LabCorp's methodology/specimen vs. Quest's
@@ -3477,7 +3498,7 @@ function ldtSourceDetailSection(src, result) {
     headHtml = '<th>Facility</th><th>Analyte</th><th>Specimen Type</th><th>Permit Category</th><th>Status</th><th>Detail</th>';
     rowsHtml = result.records.map(r => `<tr>
       <td>${escapeHtml(r.facilityName || '—')}</td>
-      <td>${escapeHtml(r.analyte || '—')}</td>
+      <td>${escapeHtml(r.analyte || '—')}${aiConfirmedTag(r)}</td>
       <td>${escapeHtml(r.specimenType || '—')}</td>
       <td>${escapeHtml(r.permitCategory || '—')}</td>
       <td>${ldtStatusBadge(r.status)}</td>
@@ -3486,7 +3507,7 @@ function ldtSourceDetailSection(src, result) {
   } else if (src.id === 'arup') {
     headHtml = '<th>Test Name</th><th>Test #</th><th>Status</th><th>Price</th><th>Detail</th>';
     rowsHtml = result.records.map(r => `<tr>
-      <td>${escapeHtml(r.testName || '—')}</td>
+      <td>${escapeHtml(r.testName || '—')}${aiConfirmedTag(r)}</td>
       <td>${escapeHtml(r.testNumber || '—')}</td>
       <td>${escapeHtml(r.status || '—')}</td>
       <td>${r.price ? '$' + escapeHtml(r.price) : '—'}</td>
@@ -3495,7 +3516,7 @@ function ldtSourceDetailSection(src, result) {
   } else if (src.id === 'labcorp') {
     headHtml = '<th>Test Name</th><th>Test #</th><th>Methodology</th><th>Specimen</th><th>Detail</th>';
     rowsHtml = result.records.map(r => `<tr>
-      <td>${escapeHtml(r.testName || '—')}</td>
+      <td>${escapeHtml(r.testName || '—')}${aiConfirmedTag(r)}</td>
       <td>${escapeHtml(r.testNumber || '—')}</td>
       <td>${escapeHtml(r.methodology || '—')}</td>
       <td>${escapeHtml(r.specimen || '—')}</td>
@@ -3504,7 +3525,7 @@ function ldtSourceDetailSection(src, result) {
   } else { // quest — no public per-test detail URL exposed by their search API
     headHtml = '<th>Test Name</th><th>Order Code</th><th>Performing Lab</th><th>Aliases</th>';
     rowsHtml = result.records.map(r => `<tr>
-      <td>${escapeHtml(r.testName || '—')}</td>
+      <td>${escapeHtml(r.testName || '—')}${aiConfirmedTag(r)}</td>
       <td>${escapeHtml(r.orderCode || '—')}</td>
       <td>${escapeHtml(stripHtml(r.performingLab) || '—')}</td>
       <td>${escapeHtml(r.aliases || '—')}</td>
@@ -3646,6 +3667,28 @@ function renderLdtChart(valid) {
 }
 
 // `terms`: string[]. `logToTerminal`, if true, writes each term's trace live into the shared
+// Backend-only, same as the FDA-side AI-suggested expansion tier — a local LLM (Ollama) isn't
+// reachable from a plain static-file browser session, only through the local index server that
+// already has LOCAL_LLM_URL/LOCAL_LLM_MODEL configured (see server/main.py's POST /ldt-
+// crosscheck). Gracefully returns {} (every candidate left unconfirmed, same as "not checked")
+// whenever no local index server is set or it's unreachable — a real network hiccup here should
+// never turn into a broken LDT search, only a missing confidence tag.
+async function checkLdtCandidatesWithAi(baseUrl, term, candidates) {
+  if (!candidates.length) return {};
+  try {
+    const res = await fetch(`${baseUrl}/ldt-crosscheck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ term, candidates }),
+    });
+    if (!res.ok) return {};
+    const body = await res.json();
+    return body.results || {};
+  } catch {
+    return {};
+  }
+}
+
 // Platform activity terminal (see termLine) — used by the direct LDT tab (runLdtSearch).
 // Deliberately false for the crossCheckBtn handler (Table 2), which stays a secondary, opt-in
 // action with its own inline progress text rather than adding a second, less-relevant stream
@@ -3687,6 +3730,37 @@ async function runLdtSearchForTerms(terms, onProgress, logToTerminal) {
       } catch (e) {
         bySource[src.id] = { source: src.id, total: 0, records: [], error: e.message || String(e) };
         pushTrace(trace, src.id, 'error', e.message || String(e), Math.round(performance.now() - t0));
+      }
+    }
+
+    // AI cross-check, across every source's records at once (one batched call per term, not one
+    // per candidate — see checkLdtCandidatesWithAi's own comment). Backend-only, so this is a
+    // pure no-op when no local index server is configured: every record simply keeps
+    // aiConfirmed undefined, same as it already was.
+    const localIndexUrl = getLocalIndexUrl();
+    if (localIndexUrl) {
+      const allCandidates = [];
+      for (const src of sources) {
+        const records = (bySource[src.id] && bySource[src.id].records) || [];
+        for (const r of records) {
+          allCandidates.push({ id: allCandidates.length, name: ldtRecordDisplayName(src.id, r), record: r });
+        }
+      }
+      if (allCandidates.length) {
+        const aiT0 = performance.now();
+        const results = await checkLdtCandidatesWithAi(
+          localIndexUrl, term,
+          allCandidates.map(({ id, name }) => ({ id, name })),
+        );
+        const judgedCount = Object.keys(results).length;
+        pushTrace(trace, 'ldt-crosscheck', judgedCount ? 'hit' : 'skipped',
+          judgedCount ? `${judgedCount}/${allCandidates.length} candidate(s) judged` : 'no local LLM configured or unreachable',
+          Math.round(performance.now() - aiT0));
+        for (const { id, record } of allCandidates) {
+          if (Object.prototype.hasOwnProperty.call(results, String(id))) {
+            record.aiConfirmed = !!results[String(id)];
+          }
+        }
       }
     }
 
