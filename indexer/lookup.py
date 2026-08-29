@@ -79,7 +79,7 @@ def read_biomarker_result(conn, key: str, term: str, expansion: dict | None,
     }
 
 
-EXPANSION_SOURCE_MATCH_MODE = {"umls": "umls", "search-ai": "ai-suggested"}
+EXPANSION_SOURCE_MATCH_MODE = {"umls": "umls", "pubmed": "pubmed", "search-ai": "ai-suggested"}
 
 
 async def resolve_and_cache_expansion(conn, client, term: str, key: str, ai_config: dict,
@@ -161,6 +161,12 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
             client, term, ai_config.get("umls_api_key"), trace=trace,
         )
         source = "umls" if expansion else "none"
+        # Free precheck, tried only when UMLS found nothing — ahead of the paid/slow Tavily+
+        # local-LLM escalation below, same "cheap sources before expensive ones" ordering UMLS
+        # itself already gets relative to Tavily.
+        if not expansion:
+            expansion = await ai_expansion.lookup_pubmed_expansion(client, term, trace=trace)
+            source = "pubmed" if expansion else "none"
 
     db.clear_matches_for_biomarker(conn, key)
     result = await fetch_biomarker_matches(client, DEVICE_510K, term, expansion, api_key, trace=trace)

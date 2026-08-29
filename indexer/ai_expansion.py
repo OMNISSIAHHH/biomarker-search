@@ -26,15 +26,23 @@ fallback sources tried in order:
    the old approach, but it's not a curated database lookup, so it keeps the same "verify
    manually" caution the tag already carried.
 """
+import asyncio
 import re
 import time
 
 import httpx
 
-from indexer.matching import STRICT_ANTIBODY_WORDS, anti_requirement_mode, split_expansion_tokens
+from collections import Counter
+
+from indexer.matching import (
+    STRICT_ANTIBODY_WORDS, anti_requirement_mode, split_expansion_tokens, strip_anti_prefix,
+    strip_isotype_suffix,
+)
 
 UMLS_SEARCH_BASE = "https://uts-ws.nlm.nih.gov/rest/search/current"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+PUBMED_ESEARCH_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_EFETCH_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
 UNKNOWN_RE = re.compile(r"^UNKNOWN\b", re.IGNORECASE)
 STOPWORDS = {"the", "a", "an", "of", "and", "or", "in", "for", "to", "with", "is", "are"}
@@ -143,6 +151,146 @@ async def lookup_umls_expansion(client: httpx.AsyncClient, term: str, umls_api_k
             elapsed = int((time.monotonic() - t0) * 1000)
             _trace(trace, "expansion:umls", "error", f"searchType={search_type}: {e}", elapsed)
             continue  # fall through to the next searchType, then to the caller's own handling
+    return None
+
+
+# --- PubMed precheck (free, no key, ahead of the paid/slow Tavily+local-LLM tier) -----------
+# NLM's E-utilities API (esearch + efetch) is free, unauthenticated (3 req/s), and CORS-open —
+# no proxy Worker needed, same as UMLS above. Unlike UMLS (a curated synonym database), PubMed
+# has no direct "resolve this abbreviation" endpoint, so this uses the standard biomedical-
+# literature trick: search article titles/abstracts for the exact abbreviation, then extract
+# whatever text immediately precedes a matching "(ABBREV)" parenthetical — the near-universal
+# convention for introducing an abbreviation on first use (e.g. "...zinc transporter 8 (ZnT8A)
+# autoantibody...", "...aquaporin-4 (AQP4)..."). Confirmed live against ama-m2, GADA, ZnT8A,
+# dsDNA, cTnT, AQP4, and HPV — all correctly resolved; "Can f 4" (allergen nomenclature) and
+# "Anti-HPV" (literal, with the "Anti-" prefix) found nothing, a known, accepted gap for this
+# tier — the caller falls through to Tavily/AI when this returns None, same as a UMLS miss.
+PUBMED_PAREN_RE = re.compile(r"\(([^()]{1,40})\)")
+PUBMED_SPLIT_RE = re.compile(r"[.,;:]\s")
+# Real analyte/device names essentially never contain a bare preposition/article/conjunction —
+# scanning backward from the abbreviation and stopping at the first one isolates the actual noun
+# phrase from whatever clause precedes it (e.g. "used in Japan for relapse prevention in
+# aquaporin-4 (AQP4)" -> just "aquaporin-4", not the whole clause).
+PUBMED_LEADING_STOPWORDS = {"and", "or", "the", "a", "an", "of", "in", "for", "with",
+                            "including", "such", "as", "both", "either", "on", "to"}
+
+
+def _normalize_for_paren_match(s: str) -> str:
+    return re.sub(r"[\s\-]+", "", s).lower()
+
+
+def _extract_pubmed_long_forms(text: str, term: str) -> list[str]:
+    target = _normalize_for_paren_match(term)
+    out = []
+    for m in PUBMED_PAREN_RE.finditer(text):
+        if _normalize_for_paren_match(m.group(1)) != target:
+            continue
+        segment = PUBMED_SPLIT_RE.split(text[:m.start()])[-1]
+        words = segment.strip().split()[-8:]
+        trimmed: list[str] = []
+        for w in reversed(words):
+            if w.lower().strip(",()") in PUBMED_LEADING_STOPWORDS and trimmed:
+                break
+            trimmed.insert(0, w)
+        candidate = " ".join(trimmed).strip(" ,")
+        if not candidate or _normalize_for_paren_match(candidate) == target or len(candidate) <= len(term):
+            continue
+        if not candidate.isascii():
+            continue  # foreign-language abstract / encoding artifact
+        # A short bare number ("8", "16") is often a real part of a name (zinc transporter 8,
+        # HPV 16) — only reject longer runs (patient counts like "2959") and explicit ranges
+        # (age ranges like "18-29"), which are never part of a real analyte/device name.
+        if any(re.fullmatch(r"\d{3,}", tok) or re.fullmatch(r"\d+-\d+", tok) for tok in candidate.split()):
+            continue
+        out.append(candidate)
+    return out
+
+
+def _build_pubmed_expansion(candidates: list[str]) -> dict | None:
+    if not candidates:
+        return None
+    counts = Counter(c.lower() for c in candidates)
+    # Most frequently-seen phrasing wins; ties broken toward the SHORTER phrase — a longer
+    # extraction is more likely to have swept up a leading descriptive word that will never
+    # appear in real device text.
+    best_lower = max(counts, key=lambda k: (counts[k], -len(k)))
+    full = next(c for c in candidates if c.lower() == best_lower)
+    other_primary = sorted({c for c in candidates if c.lower() != best_lower},
+                            key=lambda c: -counts[c.lower()])
+    # Also offer progressively shorter suffixes of the chosen phrase as fallback alternates —
+    # if a leading word in `full` never appears in real device text, a shorter, safer suffix
+    # closer to the abbreviation itself might still match (see build_expansion_expr's OR-of-
+    # alternates handling, same mechanism the AI-suggested tier's synonym list already relies on).
+    full_words = full.split()
+    suffixes = [" ".join(full_words[d:]) for d in (1, 2) if len(full_words) > d + 1]
+    seen = {best_lower}
+    alternates = []
+    for c in other_primary + suffixes:
+        if c.lower() not in seen:
+            seen.add(c.lower())
+            alternates.append(c)
+    alternates = alternates[:2]
+    return {"full": full, "search": "/".join([full] + alternates)} if alternates else {"full": full}
+
+
+async def _pubmed_get_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> httpx.Response:
+    """NCBI's public E-utilities rate limit (3 req/s, unauthenticated) is easy to hit when
+    several biomarkers in one search batch all fall through to this tier back-to-back —
+    confirmed live, a tight test loop with no spacing silently 429'd most of the later terms.
+    """
+    for attempt in range(3):
+        res = await client.get(url, params=params, timeout=20.0)
+        if res.status_code == 429 and attempt < 2:
+            await asyncio.sleep(0.6 * 2 ** attempt)
+            continue
+        return res
+    return res  # pragma: no cover
+
+
+async def _pubmed_esearch_ids(client: httpx.AsyncClient, term: str) -> list[str]:
+    params = {"db": "pubmed", "term": f"{term}[tiab]", "retmode": "json", "retmax": "10",
+              "tool": "biomarker-search"}
+    res = await _pubmed_get_with_retry(client, PUBMED_ESEARCH_BASE, params)
+    res.raise_for_status()
+    return ((res.json().get("esearchresult") or {}).get("idlist")) or []
+
+
+async def lookup_pubmed_expansion(client: httpx.AsyncClient, term: str,
+                                   trace: list[dict] | None = None) -> dict | None:
+    """Tries `term` as typed first; if that finds nothing and the term carries an "Anti-"
+    prefix or Ig-class suffix, retries on the bare antigen (e.g. "Anti-HPV" -> "HPV") — PubMed's
+    exact-abbreviation search is far less forgiving than UMLS's fuzzy matching, and a real paper
+    defining "(HPV)" is common while one defining "(Anti-HPV)" verbatim essentially never occurs.
+    """
+    for candidate_term in dict.fromkeys(
+        [term, strip_anti_prefix(strip_isotype_suffix(term)).strip()]
+    ):
+        if not candidate_term:
+            continue
+        t0 = time.monotonic()
+        try:
+            ids = await _pubmed_esearch_ids(client, candidate_term)
+            if not ids:
+                _trace(trace, "expansion:pubmed", "miss", f'"{candidate_term}": 0 PubMed articles',
+                       int((time.monotonic() - t0) * 1000))
+                continue
+            fetch_res = await _pubmed_get_with_retry(
+                client, PUBMED_EFETCH_BASE,
+                {"db": "pubmed", "id": ",".join(ids), "rettype": "abstract", "retmode": "text",
+                 "tool": "biomarker-search"},
+            )
+            fetch_res.raise_for_status()
+            elapsed = int((time.monotonic() - t0) * 1000)
+            expansion = _build_pubmed_expansion(_extract_pubmed_long_forms(fetch_res.text, candidate_term))
+            if expansion:
+                _trace(trace, "expansion:pubmed", "hit",
+                       f'"{candidate_term}": matched: {expansion["full"]}', elapsed)
+                return expansion
+            _trace(trace, "expansion:pubmed", "miss",
+                   f'"{candidate_term}": {len(ids)} articles, no "({candidate_term})" definition found', elapsed)
+        except httpx.HTTPError as e:
+            _trace(trace, "expansion:pubmed", "error", f'"{candidate_term}": {e}',
+                   int((time.monotonic() - t0) * 1000))
     return None
 
 
@@ -317,9 +465,9 @@ async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: 
                              tavily_api_key: str | None = None, local_llm_url: str | None = None,
                              local_llm_model: str | None = None,
                              trace: list[dict] | None = None) -> tuple[dict | None, str]:
-    """Returns (expansion, source) where source is 'umls' | 'search-ai' | 'none' — the caller
-    persists source alongside the expansion in expansion_cache so a genuinely-unresolvable term
-    doesn't get re-asked of either source on every single search.
+    """Returns (expansion, source) where source is 'umls' | 'pubmed' | 'search-ai' | 'none' — the
+    caller persists source alongside the expansion in expansion_cache so a genuinely-
+    unresolvable term doesn't get re-asked of any source on every single search.
 
     Confirmed live (a real UMLS key): a UMLS hit used to short-circuit here, skipping the AI
     crosscheck entirely — but UMLS returns exactly ONE candidate name, no alternates, unlike the
@@ -332,18 +480,25 @@ async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: 
     This does mean a UMLS-configured search always also pays the Tavily/local-LLM latency (the
     same ~10-30s already documented for the AI-only path) rather than skipping it on a UMLS hit —
     a deliberate correctness-over-speed tradeoff, not an oversight.
+
+    PubMed is a free precheck tried only when UMLS found nothing (unlike UMLS/AI, which always
+    both run) — it's specifically there to catch what UMLS misses, so there's nothing to gain by
+    running it after a UMLS hit already provided a primary candidate.
     """
     umls_expansion = await lookup_umls_expansion(client, term, umls_api_key, trace)
+    pubmed_expansion = None if umls_expansion else await lookup_pubmed_expansion(client, term, trace)
+    primary = umls_expansion or pubmed_expansion
+    primary_source = "umls" if umls_expansion else ("pubmed" if pubmed_expansion else "none")
     ai_expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url,
                                                      local_llm_model, trace)
-    if umls_expansion and ai_expansion:
+    if primary and ai_expansion:
         merged_search = "/".join([
-            umls_expansion.get("search") or umls_expansion["full"],
+            primary.get("search") or primary["full"],
             ai_expansion.get("search") or ai_expansion["full"],
         ])
-        return {"full": umls_expansion["full"], "search": merged_search}, "umls"
-    if umls_expansion:
-        return umls_expansion, "umls"
+        return {"full": primary["full"], "search": merged_search}, primary_source
+    if primary:
+        return primary, primary_source
     if ai_expansion:
         return ai_expansion, "search-ai"
     return None, "none"

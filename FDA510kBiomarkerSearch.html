@@ -1452,6 +1452,146 @@ async function lookupUmlsExpansion(term, umlsApiKey) {
   return null;
 }
 
+// --- PubMed precheck (free, no key, ahead of the paid/slow Tavily+local-LLM tier) -----------
+// NLM's E-utilities API (esearch + efetch) is free, unauthenticated, and CORS-open — no proxy
+// Worker needed, same as UMLS above. Unlike UMLS (a curated synonym database), PubMed has no
+// direct "resolve this abbreviation" endpoint, so this uses the standard biomedical-literature
+// trick: search article titles/abstracts for the exact abbreviation, then extract whatever text
+// immediately precedes a matching "(ABBREV)" parenthetical — the near-universal convention for
+// introducing an abbreviation on first use (e.g. "...zinc transporter 8 (ZnT8A) autoantibody...",
+// "...aquaporin-4 (AQP4)..."). Confirmed live against ama-m2, GADA, ZnT8A, dsDNA, cTnT, AQP4, and
+// HPV — all correctly resolved; "Can f 4" (allergen nomenclature) and "Anti-HPV" (literal, with
+// the "Anti-" prefix) found nothing, a known, accepted gap for this tier — the caller falls
+// through to the next tier when this returns null, same as a UMLS miss. Mirrors
+// indexer/ai_expansion.py's identical lookup_pubmed_expansion.
+const PUBMED_ESEARCH_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi';
+const PUBMED_EFETCH_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi';
+const PUBMED_PAREN_RE = /\(([^()]{1,40})\)/g;
+// Real analyte/device names essentially never contain a bare preposition/article/conjunction —
+// scanning backward from the abbreviation and stopping at the first one isolates the actual noun
+// phrase from whatever clause precedes it (e.g. "used in Japan for relapse prevention in
+// aquaporin-4 (AQP4)" -> just "aquaporin-4", not the whole clause).
+const PUBMED_LEADING_STOPWORDS = new Set(['and', 'or', 'the', 'a', 'an', 'of', 'in', 'for', 'with',
+  'including', 'such', 'as', 'both', 'either', 'on', 'to']);
+
+function normalizeForParenMatch(s) {
+  return s.replace(/[\s-]+/g, '').toLowerCase();
+}
+
+function extractPubmedLongForms(text, term) {
+  const target = normalizeForParenMatch(term);
+  const out = [];
+  let m;
+  PUBMED_PAREN_RE.lastIndex = 0;
+  while ((m = PUBMED_PAREN_RE.exec(text))) {
+    if (normalizeForParenMatch(m[1]) !== target) continue;
+    const before = text.slice(0, m.index);
+    const segments = before.split(/[.,;:]\s/);
+    const words = segments[segments.length - 1].trim().split(/\s+/).slice(-8);
+    const trimmed = [];
+    for (let i = words.length - 1; i >= 0; i--) {
+      const w = words[i];
+      if (PUBMED_LEADING_STOPWORDS.has(w.toLowerCase().replace(/[,()]/g, '')) && trimmed.length) break;
+      trimmed.unshift(w);
+    }
+    const candidate = trimmed.join(' ').trim().replace(/,$/, '');
+    if (!candidate || normalizeForParenMatch(candidate) === target || candidate.length <= term.length) continue;
+    if (!/^[\x00-\x7F]*$/.test(candidate)) continue; // foreign-language abstract / encoding artifact
+    // A short bare number ("8", "16") is often a real part of a name (zinc transporter 8, HPV
+    // 16) — only reject longer runs (patient counts like "2959") and explicit ranges (age
+    // ranges like "18-29"), which are never part of a real analyte/device name.
+    if (candidate.split(/\s+/).some(tok => /^\d{3,}$/.test(tok) || /^\d+-\d+$/.test(tok))) continue;
+    out.push(candidate);
+  }
+  return out;
+}
+
+function buildPubmedExpansion(candidates) {
+  if (!candidates.length) return null;
+  const counts = new Map();
+  for (const c of candidates) counts.set(c.toLowerCase(), (counts.get(c.toLowerCase()) || 0) + 1);
+  // Most frequently-seen phrasing wins; ties broken toward the SHORTER phrase — a longer
+  // extraction is more likely to have swept up a leading descriptive word that will never
+  // appear in real device text.
+  let bestLower = null;
+  for (const [lower, count] of counts) {
+    if (bestLower === null) { bestLower = lower; continue; }
+    const bestCount = counts.get(bestLower);
+    if (count > bestCount || (count === bestCount && lower.length < bestLower.length)) bestLower = lower;
+  }
+  const full = candidates.find(c => c.toLowerCase() === bestLower);
+  const otherPrimary = [...new Set(candidates.filter(c => c.toLowerCase() !== bestLower))]
+    .sort((a, b) => (counts.get(b.toLowerCase()) || 0) - (counts.get(a.toLowerCase()) || 0));
+  // Also offer progressively shorter suffixes of the chosen phrase as fallback alternates — if
+  // a leading word in `full` never appears in real device text, a shorter, safer suffix closer
+  // to the abbreviation itself might still match.
+  const fullWords = full.split(' ');
+  const suffixes = [1, 2].filter(d => fullWords.length > d + 1).map(d => fullWords.slice(d).join(' '));
+  const seen = new Set([bestLower]);
+  const alternates = [];
+  for (const c of [...otherPrimary, ...suffixes]) {
+    if (!seen.has(c.toLowerCase())) { seen.add(c.toLowerCase()); alternates.push(c); }
+  }
+  const top = alternates.slice(0, 2);
+  return top.length ? { full, search: [full, ...top].join('/') } : { full };
+}
+
+// NCBI's public E-utilities rate limit (3 req/s, unauthenticated) is easy to hit when several
+// biomarkers in one search batch all fall through to this tier back-to-back — confirmed live,
+// a tight 9-term test loop with no spacing silently 429'd most of the later terms. Same
+// exponential-backoff shape as fetchOpenFdaWithRetry above, just for this API.
+async function fetchPubmedWithRetry(url) {
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch {
+      if (attempt >= 2) return null;
+      await sleep(400 * 2 ** attempt);
+      continue;
+    }
+    if (res.status === 429) {
+      if (attempt >= 2) return res;
+      await sleep(600 * 2 ** attempt);
+      continue;
+    }
+    return res;
+  }
+}
+
+async function pubmedEsearchIds(term) {
+  const params = new URLSearchParams({ db: 'pubmed', term: `${term}[tiab]`, retmode: 'json', retmax: '10', tool: 'biomarker-search' });
+  const res = await fetchPubmedWithRetry(`${PUBMED_ESEARCH_BASE}?${params.toString()}`);
+  if (!res || !res.ok) return [];
+  const body = await res.json();
+  return body?.esearchresult?.idlist || [];
+}
+
+async function lookupPubmedExpansion(term) {
+  // Tries `term` as typed first; if that finds nothing and the term carries an "Anti-" prefix
+  // or Ig-class suffix, retries on the bare antigen (e.g. "Anti-HPV" -> "HPV") — PubMed's exact-
+  // abbreviation search is far less forgiving than UMLS's fuzzy matching, and a real paper
+  // defining "(HPV)" is common while one defining "(Anti-HPV)" verbatim essentially never occurs.
+  const antigen = stripAntiPrefix(stripIsotypeSuffix(term)).trim();
+  const candidateTerms = [...new Set([term, antigen].filter(Boolean))];
+  for (const candidateTerm of candidateTerms) {
+    try {
+      const ids = await pubmedEsearchIds(candidateTerm);
+      if (!ids.length) continue;
+      const params = new URLSearchParams({ db: 'pubmed', id: ids.join(','), rettype: 'abstract', retmode: 'text', tool: 'biomarker-search' });
+      const res = await fetchPubmedWithRetry(`${PUBMED_EFETCH_BASE}?${params.toString()}`);
+      if (!res || !res.ok) continue;
+      const text = await res.text();
+      const expansion = buildPubmedExpansion(extractPubmedLongForms(text, candidateTerm));
+      if (expansion) return expansion;
+    } catch {
+      // Network failure, rate limit, etc. — fall through to the next candidate term, and
+      // ultimately to the caller's own null-result handling, rather than breaking the search.
+    }
+  }
+  return null;
+}
+
 // Every biomarker can now fan out into several sequential openFDA calls (exact/broad/antigen-
 // only, an always-on fused-word check, dictionary "alwaysCheck" entries, UMLS, panel
 // candidates) — several times what this was originally built for. That makes a transient 429
@@ -2047,6 +2187,23 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage, 
       }
     } else {
       pushTrace(trace, 'expansion:umls', 'skipped', 'no UMLS key configured');
+    }
+
+    // Free precheck, tried only when UMLS found nothing — no API key, no proxy Worker needed
+    // (NLM's E-utilities API is CORS-open, same as UMLS). See lookupPubmedExpansion's own
+    // comment for the extraction approach; mirrors indexer/ai_expansion.py's identical tier.
+    if (!resolvedExpansion) {
+      t0 = performance.now();
+      const pubmedExpansion = await lookupPubmedExpansion(searchTerm);
+      const elapsed = Math.round(performance.now() - t0);
+      if (pubmedExpansion) {
+        resolvedExpansion = pubmedExpansion; resolvedMode = 'pubmed';
+        pushTrace(trace, 'expansion:pubmed', 'hit', `matched: ${pubmedExpansion.full}`, elapsed);
+      } else {
+        pushTrace(trace, 'expansion:pubmed', 'miss', 'no usable abbreviation definition found', elapsed);
+      }
+    } else {
+      pushTrace(trace, 'expansion:pubmed', 'skipped', 'an earlier source already resolved this term');
     }
     // No client-side Tavily/local-LLM crosscheck — that tier is backend-only (see
     // indexer/ai_expansion.py); noted here so the log doesn't just silently omit it.
@@ -2731,6 +2888,7 @@ const MATCH_MODE_LABEL = {
   broad: 'Broad match',
   'antigen-only': 'Antigen-only match',
   umls: 'UMLS-resolved match',
+  pubmed: 'PubMed-resolved match',
   'ai-suggested': 'AI-suggested match',
   'fused-anti': 'Fused-word match',
   wordform: 'Alternate wordform match',
@@ -2742,6 +2900,7 @@ const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
   'antigen-only': 'No match including the Ig-class (IgG/IgA/IgM) — matched on the antigen name alone, since many FDA device names omit the isotype. The count may include products that are not isotype-specific.',
   umls: 'No match on the abbreviation itself — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
+  pubmed: 'No match on the abbreviation itself, and no UMLS entry either — the name searched instead was extracted automatically from PubMed abstracts that define this exact abbreviation in parentheses (e.g. "...aquaporin-4 (AQP4)..."), and hasn\'t been manually verified. Double-check the match makes sense.',
   'ai-suggested': 'No match on the abbreviation itself, and no UMLS entry either — the cross-check backend searched the web for it and had a local AI model extract the full name from those search results (not from the model\'s own memorized guess). More grounded than a cold guess, but still not a database lookup — worth a manual check, e.g. via Check Measurand.',
   'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
   wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.',
