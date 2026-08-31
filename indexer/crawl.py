@@ -69,27 +69,36 @@ async def crawl_pdfs_in_scope(client: httpx.AsyncClient, conn, committees: list[
                 pdf_bytes, source_url = await pdf_extract.fetch_decision_pdf(client, k_number)
             except pdf_extract.PdfFetchError as e:
                 db.upsert_pdf_text(conn, k_number, fetched_at, None, None, None, None, str(e))
+                conn.commit()
                 return
             try:
                 extracted = pdf_extract.extract_pdf(pdf_bytes)
             except Exception as e:  # malformed/unparseable PDF — record and move on
                 db.upsert_pdf_text(conn, k_number, fetched_at, source_url, None, None, None, f"parse error: {e}")
+                conn.commit()
                 return
             db.upsert_pdf_text(
                 conn, k_number, fetched_at, source_url, extracted.full_text,
                 extracted.measurand_label, extracted.measurand_value, None,
             )
             db.insert_predicates(conn, k_number, extracted.predicates)
+            # Committed here, per device, not once per 50-device batch — confirmed live this is
+            # load-bearing: a single commit per batch kept this crawl's write transaction open
+            # across up to 50 sequential/concurrent network fetches at a time, comfortably
+            # exceeding the 5s busy_timeout indexer/db.py's connect() relies on to let an
+            # ordinary search's own write share the database with a running crawl — a concurrent
+            # search raised "database is locked" as a result. No coroutine can interleave between
+            # these writes and this commit (no `await` in between), so this is still atomic per
+            # device despite running inside asyncio.gather's concurrency.
+            conn.commit()
 
     # A cancelled asyncio.Task (see server/main.py's POST /crawl/cancel) unwinds at whatever
     # await this loop is currently sitting on — inside asyncio.gather, that's each fetch_one's
-    # semaphore acquire or httpx call. Only the in-flight batch's uncommitted rows (<=50 devices)
-    # are lost; every batch that already reached conn.commit() below is untouched, same "loses a
-    # little, not everything" property this already has against a plain process kill.
+    # semaphore acquire or httpx call. fetch_one now commits its own writes as it finishes, so at
+    # most the one PDF in flight at cancellation time is lost, not a whole batch.
     for i in range(0, len(to_fetch), 50):
         batch = to_fetch[i:i + 50]
         await asyncio.gather(*(fetch_one(k) for k in batch))
-        conn.commit()
         sink.append({"type": "pdf_batch", "fetched": min(i + 50, len(to_fetch)), "of": len(to_fetch)})
 
 

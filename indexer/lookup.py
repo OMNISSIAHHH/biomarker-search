@@ -168,7 +168,9 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
             expansion = await ai_expansion.lookup_pubmed_expansion(client, term, trace=trace)
             source = "pubmed" if expansion else "none"
 
-    db.clear_matches_for_biomarker(conn, key)
+    # No DB writes from here through the anti-unconfirmed fallback below — every step in between
+    # is read-only (openFDA/Tavily/local-LLM network calls only). See the write-batch comment
+    # further down for why that matters.
     result = await fetch_biomarker_matches(client, DEVICE_510K, term, expansion, api_key, trace=trace)
 
     # Confirmed live: escalating only on result["total"] == 0 missed the actual failure mode for
@@ -199,7 +201,6 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
                 source = "search-ai"
             result = await fetch_biomarker_matches(client, DEVICE_510K, term, expansion, api_key, trace=trace)
 
-    db.upsert_expansion_cache(conn, key, expansion, source, datetime.now(timezone.utc).isoformat())
     # matching.py's 'expansion' tier tag means "nothing else matched, only the resolved name/
     # synonyms did" — relabeled per the source that actually resolved it, so the tag correctly
     # conveys whether this was an unverified database lookup ('umls') or a search-grounded AI
@@ -265,9 +266,22 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
                 "elapsedMs": None,
             })
 
+    # Write batch: every write for this search, grouped together and committed immediately —
+    # deliberately NOT interleaved with the network calls above (this used to open with
+    # db.clear_matches_for_biomarker before any of them, and cache the expansion mid-pipeline).
+    # Confirmed live this is load-bearing, not just tidiness: a write transaction left open
+    # across Tavily/local-LLM/openFDA calls (10-30+ seconds for a search that escalates) held
+    # this connection's write lock the whole time, and a concurrent request's own write — another
+    # search, or the predicate crawl running in the background — raised "database is locked" once
+    # it exceeded connect()'s 5s busy_timeout. Everything below is synchronous (no `await`), so
+    # the lock is now held only for a fraction of a second. Same fix applied to
+    # indexer/panel_crawl.py's and indexer/crawl.py's own PDF-batch commits.
+    db.clear_matches_for_biomarker(conn, key)
+    db.upsert_expansion_cache(conn, key, expansion, source, datetime.now(timezone.utc).isoformat())
     for r in result["records"]:
         db.upsert_device(conn, r, source="pma" if r.get("clearance_type") == "PMA" else "510k")
         db.insert_match(conn, r["k_number"], key, match_mode, "confirmed")
+    conn.commit()
 
     # local join over already-crawled predicates/devices, no network call — safe to run
     # synchronously here

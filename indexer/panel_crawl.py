@@ -85,6 +85,14 @@ async def ensure_committee_devices_populated(client: httpx.AsyncClient, conn, co
         for r in records:
             db.upsert_device(conn, r, source="510k")
         skip += len(records)
+        # Committed after EACH page, not once after every page — confirmed live this is load-
+        # bearing, not cosmetic: with a single commit at the end, this function's write
+        # transaction stayed open across up to 5 sequential openFDA round-trips (a real "database
+        # is locked" reported by a concurrent search, exceeding the 5s busy_timeout in
+        # indexer/db.py's connect()). A concurrent writer only ever has to wait for one page's
+        # worth of upserts now, not the whole loop, and a cancelled/killed process loses at most
+        # one page instead of up to five.
+        conn.commit()
         if skip >= total:
             break
     fully_populated = total is not None and skip >= total
@@ -113,17 +121,28 @@ async def _crawl_one_pdf(client: httpx.AsyncClient, conn, k_number: str, sem: as
             pdf_bytes, source_url = await pdf_extract.fetch_decision_pdf(client, k_number)
         except pdf_extract.PdfFetchError as e:
             db.upsert_pdf_text(conn, k_number, fetched_at, None, None, None, None, str(e))
+            conn.commit()
             return False
         try:
             extracted = pdf_extract.extract_pdf(pdf_bytes)
         except Exception as e:  # malformed/unparseable PDF — record and move on
             db.upsert_pdf_text(conn, k_number, fetched_at, source_url, None, None, None, f"parse error: {e}")
+            conn.commit()
             return False
         db.upsert_pdf_text(
             conn, k_number, fetched_at, source_url, extracted.full_text,
             extracted.measurand_label, extracted.measurand_value, None,
         )
         db.insert_predicates(conn, k_number, extracted.predicates)
+        # Committed here, per PDF, not once after every PDF in the batch — confirmed live this is
+        # load-bearing: a single commit after asyncio.gather() kept this function's write
+        # transaction open across the ENTIRE batch's worth of network fetches (up to
+        # MAX_NEW_PDF_CRAWLS_PER_SEARCH), comfortably exceeding the 5s busy_timeout
+        # indexer/db.py's connect() relies on — a concurrent search's own write (e.g.
+        # db.mark_searched) raised "database is locked" as a result. No coroutine can interleave
+        # between these writes and this commit (no `await` in between), so this is still atomic
+        # per PDF despite running inside asyncio.gather's concurrency.
+        conn.commit()
         return True
 
 
@@ -163,8 +182,9 @@ async def crawl_panel_candidates_incremental(client: httpx.AsyncClient, conn, co
 
     t0 = asyncio.get_event_loop().time()
     sem = asyncio.Semaphore(PDF_FETCH_CONCURRENCY)
+    # Each _crawl_one_pdf call commits its own writes as it finishes (see its own comment) —
+    # nothing left to commit out here.
     results = await asyncio.gather(*(_crawl_one_pdf(client, conn, c["k_number"], sem) for c in candidates))
-    conn.commit()
     succeeded = sum(1 for ok in results if ok)
     if trace is not None:
         elapsed_ms = int((asyncio.get_event_loop().time() - t0) * 1000)
