@@ -164,12 +164,18 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
         # unrelated same-named gene/protein entry that's technically non-empty but useless for
         # matching real device text (confirmed live: cTnT/AQP4/GADA), silently hiding a better
         # PubMed answer that was available the whole time. Both free, ahead of the paid/slow
-        # Tavily+local-LLM escalation below.
+        # Tavily+local-LLM escalation below. Each source's own pick is also sanity-checked by the
+        # local LLM (when configured) before merging — see check_expansion_plausible's own
+        # comment for why a pattern filter alone isn't enough (confirmed live: after filtering
+        # out "gadA protein, E coli", GADA's next UMLS candidate was "COVID-19 Virus Disease").
         umls_expansion = await ai_expansion.lookup_umls_expansion(
             client, term, ai_config.get("umls_api_key"), trace=trace,
         )
         pubmed_expansion = await ai_expansion.lookup_pubmed_expansion(client, term, trace=trace)
-        expansion, source = ai_expansion.merge_umls_pubmed_expansion(umls_expansion, pubmed_expansion)
+        expansion, source = await ai_expansion.sanity_check_and_merge_expansion(
+            client, term, umls_expansion, pubmed_expansion,
+            ai_config.get("local_llm_url"), ai_config.get("local_llm_model"), trace=trace,
+        )
 
     # No DB writes from here through the last-resort "unconfirmed" fallback below — every step in between
     # is read-only (openFDA/Tavily/local-LLM network calls only). See the write-batch comment

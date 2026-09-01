@@ -1448,6 +1448,19 @@ const UMLS_SEARCH_BASE = 'https://uts-ws.nlm.nih.gov/rest/search/current';
 // indexer/ai_expansion.py's identical fix.
 const LOINC_CODE_NAME_RE = /^[^:]+(?::[^:]+){2,}$/;
 
+// Confirmed live: UMLS resolves several real biomarkers to a same-named gene/protein/variant
+// entry it also indexes (from HGNC/NCBI Gene, aggregated into the same Metathesaurus) rather
+// than a clinical/lab name — "cTnT" -> "TNNT2 protein, human"/"TNNT2 gene"/"TNNT2 wt Allele",
+// "AQP4" -> "AQP4 gene"/"AQP4 protein, human", "PSA" -> "PROS1 wt Allele"/"KLK3 wt Allele" (a
+// clean top pick still exists for PSA, but the gene-nomenclature noise sits right below it).
+// None of these are how a device or lab catalog names itself. The "protein," pattern requires a
+// comma before the species/qualifier word specifically so this doesn't reject a real, ordinary
+// device-relevant name that happens to end in "Protein" with no comma (e.g. "C-Reactive
+// Protein", "Myelin Basic Protein"). "dbSNP" catches genetic-variant-database entries (e.g.
+// "AQP4, ALA215THR (dbSNP rs148498248)") that don't match the gene/protein/allele suffix shape
+// but are exactly as useless. Mirrors indexer/ai_expansion.py's identical fix.
+const GENE_NOMENCLATURE_RE = /\b(gene|(?:wt\s+)?allele)\s*$|\bprotein\s*,\s*\S|dbsnp/i;
+
 async function lookupUmlsExpansion(term, umlsApiKey) {
   if (!umlsApiKey) return null;
   const preferAntibody = antiRequirementMode(term) !== 'none';
@@ -1459,7 +1472,7 @@ async function lookupUmlsExpansion(term, umlsApiKey) {
       const body = await res.json();
       const results = body?.result?.results || [];
       const usable = results.filter(r => r.ui && r.ui !== 'NONE' && r.name);
-      const clean = usable.filter(r => !LOINC_CODE_NAME_RE.test(r.name));
+      const clean = usable.filter(r => !LOINC_CODE_NAME_RE.test(r.name) && !GENE_NOMENCLATURE_RE.test(r.name));
       // UMLS ranks by textual relevance, not clinical category — confirmed live, "Anti-HPV"
       // ranked "Human Papilloma Virus Vaccine" (a Pharmacologic Substance) above "Human
       // papillomavirus antibody" (the actual antibody-assay concept), since both match the search

@@ -364,6 +364,17 @@ means a weak UMLS pick no longer blocks a better PubMed one. Flagged **PubMed-re
 when only PubMed found something, or **UMLS + PubMed-resolved match** when both did (either way,
 unverified — a quick sanity check via **Check Measurand** is worthwhile).
 
+Two safeguards keep a bad UMLS/PubMed pick from being used at all, backend only (both need the
+local LLM set up — see below): a pattern filter rejects an obviously gene/protein/genetic-
+variant-nomenclature-shaped name outright (e.g. "TNNT2 gene", "AQP4, ALA215THR (dbSNP
+rs148498248)"), and a lightweight AI plausibility check catches names that don't match any
+pattern but are simply unrelated (confirmed live: UMLS resolved "GADA" to "COVID-19 Virus
+Disease" — the pattern filter can't catch that, a one-word YES/NO model check can). A source
+whose pick fails either check is dropped entirely rather than shown, so the other source's
+result (or nothing, falling through to the next tier) is used instead. Without a local LLM
+configured, only the pattern filter runs — the browser-only fallback (no backend) gets the
+pattern filter too, but not the AI check, same as every other backend-only AI tier here.
+
 **Search-grounded AI crosscheck (backend only)** — for whatever UMLS and PubMed don't cover,
 including the wait while a UMLS license is pending. It searches the web for the term first (via
 [Tavily](https://tavily.com), free tier: 1,000 searches/month, no card, instant signup), then

@@ -80,6 +80,25 @@ def _looks_like_loinc_code_name(name: str) -> bool:
     return bool(LOINC_CODE_NAME_RE.match(name))
 
 
+# Confirmed live: UMLS resolves several real biomarkers to a same-named gene/protein/variant
+# entry it also indexes (from HGNC/NCBI Gene, aggregated into the same Metathesaurus) rather
+# than a clinical/lab name — "cTnT" -> "TNNT2 protein, human"/"TNNT2 gene"/"TNNT2 wt Allele",
+# "AQP4" -> "AQP4 gene"/"AQP4 protein, human", "PSA" -> "PROS1 wt Allele"/"KLK3 wt Allele" (a
+# clean top pick still exists for PSA, but the gene-nomenclature noise sits right below it).
+# None of these are how a device or lab catalog names itself. The "protein," pattern requires a
+# comma before the species/qualifier word specifically so this doesn't reject a real, ordinary
+# device-relevant name that happens to end in "Protein" with no comma (e.g. "C-Reactive
+# Protein", "Myelin Basic Protein") — those are real, common analyte names, not HGNC-style
+# nomenclature. "dbSNP" catches genetic-variant-database entries (e.g. "AQP4, ALA215THR (dbSNP
+# rs148498248)") that don't match the gene/protein/allele suffix shape but are exactly as
+# useless for device-text matching.
+GENE_NOMENCLATURE_RE = re.compile(r"\b(gene|(?:wt\s+)?allele)\s*$|\bprotein\s*,\s*\S|dbsnp", re.IGNORECASE)
+
+
+def _looks_like_gene_nomenclature_name(name: str) -> bool:
+    return bool(GENE_NOMENCLATURE_RE.search(name))
+
+
 def _clean_extracted_line(line: str) -> str:
     return LINE_PREFIX_RE.sub("", line).strip()
 
@@ -123,7 +142,9 @@ async def lookup_umls_expansion(client: httpx.AsyncClient, term: str, umls_api_k
             body = res.json()
             results = (body.get("result") or {}).get("results") or []
             usable = [r for r in results if r.get("ui") and r["ui"] != "NONE" and r.get("name")]
-            clean = [r for r in usable if not _looks_like_loinc_code_name(r["name"])]
+            clean = [r for r in usable
+                     if not _looks_like_loinc_code_name(r["name"])
+                     and not _looks_like_gene_nomenclature_name(r["name"])]
             # UMLS ranks by textual relevance, not clinical category — confirmed live, "Anti-HPV"
             # ranked "Human Papilloma Virus Vaccine" (a Pharmacologic Substance) above "Human
             # papillomavirus antibody" (the actual antibody-assay concept), because both match the
@@ -143,9 +164,13 @@ async def lookup_umls_expansion(client: httpx.AsyncClient, term: str, umls_api_k
                        f"matched via searchType={search_type}: {hit['name']}", elapsed)
                 return {"full": hit["name"]}
             skipped_loinc = any(_looks_like_loinc_code_name(r["name"]) for r in usable)
+            skipped_gene = any(_looks_like_gene_nomenclature_name(r["name"]) for r in usable)
+            skip_notes = [note for cond, note in (
+                (skipped_loinc, "LOINC-coded name(s)"), (skipped_gene, "gene/protein-nomenclature name(s)"),
+            ) if cond]
             _trace(trace, "expansion:umls", "miss",
                    f"searchType={search_type}: 0 usable results"
-                   + (" (skipped LOINC-coded name(s) with no plain-name alternative)" if skipped_loinc else ""),
+                   + (f" (skipped {' and '.join(skip_notes)} with no plain-name alternative)" if skip_notes else ""),
                    elapsed)
         except httpx.HTTPError as e:
             elapsed = int((time.monotonic() - t0) * 1000)
@@ -318,6 +343,93 @@ def merge_umls_pubmed_expansion(umls_expansion: dict | None, pubmed_expansion: d
     if pubmed_expansion:
         return pubmed_expansion, "pubmed"
     return None, "none"
+
+
+EXPANSION_SANITY_LINE_RE = re.compile(r"^\s*(YES|NO)\b", re.IGNORECASE)
+
+
+# Confirmed live this is necessary, not just belt-and-suspenders on top of
+# _looks_like_gene_nomenclature_name above: for "GADA", every UMLS "words"-search result other
+# than the gene-nomenclature-filtered "gadA protein, E coli" was something totally unrelated —
+# "COVID-19 Virus Disease", "Russell viper venom time (procedure)", a CHA2DS2-VASc stroke-risk
+# score — none of which match any pattern-based filter, since they're not mis-shaped, they're
+# just wrong. No regex can catch "this concept has nothing to do with the search term"; asking
+# the same local model already used for the AI-suggested tier is the only practical check for
+# that specific failure mode. Deliberately a single YES/NO classification, not a full extraction
+# — cheap and fast (same class of prompt as the LDT cross-check, ~1-10s once temperature is
+# pinned), not the 10-30s a real Tavily-grounded extraction costs.
+async def check_expansion_plausible(client: httpx.AsyncClient, term: str, full_name: str,
+                                     local_llm_url: str | None, local_llm_model: str | None,
+                                     trace: list[dict] | None = None) -> bool | None:
+    """Returns True/False, or None if the check couldn't run at all (no local LLM configured,
+    network/parse failure) — the caller treats None as "unable to check," never as a rejection,
+    same fail-open-to-unverified posture as every other optional AI tier in this tool.
+    """
+    if not local_llm_url or not local_llm_model:
+        return None
+    prompt = (
+        "You are sanity-checking an automated medical-abbreviation lookup for a medical device "
+        "search tool.\n"
+        f'Abbreviation searched: "{term}"\n'
+        f'Resolved full name: "{full_name}"\n\n'
+        f'Does "{full_name}" look like a plausible, correct full/spelled-out name for the '
+        f'abbreviation "{term}" in a medical/laboratory/diagnostic-test context? A gene symbol, '
+        "a genetic variant/allele designation, or an unrelated disease/condition/procedure name "
+        "is NOT plausible even if it happens to share letters with the abbreviation.\n"
+        "Reply with exactly one word: YES or NO."
+    )
+    t0 = time.monotonic()
+    try:
+        res = await client.post(
+            f"{local_llm_url}/api/generate",
+            json={"model": local_llm_model, "prompt": prompt, "stream": False, "think": False,
+                  "options": {"temperature": 0}},
+            timeout=60.0,
+        )
+        elapsed = int((time.monotonic() - t0) * 1000)
+        if res.status_code != 200:
+            _trace(trace, "expansion:sanity-check", "error", f'"{full_name}": HTTP {res.status_code}', elapsed)
+            return None
+        raw = (res.json().get("response") or "").split("</think>", 1)[-1].strip()
+        m = EXPANSION_SANITY_LINE_RE.match(raw)
+        if not m:
+            _trace(trace, "expansion:sanity-check", "error", f'"{full_name}": unparseable response', elapsed)
+            return None
+        plausible = m.group(1).upper() == "YES"
+        _trace(trace, "expansion:sanity-check", "hit" if plausible else "miss",
+               f'"{full_name}": {"plausible" if plausible else "rejected as implausible"}', elapsed)
+        return plausible
+    except httpx.HTTPError as e:
+        _trace(trace, "expansion:sanity-check", "error", f'"{full_name}": {e}',
+               int((time.monotonic() - t0) * 1000))
+        return None
+
+
+async def sanity_check_and_merge_expansion(client: httpx.AsyncClient, term: str,
+                                            umls_expansion: dict | None, pubmed_expansion: dict | None,
+                                            local_llm_url: str | None, local_llm_model: str | None,
+                                            trace: list[dict] | None = None) -> tuple[dict | None, str]:
+    """Sanity-checks each source's OWN candidate independently before merging — so one source's
+    implausible pick gets dropped without discarding the other's good one (checking only the
+    already-merged result would risk losing a genuinely correct PubMed phrase just because
+    UMLS's contribution to the same merged object happened to fail the check, or vice versa).
+    A no-op (returns merge_umls_pubmed_expansion's own result unchanged) when no local LLM is
+    configured — this check is a pure quality improvement on top of that merge, never a
+    requirement for it to work.
+    """
+    if umls_expansion:
+        plausible = await check_expansion_plausible(
+            client, term, umls_expansion["full"], local_llm_url, local_llm_model, trace,
+        )
+        if plausible is False:
+            umls_expansion = None
+    if pubmed_expansion:
+        plausible = await check_expansion_plausible(
+            client, term, pubmed_expansion["full"], local_llm_url, local_llm_model, trace,
+        )
+        if plausible is False:
+            pubmed_expansion = None
+    return merge_umls_pubmed_expansion(umls_expansion, pubmed_expansion)
 
 
 async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: str | None,
@@ -509,11 +621,15 @@ async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: 
 
     PubMed is now always tried too (see merge_umls_pubmed_expansion's own comment for why a UMLS
     hit shouldn't block it) — same "try everything, merge, let real device text decide which
-    phrase surfaces a match" approach the AI-crosscheck merge above already uses.
+    phrase surfaces a match" approach the AI-crosscheck merge above already uses. Each source's
+    own pick is also sanity-checked by the local LLM (when configured) before merging — see
+    check_expansion_plausible's own comment for why a pattern filter alone isn't enough.
     """
     umls_expansion = await lookup_umls_expansion(client, term, umls_api_key, trace)
     pubmed_expansion = await lookup_pubmed_expansion(client, term, trace)
-    primary, primary_source = merge_umls_pubmed_expansion(umls_expansion, pubmed_expansion)
+    primary, primary_source = await sanity_check_and_merge_expansion(
+        client, term, umls_expansion, pubmed_expansion, local_llm_url, local_llm_model, trace,
+    )
     ai_expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url,
                                                      local_llm_model, trace)
     if primary and ai_expansion:
