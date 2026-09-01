@@ -1620,6 +1620,29 @@ async function lookupPubmedExpansion(term) {
   return null;
 }
 
+// UMLS is tried first for being free/fast, but confirmed live its own ranking doesn't
+// consistently favor a clinical/lab-terminology name over a same-named gene/protein-nomenclature
+// entry it also indexes (from HGNC/NCBI Gene, aggregated into the same Metathesaurus) — "cTnT"
+// resolves to "TNNT2 protein, human" ahead of "High Sensitivity Troponin T Assay" (which IS in
+// UMLS's own data, just ranked lower); "AQP4" to a bare "AQP4 gene"; "GADA" to an unrelated E.
+// coli gene sharing the same letters. None of these are useless in the sense PubMed then also
+// strikes out — PubMed correctly resolved all three independently. The old design treated "UMLS
+// found *something*" as reason enough to never even try PubMed, so a technically-non-empty but
+// unhelpful UMLS pick silently blocked a better answer that was sitting right there. Now both are
+// always tried and merged: whichever phrase's tokens actually exist in real FDA/PMA device text
+// is what surfaces a match (buildExpansionExpr ORs every "/"-separated phrase together), so
+// neither has to "win" a priority race — a source only matters for the display label. Mirrors
+// indexer/ai_expansion.py's identical merge_umls_pubmed_expansion.
+function mergeUmlsPubmedExpansion(umlsExpansion, pubmedExpansion) {
+  if (umlsExpansion && pubmedExpansion) {
+    const mergedSearch = [umlsExpansion.search || umlsExpansion.full, pubmedExpansion.search || pubmedExpansion.full].join('/');
+    return [{ full: umlsExpansion.full, search: mergedSearch }, 'umls+pubmed'];
+  }
+  if (umlsExpansion) return [umlsExpansion, 'umls'];
+  if (pubmedExpansion) return [pubmedExpansion, 'pubmed'];
+  return [null, 'none'];
+}
+
 // Every biomarker can now fan out into several sequential openFDA calls (exact/broad/antigen-
 // only, an always-on fused-word check, dictionary "alwaysCheck" entries, UMLS, panel
 // candidates) — several times what this was originally built for. That makes a transient 429
@@ -2203,12 +2226,12 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage, 
     let resolvedExpansion = null;
     let resolvedMode = null;
 
+    let umlsExpansion = null;
     if (umlsApiKey) {
       t0 = performance.now();
-      const umlsExpansion = await lookupUmlsExpansion(searchTerm, umlsApiKey);
+      umlsExpansion = await lookupUmlsExpansion(searchTerm, umlsApiKey);
       const elapsed = Math.round(performance.now() - t0);
       if (umlsExpansion) {
-        resolvedExpansion = umlsExpansion; resolvedMode = 'umls';
         pushTrace(trace, 'expansion:umls', 'hit', `matched: ${umlsExpansion.full}`, elapsed);
       } else {
         pushTrace(trace, 'expansion:umls', 'miss', '0 usable results', elapsed);
@@ -2217,21 +2240,28 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage, 
       pushTrace(trace, 'expansion:umls', 'skipped', 'no UMLS key configured');
     }
 
-    // Free precheck, tried only when UMLS found nothing — no API key, no proxy Worker needed
-    // (NLM's E-utilities API is CORS-open, same as UMLS). See lookupPubmedExpansion's own
-    // comment for the extraction approach; mirrors indexer/ai_expansion.py's identical tier.
-    if (!resolvedExpansion) {
-      t0 = performance.now();
-      const pubmedExpansion = await lookupPubmedExpansion(searchTerm);
-      const elapsed = Math.round(performance.now() - t0);
-      if (pubmedExpansion) {
-        resolvedExpansion = pubmedExpansion; resolvedMode = 'pubmed';
-        pushTrace(trace, 'expansion:pubmed', 'hit', `matched: ${pubmedExpansion.full}`, elapsed);
-      } else {
-        pushTrace(trace, 'expansion:pubmed', 'miss', 'no usable abbreviation definition found', elapsed);
-      }
+    // Always tried now, not gated behind "UMLS found nothing" — confirmed live UMLS can resolve
+    // a term to an unrelated same-named gene/protein entry (e.g. "TNNT2 protein, human" for
+    // cTnT) that's technically non-empty but useless for matching real device text, previously
+    // blocking PubMed's often-better answer from ever getting a chance. Both are merged
+    // (mergeUmlsPubmedExpansion) so whichever phrase's tokens actually exist in real FDA/PMA
+    // text is what surfaces a match — neither has to "win" a priority race. No API key, no proxy
+    // Worker needed (NLM's E-utilities API is CORS-open, same as UMLS). See
+    // lookupPubmedExpansion's own comment for the extraction approach; mirrors
+    // indexer/ai_expansion.py's identical tier.
+    t0 = performance.now();
+    const pubmedExpansion = await lookupPubmedExpansion(searchTerm);
+    const pubmedElapsed = Math.round(performance.now() - t0);
+    if (pubmedExpansion) {
+      pushTrace(trace, 'expansion:pubmed', 'hit', `matched: ${pubmedExpansion.full}`, pubmedElapsed);
     } else {
-      pushTrace(trace, 'expansion:pubmed', 'skipped', 'an earlier source already resolved this term');
+      pushTrace(trace, 'expansion:pubmed', 'miss', 'no usable abbreviation definition found', pubmedElapsed);
+    }
+
+    const [mergedExpansion, mergedSource] = mergeUmlsPubmedExpansion(umlsExpansion, pubmedExpansion);
+    if (mergedExpansion) {
+      resolvedExpansion = mergedExpansion;
+      resolvedMode = mergedSource;
     }
     // No client-side Tavily/local-LLM crosscheck — that tier is backend-only (see
     // indexer/ai_expansion.py); noted here so the log doesn't just silently omit it.
@@ -2931,6 +2961,7 @@ const MATCH_MODE_LABEL = {
   'antigen-only': 'Antigen-only match',
   umls: 'UMLS-resolved match',
   pubmed: 'PubMed-resolved match',
+  'umls+pubmed': 'UMLS + PubMed-resolved match',
   'ai-suggested': 'AI-suggested match',
   'fused-anti': 'Fused-word match',
   wordform: 'Alternate wordform match',
@@ -2943,6 +2974,7 @@ const MATCH_MODE_TITLE = {
   'antigen-only': 'No match including the Ig-class (IgG/IgA/IgM) — matched on the antigen name alone, since many FDA device names omit the isotype. The count may include products that are not isotype-specific.',
   umls: 'No match on the abbreviation itself — the name searched instead was looked up automatically from NLM\'s UMLS medical terminology database, and hasn\'t been manually verified. Double-check the match makes sense.',
   pubmed: 'No match on the abbreviation itself, and no UMLS entry either — the name searched instead was extracted automatically from PubMed abstracts that define this exact abbreviation in parentheses (e.g. "...aquaporin-4 (AQP4)..."), and hasn\'t been manually verified. Double-check the match makes sense.',
+  'umls+pubmed': 'No match on the abbreviation itself — both UMLS and a PubMed abstract definition were tried and merged, and whichever one\'s wording actually matched real FDA/PMA text is what surfaced this result. Neither has been manually verified. Double-check the match makes sense.',
   'ai-suggested': 'No match on the abbreviation itself, and no UMLS entry either — the cross-check backend searched the web for it and had a local AI model extract the full name from those search results (not from the model\'s own memorized guess). More grounded than a cold guess, but still not a database lookup — worth a manual check, e.g. via Check Measurand.',
   'fused-anti': 'No match on "Anti" and the antigen as separate words — matched on them fused into one word instead (e.g. "Anticardiolipin"), since FDA\'s own classification text sometimes writes it that way with no separator at all.',
   wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.',

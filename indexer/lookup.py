@@ -79,7 +79,9 @@ def read_biomarker_result(conn, key: str, term: str, expansion: dict | None,
     }
 
 
-EXPANSION_SOURCE_MATCH_MODE = {"umls": "umls", "pubmed": "pubmed", "search-ai": "ai-suggested"}
+EXPANSION_SOURCE_MATCH_MODE = {
+    "umls": "umls", "pubmed": "pubmed", "umls+pubmed": "umls+pubmed", "search-ai": "ai-suggested",
+}
 
 
 async def resolve_and_cache_expansion(conn, client, term: str, key: str, ai_config: dict,
@@ -157,16 +159,17 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
         trace.append({"stage": "expansion:cache", "outcome": "hit",
                        "detail": f"cached, source={source}", "elapsedMs": 0})
     else:
-        expansion = await ai_expansion.lookup_umls_expansion(
+        # Both always tried and merged (see merge_umls_pubmed_expansion's own comment) — a UMLS
+        # hit no longer blocks PubMed from getting a chance, since UMLS can resolve a term to an
+        # unrelated same-named gene/protein entry that's technically non-empty but useless for
+        # matching real device text (confirmed live: cTnT/AQP4/GADA), silently hiding a better
+        # PubMed answer that was available the whole time. Both free, ahead of the paid/slow
+        # Tavily+local-LLM escalation below.
+        umls_expansion = await ai_expansion.lookup_umls_expansion(
             client, term, ai_config.get("umls_api_key"), trace=trace,
         )
-        source = "umls" if expansion else "none"
-        # Free precheck, tried only when UMLS found nothing — ahead of the paid/slow Tavily+
-        # local-LLM escalation below, same "cheap sources before expensive ones" ordering UMLS
-        # itself already gets relative to Tavily.
-        if not expansion:
-            expansion = await ai_expansion.lookup_pubmed_expansion(client, term, trace=trace)
-            source = "pubmed" if expansion else "none"
+        pubmed_expansion = await ai_expansion.lookup_pubmed_expansion(client, term, trace=trace)
+        expansion, source = ai_expansion.merge_umls_pubmed_expansion(umls_expansion, pubmed_expansion)
 
     # No DB writes from here through the last-resort "unconfirmed" fallback below — every step in between
     # is read-only (openFDA/Tavily/local-LLM network calls only). See the write-batch comment

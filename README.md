@@ -223,9 +223,11 @@ confidence; an exact match is always most reliable):
 - **Broad match** — no exact phrase match, so it searched ignoring word order
 - **Antigen-only match** — same, and also ignoring the antibody class (IgG/IgA/IgM)
 - **UMLS-resolved match** — nothing above matched, so the abbreviation's full name was looked up
-  via UMLS (see [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck))
-- **PubMed-resolved match** — UMLS didn't know it either, so the name was extracted automatically
-  from a PubMed abstract that defines this exact abbreviation
+  via UMLS (see [Automatic abbreviation lookup](#automatic-abbreviation-lookup-umls-and-ai-crosscheck)) —
+  PubMed was also tried and came up empty
+- **PubMed-resolved match** — same, but UMLS came up empty and PubMed found a definition instead
+- **UMLS + PubMed-resolved match** — both found something; both are tried against real FDA/PMA
+  text, so whichever one's wording actually matches is what surfaced this result
 - **AI-suggested match** — same, but UMLS and PubMed didn't know it either, so the backend searched the web
   and had a local AI model extract the name from those results. More grounded than a cold guess,
   but still a generated extraction, not a database entry — worth a sanity check via
@@ -337,9 +339,10 @@ python -m indexer.crawl
 ## Automatic abbreviation lookup (UMLS and AI crosscheck)
 
 There's no built-in abbreviation list — every term's full medical name is resolved
-automatically, via UMLS first, then a search-grounded AI crosscheck for whatever UMLS doesn't
-cover. Both optional; without either, the tool still finds whatever the exact/broad/antigen-only
-tiers can on their own, just without an alternate name to fall back on.
+automatically, via UMLS and PubMed together (see below — both always tried, merged), then a
+search-grounded AI crosscheck for whatever neither covers. All optional; without any of them,
+the tool still finds whatever the exact/broad/antigen-only tiers can on their own, just without
+an alternate name to fall back on.
 
 **UMLS** — go to **[uts.nlm.nih.gov/uts/license](https://uts.nlm.nih.gov/uts/license)**, sign in
 (Login.gov works), agree to the license terms. This is a real license request reviewed by hand
@@ -349,12 +352,17 @@ tool) or `UMLS_API_KEY` in `.env` (backend) — no separate Worker needed. Flagg
 **UMLS-resolved match**, unverified since nobody's manually confirmed the lookup — a quick
 sanity check via **Check Measurand** is worthwhile.
 
-**PubMed precheck** — a free, no-setup step tried after UMLS and before the AI crosscheck below:
-searches PubMed abstracts for the exact abbreviation, then extracts whatever text precedes a
-matching "(ABBREV)" parenthetical — the standard convention for introducing an abbreviation on
-first use (e.g. "...zinc transporter 8 (ZnT8A) autoantibody..."). No API key, no proxy Worker
-(NLM's E-utilities API is CORS-open). Flagged **PubMed-resolved match**, unverified for the same
-reason a UMLS-resolved match is.
+**PubMed** — a free, no-setup step: searches PubMed abstracts for the exact abbreviation, then
+extracts whatever text precedes a matching "(ABBREV)" parenthetical — the standard convention
+for introducing an abbreviation on first use (e.g. "...zinc transporter 8 (ZnT8A)
+autoantibody..."). No API key, no proxy Worker (NLM's E-utilities API is CORS-open). Always
+tried alongside UMLS, not just when UMLS comes up empty — UMLS can resolve a term to an
+unrelated same-named gene/protein entry it also indexes (confirmed live: "cTnT" → "TNNT2
+protein, human", a real UMLS entry, but not how any device names itself) that's technically
+non-empty but useless for matching real device text; letting PubMed run too, and merging both,
+means a weak UMLS pick no longer blocks a better PubMed one. Flagged **PubMed-resolved match**
+when only PubMed found something, or **UMLS + PubMed-resolved match** when both did (either way,
+unverified — a quick sanity check via **Check Measurand** is worthwhile).
 
 **Search-grounded AI crosscheck (backend only)** — for whatever UMLS and PubMed don't cover,
 including the wait while a UMLS license is pending. It searches the web for the term first (via

@@ -294,6 +294,32 @@ async def lookup_pubmed_expansion(client: httpx.AsyncClient, term: str,
     return None
 
 
+# UMLS is tried first for being free/fast, but confirmed live its own ranking doesn't
+# consistently favor a clinical/lab-terminology name over a same-named gene/protein-nomenclature
+# entry it also indexes (from HGNC/NCBI Gene, aggregated into the same Metathesaurus) — "cTnT"
+# resolves to "TNNT2 protein, human" ahead of "High Sensitivity Troponin T Assay" (which IS in
+# UMLS's own data, just ranked lower); "AQP4" to a bare "AQP4 gene"; "GADA" to an unrelated E.
+# coli gene sharing the same letters. None of these are useless in the sense PubMed then also
+# strikes out — PubMed correctly resolved all three independently. The old design treated "UMLS
+# found *something*" as reason enough to never even try PubMed, so a technically-non-empty but
+# unhelpful UMLS pick silently blocked a better answer that was sitting right there. Now both are
+# always tried and merged: whichever phrase's tokens actually exist in real FDA/PMA device text
+# is what surfaces a match (build_expansion_expr ORs every "/"-separated phrase together), so
+# neither has to "win" a priority race — a source only matters for the display label.
+def merge_umls_pubmed_expansion(umls_expansion: dict | None, pubmed_expansion: dict | None) -> tuple[dict | None, str]:
+    if umls_expansion and pubmed_expansion:
+        merged_search = "/".join(filter(None, [
+            umls_expansion.get("search") or umls_expansion["full"],
+            pubmed_expansion.get("search") or pubmed_expansion["full"],
+        ]))
+        return {"full": umls_expansion["full"], "search": merged_search}, "umls+pubmed"
+    if umls_expansion:
+        return umls_expansion, "umls"
+    if pubmed_expansion:
+        return pubmed_expansion, "pubmed"
+    return None, "none"
+
+
 async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: str | None,
                          trace: list[dict] | None = None) -> dict | None:
     if not tavily_api_key:
@@ -465,9 +491,9 @@ async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: 
                              tavily_api_key: str | None = None, local_llm_url: str | None = None,
                              local_llm_model: str | None = None,
                              trace: list[dict] | None = None) -> tuple[dict | None, str]:
-    """Returns (expansion, source) where source is 'umls' | 'pubmed' | 'search-ai' | 'none' — the
-    caller persists source alongside the expansion in expansion_cache so a genuinely-
-    unresolvable term doesn't get re-asked of any source on every single search.
+    """Returns (expansion, source) where source is 'umls' | 'pubmed' | 'umls+pubmed' |
+    'search-ai' | 'none' — the caller persists source alongside the expansion in expansion_cache
+    so a genuinely-unresolvable term doesn't get re-asked of any source on every single search.
 
     Confirmed live (a real UMLS key): a UMLS hit used to short-circuit here, skipping the AI
     crosscheck entirely — but UMLS returns exactly ONE candidate name, no alternates, unlike the
@@ -481,14 +507,13 @@ async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: 
     same ~10-30s already documented for the AI-only path) rather than skipping it on a UMLS hit —
     a deliberate correctness-over-speed tradeoff, not an oversight.
 
-    PubMed is a free precheck tried only when UMLS found nothing (unlike UMLS/AI, which always
-    both run) — it's specifically there to catch what UMLS misses, so there's nothing to gain by
-    running it after a UMLS hit already provided a primary candidate.
+    PubMed is now always tried too (see merge_umls_pubmed_expansion's own comment for why a UMLS
+    hit shouldn't block it) — same "try everything, merge, let real device text decide which
+    phrase surfaces a match" approach the AI-crosscheck merge above already uses.
     """
     umls_expansion = await lookup_umls_expansion(client, term, umls_api_key, trace)
-    pubmed_expansion = None if umls_expansion else await lookup_pubmed_expansion(client, term, trace)
-    primary = umls_expansion or pubmed_expansion
-    primary_source = "umls" if umls_expansion else ("pubmed" if pubmed_expansion else "none")
+    pubmed_expansion = await lookup_pubmed_expansion(client, term, trace)
+    primary, primary_source = merge_umls_pubmed_expansion(umls_expansion, pubmed_expansion)
     ai_expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url,
                                                      local_llm_model, trace)
     if primary and ai_expansion:
