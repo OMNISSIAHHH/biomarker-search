@@ -1064,22 +1064,44 @@ function buildAntigenExpr(term) {
   return withCrossFieldAnti(mainExpr, mode);
 }
 
-// Absolute last resort, only ever tried for a term that implied an antibody test (an "Anti-"
-// prefix or Ig-class suffix) AND for which every tier above — including the anti-required
-// broad/wordform/expansion tiers and the UMLS/AI expansion lookup — found nothing at all.
-// Confirmed live: "Anti-HPV" found 0 matches everywhere above even though openFDA has 283 real
-// HPV-related PMA records, because HPV testing in the FDA-cleared world is essentially all
-// nucleic-acid/DNA-based, never true antibody serology — no real device text was ever going to
-// satisfy the anti/antibody-wording requirement an explicit "Anti-" prefix normally enforces.
-// Rather than hide real, existing FDA data behind that requirement with no escape hatch, this
-// drops it and searches the antigen name alone — deliberately labeled as a distinct, lower-
-// confidence match (matchMode 'anti-unconfirmed') so a genuine antibody test (e.g. "Anti-dsDNA",
-// which already succeeds via the tiers above and never reaches this one) isn't weakened by it.
-function buildAntiUnconfirmedExpr(term, fields = SEARCH_FIELDS) {
+// Part of the absolute-last-resort tier (see the last-resort block in fetchBiomarker below),
+// tried for EVERY term that still has nothing after every tier above — not just antibody-shaped
+// ones. Originally built anti-specific (dropping just the antibody-context requirement for an
+// "Anti-"/Ig-suffix term — confirmed live via "Anti-HPV": openFDA has 283 real HPV-related PMA
+// records, but HPV testing is essentially all nucleic-acid/DNA-based, so no real device text
+// ever satisfied the antibody-wording requirement an explicit "Anti-" prefix normally enforces).
+// Generalized after a second, non-antibody case (AMA-M2) showed the same "hides real data with
+// no escape hatch" shape isn't antibody-specific: stripAntiPrefix/stripIsotypeSuffix are
+// harmless no-ops on a term that never had either, so this always searches whatever antigen-core
+// tokens the RAW TYPED TERM reduces to — the resolved expansion's own tokens are covered
+// separately, by buildExpansionCoreExpr below, since a bare abbreviation like "AMA-M2" carries
+// no recoverable signal in its own text the way "Anti-HPV" does (stripping "Anti-" still leaves
+// "HPV", a real word; stripping nothing from "AMA-M2" leaves "AMA-M2", not a real device-text
+// fragment).
+function buildUnconfirmedAntigenExpr(term, fields = SEARCH_FIELDS) {
   const antigen = stripAntiPrefix(stripIsotypeSuffix(term));
   if (!antigen) return null;
   const tokens = splitTokens(antigen);
   return tokens.length > 1 ? fieldOr(f => tokenClause(f, tokens), fields) : buildExactExpr(antigen, fields);
+}
+
+// The other half of the same last-resort tier: the resolved UMLS/PubMed/AI expansion's own
+// tokens, cross-field AND-required within each candidate phrase exactly like buildExpansionExpr
+// already does, but WITHOUT ever adding buildExpansionExpr's antibody-context requirement —
+// that's the one thing being deliberately relaxed here, for any biomarker type, not just
+// antibody-shaped ones (a hormone/antigen/gene-marker term never had that requirement added in
+// the first place, so this is a real relaxation only for the antibody-implying case, and a
+// harmless no-op re-check otherwise). Confirmed live this recovers a real, currently-hidden
+// 510(k) match for AMA-M2 ("ENZYMATIC MITOCHONDRIAL ANTIBODY (M2) REAGENT") once
+// EXPANSION_STOPWORDS also drops the contamination word that was otherwise poisoning the exact
+// same tokens inside buildExpansionExpr's own stricter version of this query.
+function buildExpansionCoreExpr(expansion, fields = SEARCH_FIELDS) {
+  if (!expansion) return null;
+  const phrase = expansion.search || expansion.full;
+  const groups = phrase.split('/').map(splitExpansionTokens).filter(g => g.length)
+    .filter(g => !isBareShortToken(g));
+  if (!groups.length) return null;
+  return '(' + groups.map(g => crossFieldTokensClause(g, fields)).join(' OR ') + ')';
 }
 
 // Tier 3b: some FDA openfda.device_name classification text fuses "Anti" directly onto a
@@ -1303,6 +1325,12 @@ const EXPANSION_STOPWORDS = new Set([
   // ontology-naming suffix for a lab-test *concept*, never how an actual FDA device/kit
   // describes itself. Same category as test/assay/panel above.
   'measurement',
+  // Confirmed live: UMLS's own "words"-searchType resolved "AMA-M2" to "Anti-mitochondrial M2
+  // antibody positivity" — a real, correctly-targeted concept name, but "positivity" describes
+  // a TEST RESULT ("came back positive"), never how a device/kit names itself, so requiring it
+  // cross-field poisoned an otherwise-correct match. Same category, added together since they're
+  // all clinical-result-status words rather than analyte names.
+  'positive', 'positivity', 'negative', 'reactive', 'nonreactive',
 ]);
 
 // Confirmed live: an AI-resolved synonym for "Anti-β2-GP1 IgA" included literal Greek-letter
@@ -1704,7 +1732,7 @@ function normalizePmaRecord(r) {
 // normalizePmaRecord runs; normalizing late (once, at the very end) caused a real crash the
 // first time this was tested live on the Python side. This mirrors the fix, not just the
 // feature.
-// Shared by every PMA tier below and by fetchBiomarker's own last-resort anti-unconfirmed tier
+// Shared by every PMA tier below and by fetchBiomarker's own last-resort "unconfirmed" tier
 // (which needs to check PMA too, outside fetchPmaMatches' own tier chain) — always applies the
 // original-approvals-only filter and normalizes records immediately, so no caller can forget
 // either.
@@ -2251,35 +2279,49 @@ async function fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, onStage, 
     }
   }
 
-  // Last resort: only reached when a term that DOES imply an antibody test (an "Anti-" prefix
-  // or Ig-class suffix) still found nothing anywhere above, including PMA — see
-  // buildAntiUnconfirmedExpr's own comment for why this exists (confirmed live via "Anti-HPV").
-  // Checks both 510(k) and PMA, since either could hold the real device.
+  // Last resort: only reached when NOTHING above found anything at all, including PMA and any
+  // AI/UMLS/PubMed-resolved expansion — not gated on antibody-ness. Combines two candidate
+  // sources, whichever have something usable: the raw typed term's own antigen-core tokens
+  // (buildUnconfirmedAntigenExpr — originally built for an "Anti-"/Ig-suffix term like
+  // "Anti-HPV", where stripping the prefix still leaves a real device-text word, "HPV"), and the
+  // resolved expansion's own tokens with the antibody-context requirement dropped
+  // (buildExpansionCoreExpr — needed for a bare abbreviation like "AMA-M2", whose own raw text
+  // carries no recoverable signal the way "Anti-HPV" does, but whose UMLS-resolved name does).
+  // Neither candidate is gated on whether the term LOOKS antibody-shaped — see each function's
+  // own comment. Confirmed live this recovers a real 510(k) device for AMA-M2 ("ENZYMATIC
+  // MITOCHONDRIAL ANTIBODY (M2) REAGENT") that every tier above missed.
   if (!best) {
-    const antiMode = antiRequirementMode(searchTerm);
-    const antiUnconfirmedExpr510k = antiMode !== 'none' ? buildAntiUnconfirmedExpr(searchTerm) : null;
-    if (antiUnconfirmedExpr510k) {
+    const rawExpr510k = buildUnconfirmedAntigenExpr(searchTerm);
+    const expansionExpr510k = buildExpansionCoreExpr(resultExpansion);
+    const candidates510k = [rawExpr510k, expansionExpr510k].filter(Boolean);
+    const rawExprPma = buildUnconfirmedAntigenExpr(searchTerm, PMA_SEARCH_FIELDS);
+    const expansionExprPma = buildExpansionCoreExpr(resultExpansion, PMA_SEARCH_FIELDS);
+    const candidatesPma = [rawExprPma, expansionExprPma].filter(Boolean);
+    if (candidates510k.length || candidatesPma.length) {
       await sleep(150);
       t0 = performance.now();
       const [relaxed510k, relaxedPma] = await Promise.all([
-        runOpenFdaQuery(antiUnconfirmedExpr510k, apiKey),
-        runPmaQuery(buildAntiUnconfirmedExpr(searchTerm, PMA_SEARCH_FIELDS), apiKey),
+        candidates510k.length
+          ? runOpenFdaQuery(candidates510k.map(e => `(${e})`).join(' OR '), apiKey)
+          : Promise.resolve({ total: 0, records: [] }),
+        candidatesPma.length
+          ? runPmaQuery(candidatesPma.map(e => `(${e})`).join(' OR '), apiKey)
+          : Promise.resolve({ total: 0, records: [] }),
       ]);
       const elapsed = Math.round(performance.now() - t0);
       const merged = mergeQueryResults(relaxed510k, relaxedPma);
       if (merged.records.length) {
-        best = { total: merged.records.length, records: merged.records, matchMode: 'anti-unconfirmed' };
-        pushTrace(trace, 'match:anti-unconfirmed', 'hit',
-          `${merged.records.length} result(s) on the antigen name alone — antibody/anti-context could not be confirmed on these records`, elapsed);
+        best = { total: merged.records.length, records: merged.records, matchMode: 'unconfirmed' };
+        pushTrace(trace, 'match:unconfirmed', 'hit',
+          `${merged.records.length} result(s) on the core name alone — some AI/UMLS-added context could not be confirmed on these records`, elapsed);
       } else {
-        pushTrace(trace, 'match:anti-unconfirmed', 'miss', '0 results', elapsed);
+        pushTrace(trace, 'match:unconfirmed', 'miss', '0 results', elapsed);
       }
     } else {
-      pushTrace(trace, 'match:anti-unconfirmed', 'skipped',
-        antiMode === 'none' ? 'term has no anti-prefix/isotype signal' : 'no usable antigen tokens');
+      pushTrace(trace, 'match:unconfirmed', 'skipped', 'no usable antigen tokens and no expansion resolved for this term');
     }
   } else {
-    pushTrace(trace, 'match:anti-unconfirmed', 'skipped', 'an earlier tier already matched');
+    pushTrace(trace, 'match:unconfirmed', 'skipped', 'an earlier tier already matched');
   }
 
   // No client-side equivalent — predicate propagation needs the crawled predicates table,
@@ -2894,7 +2936,7 @@ const MATCH_MODE_LABEL = {
   wordform: 'Alternate wordform match',
   'paren-alternates': 'Parenthetical alternate match',
   pma: 'PMA-only match',
-  'anti-unconfirmed': 'Antibody-context unconfirmed'
+  unconfirmed: 'Unconfirmed match'
 };
 const MATCH_MODE_TITLE = {
   broad: 'No exact phrase match — matched on the same words in any order/position instead (still requires "anti" itself when the term has it).',
@@ -2906,7 +2948,7 @@ const MATCH_MODE_TITLE = {
   wordform: 'No match on the term as typed — matched on an automatically-generated alternate form instead (e.g. a fused word split apart, or a hyphen swapped for a space), since FDA device names aren\'t consistent about which form they use.',
   'paren-alternates': 'Your term has a "Name (Alt1/Alt2)" shape (e.g. "Centromere (CENP-A/B)") — matched on one of the parenthetical alternatives independently (e.g. "CENP-B" alone), since real device names often use only one of these names, never all of them together.',
   pma: 'No 510(k) clearance found — matched on FDA\'s separate PMA (Premarket Approval) pathway instead, used for higher-risk Class III devices (e.g. many companion diagnostics never go through 510(k) at all).',
-  'anti-unconfirmed': 'Your term implies an antibody test ("Anti-..." or an IgG/IgA/IgM-class name), but no matching record anywhere — 510(k) or PMA — could confirm antibody wording alongside the target name. Matched on the target name alone instead; double-check these records actually test for an antibody, not just the target itself (e.g. a nucleic-acid/antigen test).'
+  unconfirmed: 'Nothing above matched, including any AI/UMLS-resolved full name — matched on the core antigen/analyte name alone instead, with some of the resolved name\'s own words (e.g. an implied antibody-context requirement) unconfirmed on these records. Double-check these records actually test for what you\'re looking for.'
 };
 
 function matchModeTag(mode) {

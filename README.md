@@ -238,6 +238,11 @@ confidence; an exact match is always most reliable):
 - **PMA-only match** — no 510(k)/De Novo clearance found at all, but the term matched FDA's
   separate PMA (Premarket Approval) pathway (see the [Glossary](#glossary)). Common for companion
   diagnostics (e.g. HER2, EGFR mutation tests), which are routinely PMA-only.
+- **Unconfirmed match** — absolute last resort: nothing above matched at all, including the
+  resolved full name's own exact wording. Matched on just the core antigen/analyte name instead,
+  dropping whatever extra qualifier (an antibody-class requirement, an AI-added descriptive word)
+  kept the fuller search from matching — worth a closer look, since a real device or LDT text
+  might genuinely test for something adjacent rather than the exact term searched.
 
 ### Sorting your results
 

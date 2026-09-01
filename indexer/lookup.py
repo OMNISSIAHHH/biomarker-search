@@ -20,7 +20,7 @@ from typing import Callable
 
 from indexer import ai_expansion, db, panel_crawl
 from indexer.matching import (
-    PMA_SEARCH_FIELDS, anti_requirement_mode, build_anti_unconfirmed_expr, expansion_key,
+    PMA_SEARCH_FIELDS, build_expansion_core_expr, build_unconfirmed_antigen_expr, expansion_key,
     fetch_biomarker_matches, fetch_pma_matches, merge_query_results,
     panel_candidate_search_token_groups, run_pma_query, to_search_term,
 )
@@ -168,7 +168,7 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
             expansion = await ai_expansion.lookup_pubmed_expansion(client, term, trace=trace)
             source = "pubmed" if expansion else "none"
 
-    # No DB writes from here through the anti-unconfirmed fallback below — every step in between
+    # No DB writes from here through the last-resort "unconfirmed" fallback below — every step in between
     # is read-only (openFDA/Tavily/local-LLM network calls only). See the write-batch comment
     # further down for why that matters.
     result = await fetch_biomarker_matches(client, DEVICE_510K, term, expansion, api_key, trace=trace)
@@ -233,36 +233,55 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
             if not had_510k_match:
                 match_mode = "pma"
 
-    # Last resort: only reached when a term that DOES imply an antibody test (an "Anti-" prefix
-    # or Ig-class suffix) still found nothing anywhere above, including PMA. Confirmed live via
-    # "Anti-HPV" — see build_anti_unconfirmed_expr's own comment for the full reasoning. Checks
-    # both 510(k) and PMA, since either could hold the real device.
+    # Last resort: only reached when NOTHING above found anything at all, including PMA and any
+    # AI/UMLS/PubMed-resolved expansion — not gated on antibody-ness. Combines two candidate
+    # sources, whichever have something usable: the raw typed term's own antigen-core tokens
+    # (build_unconfirmed_antigen_expr — originally built for an "Anti-"/Ig-suffix term like
+    # "Anti-HPV", where stripping the prefix still leaves a real device-text word, "HPV"), and
+    # the resolved expansion's own tokens with the antibody-context requirement dropped
+    # (build_expansion_core_expr — needed for a bare abbreviation like "AMA-M2", whose own raw
+    # text carries no recoverable signal the way "Anti-HPV" does, but whose UMLS-resolved name
+    # does). Neither candidate is gated on whether the term LOOKS antibody-shaped: a hormone/
+    # antigen/gene-marker term simply never had an antibody-context requirement added in the
+    # first place, so re-trying its own tokens here is a harmless, cheap recheck for it, not a
+    # meaningful relaxation — the relaxation only does real work for the antibody-implying case.
+    # Confirmed live this recovers a real 510(k) device for AMA-M2 ("ENZYMATIC MITOCHONDRIAL
+    # ANTIBODY (M2) REAGENT") that every tier above missed.
     if result["total"] == 0:
-        anti_mode = anti_requirement_mode(to_search_term(term))
-        anti_unconfirmed_510k = build_anti_unconfirmed_expr(to_search_term(term)) if anti_mode != "none" else None
-        if anti_unconfirmed_510k:
-            relaxed_510k = await run_query(client, DEVICE_510K, anti_unconfirmed_510k, api_key)
-            relaxed_pma_raw, _ = await run_pma_query(
-                client, build_anti_unconfirmed_expr(to_search_term(term), PMA_SEARCH_FIELDS), api_key,
+        search_term = to_search_term(term)
+        candidates_510k = [e for e in (
+            build_unconfirmed_antigen_expr(search_term), build_expansion_core_expr(expansion),
+        ) if e]
+        candidates_pma = [e for e in (
+            build_unconfirmed_antigen_expr(search_term, PMA_SEARCH_FIELDS),
+            build_expansion_core_expr(expansion, PMA_SEARCH_FIELDS),
+        ) if e]
+        if candidates_510k or candidates_pma:
+            relaxed_510k = (
+                await run_query(client, DEVICE_510K, " OR ".join(f"({e})" for e in candidates_510k), api_key)
+                if candidates_510k else {"total": 0, "records": []}
             )
-            merged = merge_query_results(relaxed_510k, relaxed_pma_raw)
+            relaxed_pma = (
+                (await run_pma_query(client, " OR ".join(f"({e})" for e in candidates_pma), api_key))[0]
+                if candidates_pma else {"total": 0, "records": []}
+            )
+            merged = merge_query_results(relaxed_510k, relaxed_pma)
             if merged["records"]:
                 result = {**result, "records": merged["records"], "total": len(merged["records"])}
-                match_mode = "anti-unconfirmed"
+                match_mode = "unconfirmed"
                 trace.append({
-                    "stage": "match:anti-unconfirmed", "outcome": "hit",
-                    "detail": f"{len(merged['records'])} result(s) on the antigen name alone — "
-                               "antibody/anti-context could not be confirmed on these records",
+                    "stage": "match:unconfirmed", "outcome": "hit",
+                    "detail": f"{len(merged['records'])} result(s) on the core name alone — some "
+                               "AI/UMLS-added context could not be confirmed on these records",
                     "elapsedMs": None,
                 })
             else:
-                trace.append({"stage": "match:anti-unconfirmed", "outcome": "miss", "detail": "0 results",
+                trace.append({"stage": "match:unconfirmed", "outcome": "miss", "detail": "0 results",
                                "elapsedMs": None})
         else:
             trace.append({
-                "stage": "match:anti-unconfirmed", "outcome": "skipped",
-                "detail": "term has no anti-prefix/isotype signal" if anti_mode == "none"
-                          else "no usable antigen tokens",
+                "stage": "match:unconfirmed", "outcome": "skipped",
+                "detail": "no usable antigen tokens and no expansion resolved for this term",
                 "elapsedMs": None,
             })
 

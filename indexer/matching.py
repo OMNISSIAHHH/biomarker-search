@@ -166,19 +166,21 @@ def build_antigen_expr(term: str) -> str | None:
     return with_cross_field_anti(main_expr, mode)
 
 
-# Absolute last resort, only ever tried for a term that implied an antibody test (an "Anti-"
-# prefix or Ig-class suffix) AND for which every tier above — including the anti-required broad/
-# wordform/expansion tiers and the UMLS/AI expansion lookup — found nothing at all. Confirmed
-# live: "Anti-HPV" found 0 matches everywhere above even though openFDA has real HPV-related PMA
-# records, because HPV testing in the FDA-cleared world is essentially all nucleic-acid/DNA-based,
-# never true antibody serology — no real device text was ever going to satisfy the anti/antibody-
-# wording requirement an explicit "Anti-" prefix normally enforces. Rather than hide real,
-# existing FDA data behind that requirement with no escape hatch, this drops it and searches the
-# antigen name alone — deliberately labeled as a distinct, lower-confidence match (match_mode
-# 'anti-unconfirmed') so a genuine antibody test (e.g. "Anti-dsDNA", which already succeeds via
-# the tiers above and never reaches this one) isn't weakened by it. Mirrors
-# FDA510kBiomarkerSearch.html's identical buildAntiUnconfirmedExpr.
-def build_anti_unconfirmed_expr(term: str, fields: list[str] = SEARCH_FIELDS) -> str | None:
+# Part of the absolute-last-resort tier (see fetch_unconfirmed_matches below), tried for EVERY
+# term that still has nothing after every tier above — not just antibody-shaped ones. Originally
+# built anti-specific (dropping just the antibody-context requirement for an "Anti-"/Ig-suffix
+# term — confirmed live via "Anti-HPV": openFDA has real HPV-related PMA records, but HPV testing
+# is essentially all nucleic-acid/DNA-based, so no real device text ever satisfied the antibody-
+# wording requirement an explicit "Anti-" prefix normally enforces). Generalized after a second,
+# non-antibody case (AMA-M2) showed the same "hides real data with no escape hatch" shape isn't
+# antibody-specific: strip_anti_prefix/strip_isotype_suffix are harmless no-ops on a term that
+# never had either, so this always searches whatever antigen-core tokens the RAW TYPED TERM
+# reduces to — the resolved expansion's own tokens are covered separately, by
+# build_expansion_core_expr below, since a bare abbreviation like "AMA-M2" carries no
+# recoverable signal in its own text the way "Anti-HPV" does (stripping "Anti-" still leaves
+# "HPV", a real word; stripping nothing from "AMA-M2" leaves "AMA-M2", not a real device-text
+# fragment). Mirrors FDA510kBiomarkerSearch.html's identical buildUnconfirmedAntigenExpr.
+def build_unconfirmed_antigen_expr(term: str, fields: list[str] = SEARCH_FIELDS) -> str | None:
     antigen = strip_anti_prefix(strip_isotype_suffix(term)).strip()
     if not antigen:
         return None
@@ -186,6 +188,27 @@ def build_anti_unconfirmed_expr(term: str, fields: list[str] = SEARCH_FIELDS) ->
     if len(tokens) > 1:
         return field_or(lambda f: token_clause(f, tokens), fields)
     return build_exact_expr(antigen, fields)
+
+
+# The other half of the same last-resort tier: the resolved UMLS/PubMed/AI expansion's own
+# tokens, cross-field AND-required within each candidate phrase exactly like build_expansion_expr
+# already does, but WITHOUT ever adding build_expansion_expr's antibody-context requirement —
+# that's the one thing being deliberately relaxed here, for any biomarker type, not just
+# antibody-shaped ones (a hormone/antigen/gene-marker term never had that requirement added in
+# the first place, so this is a real relaxation only for the antibody-implying case, and a
+# harmless no-op re-check otherwise). Confirmed live this recovers a real, currently-hidden
+# 510(k) match for AMA-M2 ("ENZYMATIC MITOCHONDRIAL ANTIBODY (M2) REAGENT") once
+# EXPANSION_STOPWORDS also drops the contamination word that was otherwise poisoning the exact
+# same tokens inside build_expansion_expr's own stricter version of this query.
+def build_expansion_core_expr(expansion: dict | None, fields: list[str] = SEARCH_FIELDS) -> str | None:
+    if not expansion:
+        return None
+    phrase = expansion.get("search") or expansion["full"]
+    groups = [split_expansion_tokens(g) for g in phrase.split("/")]
+    groups = [g for g in groups if g and not _is_bare_short_token(g)]
+    if not groups:
+        return None
+    return "(" + " OR ".join(cross_field_tokens_clause(g, fields) for g in groups) + ")"
 
 
 def build_fused_anti_expr(term: str) -> str | None:
@@ -462,6 +485,12 @@ EXPANSION_STOPWORDS = {
     # describes itself. Same category as "test"/"assay"/"panel" above, just a source (NCI
     # Thesaurus via UMLS) this project hadn't hit before.
     "measurement",
+    # Confirmed live: UMLS's own "words"-searchType resolved "AMA-M2" to "Anti-mitochondrial M2
+    # antibody positivity" — a real, correctly-targeted concept name, but "positivity" describes
+    # a TEST RESULT ("came back positive"), never how a device/kit names itself, so requiring it
+    # cross-field poisoned an otherwise-correct match. Same category, added together since they're
+    # all clinical-result-status words rather than analyte names.
+    "positive", "positivity", "negative", "reactive", "nonreactive",
 }
 
 
@@ -732,7 +761,7 @@ def normalize_pma_record(r: dict) -> dict:
     }
 
 
-# Shared by every PMA tier below and by lookup.py's own last-resort anti-unconfirmed check
+# Shared by every PMA tier below and by lookup.py's own last-resort "unconfirmed" check
 # (which needs to query PMA too, outside fetch_pma_matches' own tier chain) — always applies the
 # original-approvals-only filter and normalizes records immediately, so no caller can forget
 # either. Mirrors FDA510kBiomarkerSearch.html's identical runPmaQuery.
