@@ -85,12 +85,43 @@ class ExtractedPdf:
 
 # --- Measurand extraction (ported from extractMeasurand / measurandFieldPattern) -----------
 
+MEASURAND_LABEL_MEASURAND = "Measurand"
+MEASURAND_LABEL_ANALYTE = "Analyte"
+MEASURAND_LABEL_TYPE_OF_TEST = r"Type of Test(?:s)?(?:\s+or\s+Tests\s+Performed)?"
+MEASURAND_LABEL_INTENDED_USE = "Intended Use"
+
 MEASURAND_FIELD_LABELS = [
-    "Measurand",
-    "Analyte",
-    r"Type of Test(?:s)?(?:\s+or\s+Tests\s+Performed)?",
-    "Intended Use",
+    MEASURAND_LABEL_MEASURAND, MEASURAND_LABEL_ANALYTE,
+    MEASURAND_LABEL_TYPE_OF_TEST, MEASURAND_LABEL_INTENDED_USE,
 ]
+
+# "Type of Test"/"Intended Use" were added for a real, confirmed case: hematology analyzers
+# (e.g. K112605, Sysmex XN-Series) have no Measurand/Analyte section at all, and their parameter
+# list genuinely lives here ("Type of Test or Tests Performed: Quantitative test for WBC, RBC,
+# HGB, HCT, ..."). But confirmed live on other device types, the SAME heading just as often
+# introduces a sentence describing the DEVICE ITSELF, not what it measures — a PCR panel's "Type
+# of Test" captured "A multiplexed nucleic acid test intended for use with the QIAstat-Dx
+# Analyzer 2.0 for...", and a digital pathology system's captured "Software only device II" —
+# neither names an analyte at all. A false Measurand is worse than a missing one (it could feed
+# a wrong "possible panel match", or mislead someone reading it directly via Check Measurand), so
+# a candidate from EITHER of these two fallback-only labels is trusted only if it doesn't contain
+# a word that describes the product rather than the analyte — "device"/"system"/"software" never
+# legitimately appear in an analyte/parameter name. Measurand/Analyte stay unrestricted: every
+# live case tested under those two labels has been correct.
+FALLBACK_ONLY_LABELS = {MEASURAND_LABEL_TYPE_OF_TEST, MEASURAND_LABEL_INTENDED_USE}
+# "device"/"system"/"software"/"analyzer"/"instrument" catch a captured sentence that names the
+# PRODUCT (confirmed live: "Software only device", "...with the QIAstat-Dx Analyzer 2.0...");
+# "intended (for|to be) use..." catches boilerplate intended-use phrasing regardless of whether a
+# product name happens to appear (confirmed live: "...test intended for use with the QIAstat-Dx
+# Analyzer..." — the phrase alone is enough, independent of "Analyzer" also matching). Neither
+# ever legitimately appears inside a bare analyte/parameter name or list.
+DEVICE_DESCRIPTION_RE = re.compile(
+    r"\b(device|system|software|analyzer|instrument)\b|\bintended (?:for|to be) use\b", re.IGNORECASE
+)
+# A device-classification code ("... sample. II") sometimes bleeds into the captured value as a
+# trailing artifact, regardless of which label matched — never part of a real analyte name, so
+# stripped unconditionally rather than gated behind the label check above.
+TRAILING_DEVICE_CLASS_RE = re.compile(r"\s+(?:I{1,3}|IV)\s*$")
 
 
 def _measurand_field_pattern(label_pattern: str) -> re.Pattern:
@@ -105,8 +136,14 @@ def _measurand_field_pattern(label_pattern: str) -> re.Pattern:
 def _extract_measurand(flattened_text: str) -> tuple[str, str] | None:
     for label_pattern in MEASURAND_FIELD_LABELS:
         m = _measurand_field_pattern(label_pattern).search(flattened_text)
-        if m:
-            return m.group(1), m.group(2).strip()
+        if not m:
+            continue
+        value = TRAILING_DEVICE_CLASS_RE.sub("", m.group(2).strip()).strip()
+        if not value:
+            continue
+        if label_pattern in FALLBACK_ONLY_LABELS and DEVICE_DESCRIPTION_RE.search(value):
+            continue  # describes the device/system/software itself — try the next label instead
+        return m.group(1), value
     return None
 
 

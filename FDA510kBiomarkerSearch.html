@@ -716,12 +716,37 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 // at the start of the NEXT lettered section, whatever it happens to be named — assuming a
 // fixed "next section is always called X" is exactly what broke here, since which section
 // follows which varies by template.
+const MEASURAND_LABEL_TYPE_OF_TEST = 'Type of Test(?:s)?(?:\\s+or\\s+Tests\\s+Performed)?';
+const MEASURAND_LABEL_INTENDED_USE = 'Intended Use';
 const MEASURAND_FIELD_LABELS = [
   'Measurand',
   'Analyte',
-  'Type of Test(?:s)?(?:\\s+or\\s+Tests\\s+Performed)?',
-  'Intended Use'
+  MEASURAND_LABEL_TYPE_OF_TEST,
+  MEASURAND_LABEL_INTENDED_USE
 ];
+
+// "Type of Test"/"Intended Use" were added for a real, confirmed case: hematology analyzers
+// (e.g. K112605, Sysmex XN-Series) have no Measurand/Analyte section at all, and their parameter
+// list genuinely lives here. But confirmed live on other device types, the SAME heading just as
+// often introduces a sentence describing the DEVICE ITSELF, not what it measures — a PCR panel's
+// "Type of Test" captured "A multiplexed nucleic acid test intended for use with the QIAstat-Dx
+// Analyzer 2.0 for...", and a digital pathology system's captured "Software only device II" —
+// neither names an analyte at all. A false Measurand is worse than a missing one, so a candidate
+// from EITHER of these two fallback-only labels is trusted only if it doesn't contain a word
+// that describes the product rather than the analyte — "device"/"system"/"software" never
+// legitimately appear in an analyte/parameter name. Measurand/Analyte stay unrestricted: every
+// live case tested under those two labels has been correct.
+const MEASURAND_FALLBACK_ONLY_LABELS = new Set([MEASURAND_LABEL_TYPE_OF_TEST, MEASURAND_LABEL_INTENDED_USE]);
+// "device"/"system"/"software"/"analyzer"/"instrument" catch a captured sentence that names the
+// PRODUCT (confirmed live: "Software only device", "...with the QIAstat-Dx Analyzer 2.0...");
+// "intended (for|to be) use..." catches boilerplate intended-use phrasing regardless of whether a
+// product name happens to appear. Neither ever legitimately appears inside a bare
+// analyte/parameter name or list.
+const MEASURAND_DEVICE_DESCRIPTION_RE = /\b(device|system|software|analyzer|instrument)\b|\bintended (?:for|to be) use\b/i;
+// A device-classification code ("... sample. II") sometimes bleeds into the captured value as a
+// trailing artifact, regardless of which label matched — never part of a real analyte name, so
+// stripped unconditionally rather than gated behind the label check above.
+const MEASURAND_TRAILING_DEVICE_CLASS_RE = /\s+(?:I{1,3}|IV)\s*$/;
 
 // Deliberately case-sensitive (no 'i' flag) — every real document examined capitalizes these
 // section labels consistently ("Measurand:", "Type of Test:", ...), and a case-INsensitive
@@ -731,6 +756,16 @@ const MEASURAND_FIELD_LABELS = [
 // truncated to "Glutami" because "c acid" alone satisfied the case-folded lookahead.
 function measurandFieldPattern(labelPattern) {
   return new RegExp(`[A-Z]\\.?\\s*(${labelPattern})s?\\s*:\\s*([\\s\\S]{1,400}?)\\s*(?=[A-Z]\\.?\\s+[A-Z][a-z]|$)`);
+}
+
+// Shared by both the PDF.js text pass and the OCR fallback — cleans a raw regex capture and
+// applies the device-description quality gate to Type-of-Test/Intended-Use candidates. Returns
+// null when the candidate should be rejected (caller moves on to the next label).
+function cleanMeasurandCapture(labelPattern, rawValue) {
+  const value = rawValue.replace(MEASURAND_TRAILING_DEVICE_CLASS_RE, '').trim();
+  if (!value) return null;
+  if (MEASURAND_FALLBACK_ONLY_LABELS.has(labelPattern) && MEASURAND_DEVICE_DESCRIPTION_RE.test(value)) return null;
+  return value;
 }
 
 // Confirmed live against a real document (K173726): PDF.js's raw text items don't always
@@ -785,7 +820,9 @@ async function extractMeasurandViaOcr(pages, onProgress) {
     fullText += text + '\n';
     for (const labelPattern of MEASURAND_FIELD_LABELS) {
       const m = fullText.match(measurandFieldPattern(labelPattern));
-      if (m) return { label: m[1], value: m[2].trim(), viaOcr: true };
+      if (!m) continue;
+      const value = cleanMeasurandCapture(labelPattern, m[2]);
+      if (value) return { label: m[1], value, viaOcr: true };
     }
   }
   return null;
@@ -802,7 +839,9 @@ async function extractMeasurand(arrayBuffer, onOcrProgress) {
     fullText += reconstructPageText(content) + '\n';
     for (const labelPattern of MEASURAND_FIELD_LABELS) {
       const m = fullText.match(measurandFieldPattern(labelPattern));
-      if (m) return { label: m[1], value: m[2].trim() };
+      if (!m) continue;
+      const value = cleanMeasurandCapture(labelPattern, m[2]);
+      if (value) return { label: m[1], value };
     }
   }
   if (fullText.trim().length < MIN_TEXT_LENGTH_BEFORE_OCR && typeof Tesseract !== 'undefined') {
