@@ -19,151 +19,292 @@
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#fff;--bg2:#EEF3F8;--bg3:#F4F7FA;
-  --tx:#131B23;--tx2:#4A5A68;--tx3:#8496A5;
-  --br:rgba(10,40,70,.12);--br2:rgba(10,40,70,.28);
+  /* Deep-space navy surfaces, ascending elevation: bg3 (page/recess) < bg4 (header) <
+     bg (card) < bg2 (input/hover fill) — each step a touch lighter, so nesting reads as
+     depth without needing extra borders everywhere. */
+  --bg:#111726;--bg2:#1a2233;--bg3:#080b12;--bg4:#0b0f1a;
+  --tx:#EAF1FA;--tx2:#93A4BC;--tx3:#57667E;
+  --br:rgba(148,178,214,.12);--br2:rgba(148,178,214,.26);
   --font:'IBM Plex Sans','Helvetica Neue',Arial,sans-serif;
   --mono:'IBM Plex Mono','SFMono-Regular',Menlo,Consolas,monospace;
-  --acc:#0066B3;--acc2:#1B7A4D;--red:#DC2626;--yel:#946E00;--bk:#fff;
+  /* Cyan reads "live data/AI"; emerald "cleared/good"; amber "unverified/AI-assisted";
+     red "risk/error" — same semantic roles the light theme used, recolored for dark. */
+  --acc:#22D3EE;--acc-glow:rgba(34,211,238,.35);
+  --acc2:#34D399;--acc2-glow:rgba(52,211,153,.3);
+  --red:#F87171;--yel:#FBBF24;--bk:var(--bg4);
+  /* Violet — a fourth, deliberately distinct hue for LDT-channel data specifically, so it never
+     collides with --yel's existing "unverified/AI-assisted" tag meaning used elsewhere. */
+  --ldt:#A78BFA;--ldt-glow:rgba(167,139,250,.32);
+  --ink:#05141c;
+  --radius:12px;--radius-sm:8px;
+  --ease:cubic-bezier(.19,1,.22,1);
 }
-html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--tx);font-size:15px;line-height:1.55}
-.app{min-height:100vh;background:var(--bg3);padding:0 0 60px}
+html,body{height:100%;font-family:var(--font);background:var(--bg3);color:var(--tx);font-size:15px;line-height:1.6}
+body.drawer-open{overflow:hidden}
+.app{min-height:100vh;padding:0 0 60px;
+  background:
+    radial-gradient(1100px 520px at 10% -8%, rgba(34,211,238,.09), transparent 60%),
+    radial-gradient(900px 480px at 92% 6%, rgba(52,211,153,.06), transparent 55%),
+    var(--bg3);
+}
 
 /* Shared content-column width — the page now spans the full viewport (no more centered
    1080px .app), but header/banner/layout all line up to this same cap so long lines of text
    and the header title/gear don't stretch edge-to-edge on very wide monitors. */
 .pagewrap{max-width:1900px;margin:0 auto;padding-left:22px;padding-right:22px}
 
-.hdr{background:var(--bk);position:sticky;top:0;z-index:10;border-bottom:3px solid var(--acc)}
-.hdr-top{display:flex;align-items:center;justify-content:space-between;padding:17px 0 15px}
-.hdr-title{font-family:var(--font);font-size:21px;font-weight:700;color:var(--tx);letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
-.hdr-title .ti{color:var(--acc)}
+.hdr{background:rgba(11,15,26,.82);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);position:sticky;top:0;z-index:10}
+.hdr::after{content:'';display:block;height:1px;background:linear-gradient(90deg,transparent,var(--acc) 18%,rgba(52,211,153,.7) 55%,transparent 92%);opacity:.6}
+.hdr-top{display:flex;align-items:center;justify-content:space-between;padding:19px 0 17px}
+.hdr-title{font-family:var(--font);font-size:21px;font-weight:700;color:var(--tx);letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+.hdr-title .ti{color:var(--acc);text-shadow:0 0 14px var(--acc-glow)}
 .hdr-sub{font-family:var(--mono);font-size:10.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:.14em;margin-top:4px}
-.hdr-right{display:flex;align-items:center;gap:10px}
-.logo{height:26px;width:auto;display:block}
-.gear{background:none;border:1px solid var(--br2);cursor:pointer;font-size:15px;color:var(--tx2);padding:5px 8px;line-height:1;transition:all .15s}
-.gear:hover{color:var(--acc);border-color:var(--acc)}
-.spanel{display:none;background:var(--bg2);border-top:1px solid var(--br);padding:12px 0}
-.spanel.open{display:block}
-.srow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.sinfo{font-size:12.5px;color:var(--tx2);flex:1;min-width:220px}
+.hdr-right{display:flex;align-items:center;gap:12px}
+.logo{height:26px;width:auto;display:block;opacity:.92}
+.gear{background:rgba(255,255,255,.03);border:1px solid var(--br2);cursor:pointer;font-size:15px;color:var(--tx2);padding:6px 9px;line-height:1;border-radius:var(--radius-sm);transition:all .15s}
+.gear:hover{color:var(--acc);border-color:var(--acc);box-shadow:0 0 0 3px rgba(34,211,238,.12)}
+/* Settings used to be an inline dropdown that pushed page content down; it's now a right-side
+   overlay drawer (fixed, slides in over everything) — a deliberate structural change, not just a
+   recolor. Zero JS change needed for the open/close itself: gearBtn already does a plain
+   `$('spanel').classList.toggle('open')`, so restyling what 'open' MEANS (block -> translateX(0))
+   is entirely a CSS-layer decision. The backdrop element is new markup with its own tiny bit of
+   additive JS (click-to-close, Escape-to-close) — purely a UI convenience, touches nothing else. */
+.drawer-backdrop{position:fixed;inset:0;background:rgba(3,5,9,.55);backdrop-filter:blur(2px);opacity:0;pointer-events:none;transition:opacity .2s ease;z-index:29}
+.drawer-backdrop.open{opacity:1;pointer-events:auto}
+.spanel{position:fixed;top:0;right:0;bottom:0;width:min(440px,92vw);background:var(--bg4);border-left:1px solid var(--br2);box-shadow:-28px 0 60px -20px rgba(0,0,0,.75);z-index:30;transform:translateX(100%);transition:transform .28s cubic-bezier(.19,1,.22,1);display:flex;flex-direction:column}
+.spanel.open{transform:translateX(0)}
+.spanel-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--br);flex-shrink:0}
+.spanel-title{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:700;color:var(--tx)}
+.spanel-title .ti{color:var(--acc);text-shadow:0 0 10px var(--acc-glow)}
+.drawer-close{background:transparent;border:1px solid var(--br2);color:var(--tx2);padding:6px 9px;line-height:1}
+.drawer-close:hover{color:var(--acc);border-color:var(--acc)}
+.spanel-body{overflow-y:auto;padding:18px 22px 36px;display:flex;flex-direction:column;gap:0}
+.sfield{padding:15px 0;border-bottom:1px solid var(--br)}
+.sfield:first-child{padding-top:0}
+.sfield:last-child{border-bottom:none;padding-bottom:0}
+.sfield-label{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;font-weight:600;color:var(--acc);text-transform:uppercase;letter-spacing:.09em;margin-bottom:7px}
+.sfield-opt{font-family:var(--font);font-size:9px;font-weight:600;color:var(--tx3);text-transform:none;letter-spacing:0;border:1px solid var(--br2);border-radius:4px;padding:0 5px;line-height:1.6}
+.sfield .sinfo{margin-bottom:9px}
+.sfield .skey{width:100%}
+.crawl-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.sinfo{font-size:12.5px;color:var(--tx2);line-height:1.65}
 .sinfo a{color:var(--acc)}
-.skey{font-family:var(--mono);font-size:12px;padding:6px 10px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);width:260px}
+.sinfo strong{color:var(--tx)}
+.sinfo code{background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px;font-family:var(--mono);font-size:11.5px}
+.skey{font-family:var(--mono);font-size:12px;padding:8px 11px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);width:260px;border-radius:var(--radius-sm);transition:border-color .15s,box-shadow .15s}
 .skey::placeholder{color:var(--tx3)}
+.skey:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px rgba(34,211,238,.15)}
 
-/* Two-region dashboard layout: a fixed-width sidebar (search controls, settings-adjacent
-   activity log) beside a fluid main column (chart/results/LDT tables) that actually grows to
-   use the extra width on wide monitors, replacing the old single centered column. Collapses to
-   one stacked column below 980px, sidebar first, same as before this redesign. */
-.content{padding:22px;max-width:1900px;margin:0 auto;display:grid;grid-template-columns:340px minmax(0,1fr);gap:20px;align-items:start}
-.sidebar{display:flex;flex-direction:column;gap:16px;min-width:0}
-.main{display:flex;flex-direction:column;gap:16px;min-width:0}
+/* Hero command bar — the search entry point is now a single focused, centered surface up top
+   (like a search-first AI product) rather than one card competing for space in a sidebar.
+   Everything below it (chart/results/cross-check) flows full-width in .flow once it exists. */
+.hero{padding:26px 22px 10px}
+.hero-card{max-width:900px;margin:0 auto;background:var(--bg);border:1px solid var(--br);border-radius:calc(var(--radius) + 4px);padding:30px 32px;position:relative;overflow:hidden;
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 1px 0 rgba(255,255,255,.02),0 30px 60px -30px rgba(0,0,0,.85),0 0 90px -50px var(--acc-glow)}
+/* Cursor-tracked glow (--mx/--my set by a small mousemove listener, degrades gracefully to the
+   static fallback position when JS hasn't touched them yet, e.g. first paint) — a subtle "the
+   surface reacts to you" touch rather than a flat static gradient. */
+.hero-card::before{content:'';position:absolute;inset:0;pointer-events:none;transition:background .3s ease;
+  background:radial-gradient(520px 320px at var(--mx,88%) var(--my,-14%),rgba(34,211,238,.14),transparent 62%),
+    radial-gradient(340px 200px at -6% 112%,rgba(52,211,153,.08),transparent 60%)}
+.hero-eyebrow{position:relative;display:flex;align-items:center;gap:7px}
+.hero-eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--acc2);box-shadow:0 0 8px var(--acc2-glow)}
+.hero-heading{position:relative;font-family:var(--font);font-size:22px;font-weight:700;color:var(--tx);letter-spacing:-.01em;margin:8px 0 20px}
+
+/* Results flow — full-width single column below the hero, replacing the old fixed-sidebar +
+   fluid-main split so chart/table/cross-check each get the whole page's width to breathe. */
+.flow{padding:18px 22px 26px;max-width:1900px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+.card{background:var(--bg);border:1px solid var(--br);border-radius:var(--radius);padding:22px 24px;margin-bottom:0;
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 20px 40px -24px rgba(0,0,0,.75)}
+/* Shared header row for chartCard/resultsCard: caption+title on the left, a control (channel
+   slider / export button) on the right, one accent rule underneath both. */
+.panel-head{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--acc)}
+
+/* Platform activity console — docked as its own full-width section at the very bottom of the
+   page (a build-log-under-the-pipeline feel) instead of competing for space in the sidebar. */
+.console{padding:0 22px 40px;max-width:1900px;margin:0 auto}
+.console-card{background:var(--bg);border:1px solid var(--br);border-radius:var(--radius);overflow:hidden;
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 16px 32px -20px rgba(0,0,0,.7)}
+.console-head{display:flex;align-items:center;gap:6px;padding:11px 16px;background:#0a0e14;border-bottom:1px solid var(--br)}
+.console-dot{width:9px;height:9px;border-radius:50%;display:block}
+.console-dot:nth-child(1){background:#f85149}
+.console-dot:nth-child(2){background:#FBBF24}
+.console-dot:nth-child(3){background:#3fb950}
+.console-label{margin-left:8px;font-family:var(--mono);font-size:11px;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em}
+.console-card .terminal{border:none;border-radius:0}
 @media (max-width:980px){
-  .content{grid-template-columns:1fr}
+  .hero{padding:18px 16px 6px}
+  .hero-card{padding:22px 20px}
+  .flow,.console{padding-left:16px;padding-right:16px}
 }
-.card{background:var(--bg);border:1px solid var(--br);border-radius:3px;padding:19px 20px;margin-bottom:0;box-shadow:0 1px 2px rgba(10,40,70,.05)}
-.captag{display:block;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--acc);text-transform:uppercase;letter-spacing:.12em;margin-bottom:3px}
-.stitle{font-family:var(--font);font-size:16px;font-weight:700;color:var(--tx);margin:0 0 13px;padding-bottom:9px;border-bottom:2px solid var(--acc)}
+.captag{display:block;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--acc);text-transform:uppercase;letter-spacing:.12em;margin-bottom:4px}
+.stitle{font-family:var(--font);font-size:16px;font-weight:700;color:var(--tx);margin:0 0 15px;padding-bottom:11px;border-bottom:1px solid var(--br2);position:relative}
+.stitle::after{content:'';position:absolute;left:0;bottom:-1px;width:42px;height:2px;background:var(--acc);box-shadow:0 0 10px var(--acc-glow);border-radius:2px}
 
-.modetabs{display:flex;gap:8px;margin-bottom:10px}
-.modetab{font-family:var(--font);font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:3px;border:1px solid var(--br2);background:transparent;color:var(--tx2);cursor:pointer;transition:all .15s}
-.modetab:hover{border-color:var(--acc);color:var(--acc)}
-.modetab.active{background:var(--acc);border-color:var(--acc);color:#fff}
-.datefilter{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;font-size:12.5px;color:var(--tx2)}
+.modetabs{display:flex;gap:4px;margin-bottom:12px;background:var(--bg3);padding:4px;border-radius:10px;width:fit-content;border:1px solid var(--br)}
+.modetab{font-family:var(--font);font-size:12.5px;font-weight:600;padding:7px 16px;border-radius:7px;border:1px solid transparent;background:transparent;color:var(--tx2);cursor:pointer;transition:all .15s}
+.modetab:hover{color:var(--tx)}
+.modetab.active{background:var(--acc);border-color:var(--acc);color:var(--ink);box-shadow:0 0 16px -3px var(--acc-glow)}
+.datefilter{display:flex;align-items:center;gap:11px;margin-bottom:10px;flex-wrap:wrap;font-size:12.5px;color:var(--tx2)}
 .datefilter label{display:flex;align-items:center;gap:6px}
-.datefilter input[type=month]{font-family:var(--mono);font-size:12px;padding:5px 8px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);border-radius:3px}
-.datefilter button{padding:5px 12px;font-size:12px}
-.datefilter select,.datefilter input[type=text]{font-family:var(--mono);font-size:12px;padding:5px 8px;background:var(--bg);border:1px solid var(--br2);color:var(--tx);border-radius:3px}
+.datefilter input[type=month]{font-family:var(--mono);font-size:12px;padding:6px 9px;background:var(--bg2);border:1px solid var(--br2);color:var(--tx);border-radius:var(--radius-sm)}
+.datefilter button{padding:6px 13px;font-size:12px}
+.datefilter select,.datefilter input[type=text]{font-family:var(--mono);font-size:12px;padding:6px 9px;background:var(--bg2);border:1px solid var(--br2);color:var(--tx);border-radius:var(--radius-sm)}
 .datefilter input[type=text]{width:180px}
-.chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);background:var(--bg2);border:1px solid var(--br2);border-radius:3px;padding:3px 4px 3px 8px;color:var(--tx2)}
-.chip button{background:none;border:none;padding:0 2px;margin:0;font-size:13px;line-height:1;cursor:pointer;color:var(--tx3)}
+.datefilter select:focus,.datefilter input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px rgba(34,211,238,.14)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);background:var(--bg2);border:1px solid var(--br2);border-radius:999px;padding:4px 5px 4px 10px;color:var(--tx2)}
+.chip button{background:none;border:none;padding:0 3px;margin:0;font-size:13px;line-height:1;cursor:pointer;color:var(--tx3)}
 .chip button:hover{color:var(--red)}
 .committee-dropdown{position:relative}
-.committee-panel{position:absolute;top:calc(100% + 4px);left:0;z-index:20;background:var(--bg);border:1px solid var(--br2);border-radius:3px;padding:10px 12px;box-shadow:0 6px 16px rgba(10,40,70,.15);min-width:260px;max-height:280px;overflow-y:auto}
-.committee-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:3px 0}
+.committee-panel{position:absolute;top:calc(100% + 6px);left:0;z-index:20;background:var(--bg);border:1px solid var(--br2);border-radius:var(--radius-sm);padding:12px 14px;box-shadow:0 20px 44px -14px rgba(0,0,0,.65);min-width:260px;max-height:280px;overflow-y:auto}
+.committee-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 0}
 .committee-check{display:flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono);color:var(--tx2);cursor:pointer;white-space:nowrap}
-.committee-check input{cursor:pointer}
+.committee-check input{cursor:pointer;accent-color:var(--acc)}
 .committee-row.ruled-out .committee-check{color:var(--tx3);text-decoration:line-through}
 .committee-only{background:none;border:none;padding:0;margin:0;font-family:var(--font);font-size:11px;font-weight:600;color:var(--acc);cursor:pointer;text-decoration:none;visibility:hidden}
 .committee-row:hover .committee-only{visibility:visible}
 .committee-only:hover{text-decoration:underline}
-.committee-panel-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--br)}
+.committee-panel-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--br)}
 .committee-panel-head strong{font-size:11px;font-family:var(--font);color:var(--tx2);text-transform:uppercase;letter-spacing:.05em}
-.committee-panel-head button{padding:2px 8px;font-size:11px}
-textarea#biomarkers{width:100%;min-height:96px;resize:vertical;padding:10px 12px;border:1px solid var(--br2);border-radius:3px;background:var(--bg2);color:var(--tx);font-family:var(--mono);font-size:13.5px}
-.hint{font-size:12px;color:var(--tx2);margin-top:8px;line-height:1.55;padding-left:18px}
+.committee-panel-head button{padding:3px 9px;font-size:11px}
+
+/* Filter toolbar — replaces the old always-visible stack of 3 full-width filter rows (shown
+   even when nothing was filtered) with one compact row of popover-triggered pills, each hidden
+   entirely when its dimension has nothing to filter on (same display:none/'flex' toggle JS
+   already did on these wrapper ids — only what's INSIDE each wrapper changed). Only the pills
+   that are actually relevant, and actually active, take up visible space. */
+.filter-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.filter-sep{width:1px;height:22px;background:var(--br2);flex-shrink:0}
+.filter-pop{position:relative}
+.filter-pill{display:inline-flex;align-items:center;gap:7px;background:var(--bg2);border:1px solid var(--br2);color:var(--tx2);font-family:var(--font);font-size:12.5px;font-weight:600;padding:7px 13px;border-radius:999px;cursor:pointer;transition:all .15s ease}
+.filter-pill .ti{font-size:13px;color:var(--tx3);transition:color .15s ease}
+.filter-pill:hover{border-color:var(--acc);color:var(--tx)}
+.filter-pill:hover .ti{color:var(--acc)}
+.filter-pill.active{background:rgba(34,211,238,.1);border-color:var(--acc);color:var(--tx)}
+.filter-pill.active .ti{color:var(--acc)}
+.filter-pill-badge{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;background:var(--acc);color:var(--ink);font-family:var(--mono);font-size:10px;font-weight:700;border-radius:999px}
+.filter-pill-x{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;color:var(--tx3);font-size:13px;line-height:1;margin:-2px -4px -2px 0}
+.filter-pill-x:hover{background:rgba(248,113,113,.18);color:var(--red)}
+.filter-popover{position:absolute;top:calc(100% + 6px);left:0;z-index:20;background:var(--bg);border:1px solid var(--br2);border-radius:var(--radius-sm);padding:14px 16px;box-shadow:0 20px 44px -14px rgba(0,0,0,.65);min-width:240px}
+.pop-label{display:flex;flex-direction:column;gap:5px;font-size:11px;font-family:var(--mono);color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+.pop-label:last-of-type{margin-bottom:0}
+.pop-label input,.pop-label select{font-family:var(--font);font-size:13px;text-transform:none;letter-spacing:normal;padding:7px 10px;background:var(--bg2);border:1px solid var(--br2);color:var(--tx);border-radius:6px}
+.pop-label input:focus,.pop-label select:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px rgba(34,211,238,.14)}
+.pop-actions{display:flex;justify-content:flex-end;margin-top:10px}
+.pop-note{display:block;font-size:11px;color:var(--tx3);margin-top:8px}
+.pop-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+textarea#biomarkers{width:100%;min-height:100px;resize:vertical;padding:11px 13px;border:1px solid var(--br2);border-radius:var(--radius-sm);background:var(--bg2);color:var(--tx);font-family:var(--mono);font-size:13.5px;transition:border-color .15s,box-shadow .15s}
+textarea#biomarkers:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px rgba(34,211,238,.14)}
+.hint{font-size:12px;color:var(--tx2);margin-top:9px;line-height:1.6;padding-left:18px}
 .hint li{margin-bottom:7px}
 .hint li:last-child{margin-bottom:0}
-.hinttoggle{display:flex;align-items:center;gap:5px;margin-top:8px;background:transparent;border:none;padding:0;font-family:var(--font);font-size:12px;font-weight:600;color:var(--tx2);cursor:pointer}
+.hinttoggle{display:flex;align-items:center;gap:5px;margin-top:9px;background:transparent;border:none;padding:0;font-family:var(--font);font-size:12px;font-weight:600;color:var(--tx2);cursor:pointer}
 .hinttoggle:hover{color:var(--acc)}
-.actions{display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap}
-button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;padding:9px 17px;letter-spacing:.01em;border-radius:3px;transition:all .15s}
-.btn-primary{background:var(--acc);color:#fff;border:1px solid var(--acc)}
-.btn-primary:hover{background:#00518c}
-.btn-primary:disabled{background:var(--tx3);border-color:var(--tx3);cursor:not-allowed}
+.actions{display:flex;align-items:center;gap:11px;margin-top:16px;flex-wrap:wrap}
+button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;padding:9px 18px;letter-spacing:.01em;border-radius:var(--radius-sm);transition:all .15s ease}
+button:active{transform:scale(.97)}
+.btn-primary{background:linear-gradient(135deg,var(--acc),#5eead4);color:var(--ink);border:1px solid var(--acc)}
+.btn-primary:hover{background:linear-gradient(135deg,#67e8f9,#7df3e0);border-color:#67e8f9;box-shadow:0 4px 24px -4px var(--acc-glow)}
+.btn-primary:disabled{background:var(--bg2);border-color:var(--br2);color:var(--tx3);cursor:not-allowed;box-shadow:none;transform:none}
 .btn-ghost{background:transparent;border:1px solid var(--br2);color:var(--tx2)}
-.btn-ghost:hover{border-color:var(--acc);color:var(--acc)}
+.btn-ghost:hover{border-color:var(--acc);color:var(--acc);background:rgba(34,211,238,.06)}
 .btn-export{background:transparent;border:1px solid var(--acc);color:var(--acc)}
-.btn-export:hover{background:var(--acc);color:#fff}
-.btn-export:disabled{background:transparent;border-color:var(--tx3);color:var(--tx3);cursor:not-allowed}
+.btn-export:hover{background:var(--acc);color:var(--ink);box-shadow:0 4px 20px -4px var(--acc-glow)}
+.btn-export:disabled{background:transparent;border-color:var(--tx3);color:var(--tx3);cursor:not-allowed;transform:none}
 
-.progress{margin-top:14px;font-family:var(--mono);font-size:11.5px;color:var(--tx2)}
-.pbar{height:3px;background:var(--bg2);margin-top:7px;overflow:hidden}
-.pbar-fill{height:100%;background:var(--acc);width:0%;transition:width .2s}
+.progress{margin-top:16px;font-family:var(--mono);font-size:11.5px;color:var(--tx2)}
+.pbar{height:4px;background:var(--bg2);margin-top:8px;overflow:hidden;border-radius:3px}
+.pbar-fill{height:100%;background:linear-gradient(90deg,var(--acc),#67e8f9);width:0%;transition:width .2s;box-shadow:0 0 10px var(--acc-glow)}
 
-.chartwrap{position:relative;height:280px}
+.chartwrap{position:relative;height:300px}
 
-.sumtable{width:100%;border-collapse:collapse;font-size:13.5px;border-bottom:2px solid var(--br2)}
-.sumtable th{text-align:left;font-family:var(--mono);font-size:10px;color:var(--tx2);text-transform:uppercase;letter-spacing:.08em;font-weight:600;padding:9px 10px;border-top:2px solid var(--br2);border-bottom:2px solid var(--acc)}
-.sumtable td{padding:9px 10px;border-bottom:1px solid var(--br)}
+/* Channel slider — a 3-way discrete switch (510(k) / PMA / LDT) styled as a sliding pill so it
+   reads visually as a "slider" while staying click-precise (no drag needed) for 3 categorical
+   options. .chan-thumb is an absolutely-positioned pill that animates via translateX + recolors
+   per channel; JS only ever toggles which button has .active and moves/recolors the thumb. */
+.chan-slider{position:relative;display:inline-flex;background:var(--bg3);border:1px solid var(--br);border-radius:999px;padding:3px;flex-shrink:0}
+.chan-thumb{position:absolute;top:3px;bottom:3px;left:3px;width:calc((100% - 6px) / 3);background:var(--acc2);border-radius:999px;
+  transition:transform .3s var(--ease),background .25s ease;box-shadow:0 0 18px -2px var(--acc2-glow);z-index:0}
+.chan-btn{position:relative;z-index:1;background:transparent;border:none;padding:7px 16px;font-family:var(--font);font-size:12.5px;font-weight:600;color:var(--tx2);border-radius:999px;cursor:pointer;transition:color .2s ease;white-space:nowrap}
+.chan-btn.active{color:var(--ink)}
+.chan-btn:hover:not(.active){color:var(--tx)}
+
+/* Empty/CTA state shown inside .chartwrap in place of the canvas when the selected channel's
+   data hasn't been fetched yet (e.g. LDT counts before a cross-check has run) — see
+   showChartCta()/hideChartCta() in the script. */
+.chart-cta{display:none;position:absolute;inset:0;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:20px}
+.chart-cta .ti{font-size:26px;color:var(--tx3)}
+.chart-cta p{font-size:13px;color:var(--tx2);max-width:400px;line-height:1.6;margin:0}
+.chart-cta .cta-progress{font-family:var(--mono);font-size:11.5px;color:var(--tx3)}
+
+.sumtable{width:100%;border-collapse:collapse;font-size:13.5px;border-bottom:1px solid var(--br2)}
+.sumtable th{text-align:left;font-family:var(--mono);font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;font-weight:600;padding:10px 10px;border-top:1px solid var(--br2);border-bottom:1px solid var(--acc)}
+.sumtable td{padding:10px 10px;border-bottom:1px solid var(--br)}
 .sumtable td:nth-child(1),.sumtable td:nth-child(3),.sumtable td:nth-child(4),.sumtable td:nth-child(5){font-family:var(--mono);font-variant-numeric:tabular-nums}
 .sumtable tr.rowmain:hover{background:var(--bg2);cursor:pointer}
-.sumtable tr.rowmain.flash{background:#DCEBF7;transition:background .25s}
+.sumtable tr.rowmain.flash{background:rgba(34,211,238,.16);transition:background .25s}
 .biocell{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;font-weight:600}
 .fullname{font-weight:400;color:var(--tx3);font-size:12.5px}
-.mmtag{font-family:var(--mono);font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--yel);border:1px solid var(--yel);padding:1px 6px;cursor:help}
+.mmtag{font-family:var(--mono);font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--yel);border:1px solid var(--yel);background:rgba(251,191,36,.08);padding:2px 7px;border-radius:4px;cursor:help}
 .chev{display:inline-block;transition:transform .15s;color:var(--tx3);font-size:11px}
 .chev.open{transform:rotate(90deg)}
-.badge{display:inline-flex;align-items:center;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:11.5px;font-weight:600;padding:1px 8px;letter-spacing:.02em;border:1px solid currentColor}
-.badge.low{color:var(--acc2)}
-.badge.high{color:var(--red)}
-.badge.err{color:var(--red)}
+.badge{display:inline-flex;align-items:center;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:11.5px;font-weight:600;padding:2px 9px;letter-spacing:.02em;border:1px solid currentColor;border-radius:4px}
+.badge.low{color:var(--acc2);background:rgba(52,211,153,.08)}
+.badge.high{color:var(--red);background:rgba(248,113,113,.08)}
+.badge.err{color:var(--red);background:rgba(248,113,113,.08)}
 .rankcell{font-family:var(--mono);font-weight:600;color:var(--acc);width:36px}
 .detailrow td{padding:0;border-bottom:1px solid var(--br)}
-.detailwrap{display:none;padding:6px 10px 14px 34px;background:var(--bg2)}
+.detailwrap{display:none;padding:8px 12px 16px 36px;background:var(--bg3)}
 .detailwrap.open{display:block}
-.dtable{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--bg);border-bottom:1px solid var(--br2)}
-.dtable th{text-align:left;font-family:var(--mono);font-size:9.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;font-weight:600;padding:6px 8px;border-top:1px solid var(--br2);border-bottom:1px solid var(--acc)}
-.dtable td{padding:6px 8px;border-bottom:1px solid var(--br);color:var(--tx2)}
+.dtable{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--bg);border:1px solid var(--br);border-radius:var(--radius-sm);overflow:hidden}
+.dtable th{text-align:left;font-family:var(--mono);font-size:9.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;font-weight:600;padding:7px 9px;border-bottom:1px solid var(--acc)}
+.dtable td{padding:7px 9px;border-bottom:1px solid var(--br);color:var(--tx2)}
 .dtable td:nth-child(4),.dtable td:nth-child(5){font-family:var(--mono);font-variant-numeric:tabular-nums}
 .dtable tr:last-child td{border-bottom:none}
 .dtable a{color:var(--acc);text-decoration:none}
 .dtable a:hover{text-decoration:underline}
-.dnote{font-size:11.5px;color:var(--tx3);padding:8px 8px 2px}
-.measurand-btn{font-family:var(--font);font-size:11px;font-weight:600;padding:4px 9px;border-radius:2px;border:1px solid var(--acc);background:transparent;color:var(--acc);cursor:pointer;white-space:nowrap}
-.measurand-btn:hover{background:var(--acc);color:#fff}
+.dnote{font-size:11.5px;color:var(--tx3);padding:9px 9px 2px}
+.measurand-btn{font-family:var(--font);font-size:11px;font-weight:600;padding:4px 10px;border-radius:5px;border:1px solid var(--acc);background:transparent;color:var(--acc);cursor:pointer;white-space:nowrap}
+.measurand-btn:hover{background:var(--acc);color:var(--ink)}
 .measurand-btn:disabled{border-color:var(--tx3);color:var(--tx3);cursor:not-allowed}
 .measurand-result{display:block;font-size:11.5px;color:var(--tx2);margin-top:4px;max-width:220px}
 .measurand-result.err{color:var(--red)}
-.decl{font-family:var(--mono);font-size:10.5px;font-weight:600;padding:1px 7px;border:1px solid currentColor;border-radius:2px}
-.decl.se{color:var(--acc2)}
-.decl.nse{color:var(--red)}
-.decl.other{color:var(--tx3)}
+.decl{font-family:var(--mono);font-size:10.5px;font-weight:600;padding:2px 8px;border:1px solid currentColor;border-radius:4px}
+.decl.se{color:var(--acc2);background:rgba(52,211,153,.08)}
+.decl.nse{color:var(--red);background:rgba(248,113,113,.08)}
+.decl.other{color:var(--tx3);background:rgba(255,255,255,.03)}
 
-.empty{padding:30px;text-align:center;color:var(--tx3);font-size:13.5px}
+.empty{padding:56px 20px;text-align:center;color:var(--tx3);font-size:13.5px;display:flex;flex-direction:column;align-items:center;gap:10px}
+.empty .ti{font-size:30px;color:var(--br2)}
+.empty strong{display:block;font-size:15px;font-weight:700;color:var(--tx2)}
 .errline{font-family:var(--font);color:var(--red);font-size:12px}
 
 /* Platform activity terminal — one persistent, always-visible rolling log both search and
    crawl progress write into (see termLine()). Styled like an actual terminal on purpose: dark,
-   monospace, auto-scrolling, never cleared between actions — old lines just scroll off. */
-.terminal{background:#0d1117;color:#c9d1d9;font-family:var(--mono);font-size:11.5px;
-  line-height:1.65;padding:10px 12px;border-radius:4px;max-height:220px;overflow-y:auto;
+   monospace, auto-scrolling, never cleared between actions — old lines just scroll off. Border/
+   radius now live on the .console-card wrapper (see the console section rules above), so the
+   terminal itself is just the scrollable log surface. */
+.terminal{background:#0a0e14;color:#c9d1d9;font-family:var(--mono);font-size:11.5px;
+  line-height:1.65;padding:12px 16px;max-height:220px;overflow-y:auto;
   white-space:pre-wrap;word-break:break-word}
 .terminal .t-hit{color:#3fb950}
 .terminal .t-miss,.terminal .t-skipped{color:#8b949e}
 .terminal .t-error{color:#f85149}
 .terminal .t-meta{color:#58a6ff}
+
+/* "Running in fallback mode" banner — recolored amber-on-dark, same display:none/'block'
+   toggle JS already does inline (setLocalIndexBannerState only ever touches .style.display,
+   never these other properties, so moving them into a class is safe). */
+.nudge{max-width:1900px;margin:0 auto 16px;padding:13px 16px;border:1px solid rgba(251,191,36,.35);border-radius:var(--radius-sm);background:rgba(251,191,36,.07);color:#FDE9B0;font-size:13px;line-height:1.6}
+.nudge strong{color:var(--yel)}
+.nudge code{background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px}
+.nudge i.ti{color:var(--yel)}
+
 ::-webkit-scrollbar{height:8px;width:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--br2);border-radius:8px}
+::-webkit-scrollbar-thumb:hover{background:var(--tx3)}
+*{scrollbar-width:thin;scrollbar-color:var(--br2) transparent}
 </style>
 </head>
 <body>
@@ -179,45 +320,61 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <button class="gear" id="gearBtn" title="Settings"><i class="ti ti-settings"></i></button>
       </div>
     </div>
-    <div class="spanel pagewrap" id="spanel">
-      <div class="srow">
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+  <div class="spanel" id="spanel">
+    <div class="spanel-head">
+      <div class="spanel-title"><i class="ti ti-settings"></i> Settings</div>
+      <button class="drawer-close" id="drawerCloseBtn" type="button" aria-label="Close settings"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="spanel-body">
+      <div class="sfield">
+        <div class="sfield-label">openFDA API key <span class="sfield-opt">optional</span></div>
         <div class="sinfo">Uses the public <a href="https://open.fda.gov/apis/device/510k/" target="_blank" rel="noopener">openFDA device 510(k) API</a>. No key: 1,000 requests/day. Add a free key for 120,000/day.</div>
         <input class="skey" id="apiKey" placeholder="openFDA API key (optional)">
       </div>
-      <div class="srow" style="margin-top:8px">
+      <div class="sfield">
+        <div class="sfield-label">LDT proxy — NY State</div>
         <div class="sinfo">LDT search checks up to 4 sources — pick which ones in the "LDT data sources" row on the LDT tab. <strong>NY State</strong> search calls a small proxy Worker (NY's LDT site has no CORS support, so this tool can't reach it directly) — pre-filled below with a donated, shared instance, ready to use immediately. It runs on one person's free Cloudflare account with a shared daily limit and no uptime guarantee — fine to try the tool, but deploy your own instead (see <code>worker/README.md</code>, ~5 min, no coding required) if you're using this regularly, then just overwrite this field. <strong>ARUP and LabCorp need no setup at all</strong> — both allow direct cross-origin requests from this tool. Unlike ARUP, though, <strong>LabCorp's Terms of Use explicitly restrict automated/commercial reuse of their test-menu content</strong> (including using it to inform a competing product) — a real consideration, not just a technical one, if you're relying on those results commercially.</div>
         <input class="skey" id="ldtProxyUrl" placeholder="LDT proxy Worker URL (NY State)">
       </div>
-      <div class="srow" style="margin-top:8px">
+      <div class="sfield">
+        <div class="sfield-label">LDT proxy — Quest</div>
         <div class="sinfo"><strong>Quest</strong> is the one other LDT source that needs its own proxy Worker — its search API blocks cross-origin requests outright, the same reason NY needs one above. Pre-filled with a donated, shared instance (same caveats as NY's above — shared daily limit, no uptime guarantee; deploy your own via <code>worker/README.md</code> if you're using this regularly). Note: Quest's test-directory content is governed by their own Terms of Use, which restricts reuse beyond noncommercial/educational purposes without written permission — this tool queries it the same way a browser visiting their site does, but that's a real consideration if you're using results commercially, not just a technical detail.</div>
         <input class="skey" id="questProxyUrl" placeholder="Quest proxy Worker URL">
       </div>
-      <div class="srow" style="margin-top:8px">
+      <div class="sfield">
+        <div class="sfield-label">FDA PDF proxy</div>
         <div class="sinfo">"Check Measurand" on an FDA record reads the device's official Decision Summary PDF to confirm what it actually measures (same CORS problem as LDT, same shared instance/caveats — pre-filled below). Not every device has one. Falls back to in-browser OCR automatically for older, scanned/image-only documents with no real text layer — no setup needed, just slower for those.</div>
         <input class="skey" id="fdaPdfProxyUrl" placeholder="FDA PDF proxy Worker URL">
       </div>
-      <div class="srow" style="margin-top:8px">
+      <div class="sfield">
+        <div class="sfield-label">LDT cross-check threshold</div>
         <div class="sinfo">After an FDA search, a button offers to check biomarkers with few FDA-cleared devices against New York's LDT database in one pass — a low-but-nonzero count can still mean a real LDT-only opportunity. Adjust how few counts as "few" here.</div>
         <input class="skey" id="ldtCrosscheckThreshold" type="number" min="0" step="1" placeholder="2" style="width:70px;text-align:center">
       </div>
-      <div class="srow" style="margin-top:8px">
+      <div class="sfield">
+        <div class="sfield-label">UMLS API key <span class="sfield-opt">optional</span></div>
         <div class="sinfo">When an exact/broad/antigen-only search finds nothing, an <a href="https://uts.nlm.nih.gov/uts/license" target="_blank" rel="noopener">NLM UMLS Terminology Services</a> API key lets it look up the spelled-out medical name automatically instead of returning nothing. Pre-filled with a donated, individual key (works immediately) — NLM keys are personal/free but manually reviewed (allow up to 3 business days after signing up), so get your own instead if you're using this regularly, and definitely before relying on this for anything beyond casual/personal use. No proxy Worker needed for this one.</div>
         <input class="skey" id="umlsApiKey" placeholder="UMLS API key (optional)">
       </div>
-      <div class="srow" style="margin-top:8px">
+      <div class="sfield">
+        <div class="sfield-label">Local index server</div>
         <div class="sinfo"><strong>Default workflow</strong>, not an optional extra: point this at a locally-running <code>indexer/</code> + <code>server/</code> instance (see repo root) for deeper cross-checked results — matches inferred by following a device's cited predicate back to an already-confirmed device, which the live search below structurally can't do. Leaving this blank runs the tool in a reduced fallback mode; falls back automatically if unreachable, so nothing breaks either way.</div>
         <input class="skey" id="localIndexUrl" placeholder="Local index server URL (optional, e.g. http://localhost:8000)">
       </div>
-      <div class="srow" style="margin-top:8px">
+      <div class="sfield">
+        <div class="sfield-label">Predicate crawl <span class="sfield-opt">advanced</span></div>
         <div class="sinfo">
-          <strong>Predicate crawl</strong> (advanced): the "inferred via predicate" tier above
-          depends on reading every in-scope FDA device's decision-summary PDF at least once —
-          this can take hours and uses real network bandwidth/openFDA rate limits, so it's a
-          deliberate action, not something that runs automatically. Only enabled when the local
-          index server above is reachable; progress shows in the Platform activity window.
-          <div id="crawlStatusText" style="margin-top:4px;font-size:11.5px;color:var(--tx3)"></div>
+          The "inferred via predicate" tier above depends on reading every in-scope FDA device's
+          decision-summary PDF at least once — this can take hours and uses real network
+          bandwidth/openFDA rate limits, so it's a deliberate action, not something that runs
+          automatically. Only enabled when the local index server above is reachable; progress
+          shows in the Platform activity console.
         </div>
-        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div id="crawlStatusText" style="font-size:11.5px;color:var(--tx3)"></div>
+        <div class="crawl-actions">
           <button class="btn-ghost" id="crawlStartBtn" type="button" disabled>Start predicate crawl</button>
           <button class="btn-ghost" id="crawlCancelBtn" type="button" style="display:none">Cancel crawl</button>
         </div>
@@ -225,7 +382,7 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
     </div>
   </div>
 
-  <div id="localIndexNudge" style="display:none;max-width:1900px;margin:0 auto 14px;padding:10px 14px;border:1px solid #d9a441;border-radius:8px;background:#fdf6e8;color:#6b4e0a;font-size:13px">
+  <div id="localIndexNudge" class="nudge" style="display:none">
     <strong>Running in fallback mode.</strong> The default workflow for this tool includes a
     local cross-check backend — without it, the plain search below misses real FDA approvals
     in ways that are structural, not occasional (bundled multi-antigen kits that never name the
@@ -234,10 +391,10 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
     notice goes away once a local index server URL is set.
   </div>
 
-  <div class="content">
-    <div class="sidebar">
-    <div class="card">
-      <div class="stitle">Biomarkers</div>
+  <section class="hero">
+    <div class="hero-card">
+      <span class="captag hero-eyebrow"><span class="dot"></span> AI-assisted device intelligence</span>
+      <h1 class="hero-heading">Search FDA clearances &amp; lab-developed tests</h1>
       <div class="modetabs">
         <button class="modetab active" id="modeFda" type="button">FDA 510(k)</button>
         <button class="modetab" id="modeLdt" type="button">LDT</button>
@@ -278,49 +435,71 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
         <div class="pbar"><div class="pbar-fill" id="pbarFill"></div></div>
       </div>
     </div>
+  </section>
 
-    <div class="card" id="activityCard">
-      <div class="stitle">Platform activity</div>
-      <div id="activityTerminal" class="terminal"></div>
-    </div>
-    </div>
-
-    <div class="main">
+  <main class="flow">
     <div class="card" id="chartCard" style="display:none">
-      <span class="captag" id="chartCaptag">Figure 1</span>
-      <div class="stitle" id="chartTitle">Cleared products by biomarker, ranked fewest first</div>
-      <div class="hint" id="chartHint" style="margin:-6px 0 12px">Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.</div>
-      <div class="chartwrap"><canvas id="chart"></canvas></div>
+      <div class="panel-head">
+        <div>
+          <span class="captag" id="chartCaptag">Figure 1</span>
+          <div class="stitle" id="chartTitle" style="margin:0;padding:0;border:none">Cleared products by biomarker, ranked fewest first</div>
+        </div>
+        <div class="chan-slider" id="chanSlider">
+          <span class="chan-thumb" id="chanThumb"></span>
+          <button class="chan-btn active" data-ch="510k" type="button">510(k)</button>
+          <button class="chan-btn" data-ch="pma" type="button">PMA</button>
+          <button class="chan-btn" data-ch="ldt" type="button">LDT</button>
+        </div>
+      </div>
+      <div class="hint" id="chartHint" style="margin:0 0 12px">Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.</div>
+      <div class="chartwrap">
+        <canvas id="chart"></canvas>
+        <div class="chart-cta" id="chartCta"></div>
+      </div>
     </div>
 
     <div class="card" id="resultsCard" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin:0 0 13px;padding-bottom:9px;border-bottom:2px solid var(--acc)">
+      <div class="panel-head">
         <div>
           <span class="captag" id="resultsCaptag" style="margin-bottom:3px">Table 1</span>
           <div class="stitle" id="resultsTitle" style="margin:0;padding:0;border:none">Results, ranked by fewest approvals</div>
         </div>
         <button class="btn-export" id="resultsExportBtn" type="button" style="flex-shrink:0"><i class="ti ti-file-spreadsheet"></i> Export to Excel</button>
       </div>
-      <div class="modetabs" id="sortTabs" style="display:none">
-        <button class="modetab active" id="sortByApprovals" type="button">Fewest approvals</button>
-        <button class="modetab" id="sortByDate" type="button">Most recent approval</button>
-      </div>
-      <div class="datefilter" id="dateFilterBar" style="display:none">
-        <label>From <input type="month" id="dateFilterFrom"></label>
-        <label>To <input type="month" id="dateFilterTo"></label>
-        <button class="btn-ghost" id="dateFilterClear" type="button">Clear</button>
-        <span id="dateFilterNote"></span>
-      </div>
-      <div class="datefilter" id="applicantFilterBar" style="display:none">
-        <label>Submitted by <select id="applicantFilterSelect"><option value="">All applicants</option></select></label>
-        <label>Show only <input type="text" id="showOnlyInput" placeholder="Biomarker or company name"></label>
-        <button class="btn-ghost" id="showOnlyAddBtn" type="button">Add</button>
-        <span id="showOnlyChips"></span>
-      </div>
-      <div class="datefilter" id="committeeFilterBar" style="display:none">
-        <div class="committee-dropdown">
-          <button class="btn-ghost" id="committeeDropdownBtn" type="button">Rule out FDA review panel<span id="committeeDropdownCount"></span> ▾</button>
-          <div class="committee-panel" id="committeePanel" style="display:none">
+      <div class="filter-toolbar">
+        <div class="modetabs" id="sortTabs" style="display:none">
+          <button class="modetab active" id="sortByApprovals" type="button">Fewest approvals</button>
+          <button class="modetab" id="sortByDate" type="button">Most recent approval</button>
+        </div>
+        <span class="filter-sep" id="filterSep" style="display:none"></span>
+        <div class="filter-pop" id="dateFilterBar" style="display:none">
+          <button class="filter-pill" id="dateFilterTrigger" type="button"><i class="ti ti-calendar"></i>Date range<span class="filter-pill-x" id="dateFilterX" style="display:none" title="Clear">×</span></button>
+          <div class="filter-popover" id="dateFilterPopover" style="display:none">
+            <label class="pop-label">From <input type="month" id="dateFilterFrom"></label>
+            <label class="pop-label">To <input type="month" id="dateFilterTo"></label>
+            <div class="pop-actions"><button class="btn-ghost" id="dateFilterClear" type="button">Clear</button></div>
+            <span id="dateFilterNote" class="pop-note"></span>
+          </div>
+        </div>
+        <div class="filter-pop" id="applicantFilterBar" style="display:none">
+          <button class="filter-pill" id="applicantFilterTrigger" type="button"><i class="ti ti-building-hospital"></i>Submitted by<span class="filter-pill-x" id="applicantFilterX" style="display:none" title="Clear">×</span></button>
+          <div class="filter-popover" id="applicantFilterPopover" style="display:none">
+            <label class="pop-label">Applicant <select id="applicantFilterSelect"><option value="">All applicants</option></select></label>
+          </div>
+        </div>
+        <div class="filter-pop" id="showOnlyFilterBar">
+          <button class="filter-pill" id="showOnlyTrigger" type="button"><i class="ti ti-filter"></i>Contains<span class="filter-pill-badge" id="showOnlyBadge" style="display:none"></span></button>
+          <div class="filter-popover" id="showOnlyPopover" style="display:none">
+            <label class="pop-label">Biomarker or company name
+              <input type="text" id="showOnlyInput" placeholder="e.g. Roche">
+            </label>
+            <div class="pop-actions"><button class="btn-ghost" id="showOnlyAddBtn" type="button">Add</button></div>
+            <div class="pop-chips" id="showOnlyChips"></div>
+          </div>
+        </div>
+        <div class="filter-pop" id="committeeFilterBar" style="display:none">
+          <button class="filter-pill" id="committeeDropdownBtn" type="button"><i class="ti ti-stethoscope"></i>Review panel<span class="filter-pill-badge" id="committeeDropdownCount" style="display:none"></span></button>
+          <div class="committee-panel filter-popover" id="committeePanel" style="display:none">
             <div class="committee-panel-head">
               <strong>Review panels</strong>
               <button class="btn-ghost" id="committeeClearBtn" type="button">Select all</button>
@@ -328,9 +507,9 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
             <div id="committeeCheckboxes"></div>
           </div>
         </div>
-        <button class="btn-ghost" id="clearAllFiltersBtn" type="button">Clear all filters</button>
+        <button class="btn-ghost" id="clearAllFiltersBtn" type="button" style="display:none">Clear all filters</button>
       </div>
-      <div class="hint" id="resultsHint" style="margin:-6px 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
+      <div class="hint" id="resultsHint" style="margin:0 0 12px">Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.</div>
       <table class="sumtable">
         <thead id="resultsHead"><tr>
           <th style="width:44px">Rank</th>
@@ -349,8 +528,8 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
 
     <div class="card" id="crossCard" style="display:none">
       <span class="captag">Table 2</span>
-      <div class="stitle">LDT cross-check — biomarkers with 2 or fewer FDA approvals</div>
-      <div class="hint" style="margin:-6px 0 12px">Same LDT source search as above (whichever sources are checked on the LDT tab), run automatically for every biomarker that showed 2 or fewer cleared FDA products.</div>
+      <div class="stitle" id="crossTitle">LDT cross-check — biomarkers with 2 or fewer FDA approvals</div>
+      <div class="hint" style="margin:-6px 0 12px">Same LDT source search as above (whichever sources are checked on the LDT tab), run automatically for every biomarker that showed 2 or fewer cleared FDA products, or for all of them via the chart's LDT view.</div>
       <table class="sumtable">
         <thead><tr>
           <th style="width:44px">Rank</th>
@@ -366,9 +545,18 @@ button{font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;pad
       </div>
     </div>
 
-    <div class="empty" id="emptyState">Enter biomarkers above and click Search.</div>
+    <div class="empty" id="emptyState"><i class="ti ti-dna-2"></i><strong>Ready when you are</strong>Enter biomarkers above and click Search.</div>
+  </main>
+
+  <section class="console">
+    <div class="console-card" id="activityCard">
+      <div class="console-head">
+        <span class="console-dot"></span><span class="console-dot"></span><span class="console-dot"></span>
+        <span class="console-label">Platform activity</span>
+      </div>
+      <div id="activityTerminal" class="terminal"></div>
     </div>
-  </div>
+  </section>
 </div>
 
 <script>
@@ -401,9 +589,46 @@ const MAX_RECORDS = 300; // cap per biomarker to bound request volume
 let state = []; // [{term, total, approved, records, error}]
 let chartRef = null;
 
+// Chart channel slider (510(k) / PMA / LDT) — one bar series at a time instead of stacking
+// 510(k)+PMA together, so each channel's counts are legible on their own. lastFdaValid/
+// lastLdtValid cache whatever renderResults()/renderLdtResults() last computed, purely so
+// switching channels redraws instantly from already-fetched data instead of re-searching.
+let chartChannel = '510k'; // '510k' | 'pma' | 'ldt'
+let lastChartMode = 'fda'; // 'fda' | 'ldt' — which search produced the rows currently backing the chart
+let lastFdaValid = [];
+let lastLdtValid = [];
+// FDA 510(k)/PMA counts fetched on demand for the CURRENT LDT-mode search's terms (mirrors
+// crossState's reverse direction — see runFdaCrossCheck). Empty until the chart's 510(k)/PMA
+// channel is opened from an LDT-mode search and the user asks to load them.
+let fdaCrossState = [];
+
 const $ = (id) => document.getElementById(id);
 
-$('gearBtn').addEventListener('click', () => $('spanel').classList.toggle('open'));
+// Settings is a slide-in drawer now (see .spanel CSS) rather than an inline dropdown, so
+// opening/closing it needs a backdrop to dim the page and a couple of extra ways to dismiss it
+// (click outside, Escape) — none of this touches the search/crawl logic below, purely UI chrome.
+function setDrawerOpen(open) {
+  $('spanel').classList.toggle('open', open);
+  $('drawerBackdrop').classList.toggle('open', open);
+  document.body.classList.toggle('drawer-open', open);
+}
+$('gearBtn').addEventListener('click', () => setDrawerOpen(!$('spanel').classList.contains('open')));
+$('drawerCloseBtn').addEventListener('click', () => setDrawerOpen(false));
+$('drawerBackdrop').addEventListener('click', () => setDrawerOpen(false));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('spanel').classList.contains('open')) setDrawerOpen(false);
+});
+
+// Cursor-tracked glow on the hero card (see .hero-card::before) — purely decorative, degrades
+// to the CSS fallback position (top-right) when the pointer hasn't moved over it yet.
+const heroCardEl = document.querySelector('.hero-card');
+if (heroCardEl) {
+  heroCardEl.addEventListener('mousemove', (e) => {
+    const r = heroCardEl.getBoundingClientRect();
+    heroCardEl.style.setProperty('--mx', `${((e.clientX - r.left) / r.width * 100).toFixed(1)}%`);
+    heroCardEl.style.setProperty('--my', `${((e.clientY - r.top) / r.height * 100).toFixed(1)}%`);
+  });
+}
 
 const savedKey = localStorage.getItem('openfda_api_key');
 if (savedKey) $('apiKey').value = savedKey;
@@ -2960,6 +3185,8 @@ async function runFdaSearch() {
   setLocalIndexBannerState(Boolean(localIndexUrlSetting), localIndexReachable);
 
   state = [];
+  crossState = []; // this search's terms are new — any earlier cross-check no longer applies
+  chartChannel = '510k'; // reset to the primary channel for a genuinely new FDA search
   for (let i = 0; i < terms.length; i++) {
     const term = terms[i];
     $('progressTxt').textContent = `Searching ${i + 1} of ${terms.length}: ${term}`;
@@ -2996,6 +3223,42 @@ async function runFdaSearch() {
     $('crossCheckBtn').textContent = `Check LDT database for ${ldtCandidates.length} biomarker${ldtCandidates.length === 1 ? '' : 's'} with ${getLdtCrosscheckThreshold()} or fewer FDA approvals`;
     $('crossCheckPrompt').style.display = 'block';
   }
+}
+
+// Mirrors runLdtSearchForTerms below, but for the FDA side — reuses the exact same per-term
+// fetchBiomarker() pipeline runFdaSearch's own loop uses, just without the DOM/progress-bar
+// specifics baked in, so it's callable for an arbitrary term list from anywhere (currently: the
+// chart's 510(k)/PMA channel, lazily loading FDA counts for an LDT-mode search's terms — see
+// runFdaCrossCheck). No terminal logging, same "secondary, opt-in action" reasoning
+// runLdtSearchForTerms's own logToTerminal=false default uses for the crossCheckBtn path.
+async function runFdaSearchForTerms(terms, onProgress) {
+  const apiKey = $('apiKey').value.trim();
+  const umlsApiKey = getUmlsApiKey();
+  const forceRefresh = $('forceRefresh').checked;
+  const localIndexUrlSetting = getLocalIndexUrl();
+  const localIndexReachable = Boolean(localIndexUrlSetting) && await checkLocalIndexHealth(localIndexUrlSetting);
+  const localIndexUrl = localIndexReachable ? localIndexUrlSetting : null;
+
+  const results = [];
+  for (let i = 0; i < terms.length; i++) {
+    const term = terms[i];
+    onProgress(i, terms.length, term);
+    try {
+      const { total, records, matchMode, expansion, panelCandidates, inferredMatches, trace } =
+        await fetchBiomarker(term, apiKey, umlsApiKey, localIndexUrl, null, forceRefresh);
+      const approved = records.filter(r => classify(r.decision_description) === 'se').length;
+      const { approved510k, approvedPma } = countApprovedBySource(records);
+      results.push({
+        term, total, approved, approved510k, approvedPma, records, matchMode, expansion,
+        panelCandidates: panelCandidates || [], inferredMatches: inferredMatches || [],
+        trace: trace || [], error: null,
+      });
+    } catch (e) {
+      results.push({ term, total: 0, approved: 0, approved510k: 0, approvedPma: 0, records: [], trace: [], error: e.message || String(e) });
+    }
+    if (i < terms.length - 1) await sleep(250);
+  }
+  return results;
 }
 
 const HIGH_APPROVAL_THRESHOLD = 10;
@@ -3248,7 +3511,8 @@ function renderShowOnlyChips() {
 function renderCommitteeCheckboxes() {
   const committees = uniqueCommittees(state);
   $('committeeFilterBar').style.display = committees.length ? 'flex' : 'none';
-  $('committeeDropdownCount').textContent = excludedCommittees.size ? ` (${excludedCommittees.size} ruled out)` : '';
+  // committeeDropdownCount's badge text/visibility is owned by updateFilterPillStates(), called
+  // once at the end of renderResults() after this — not set here to avoid the two fighting.
   // One toggle button instead of separate Select all / Deselect all buttons: once every panel
   // is ruled out there's nothing left to select, so the label always reflects the one action
   // that's actually useful from the current state.
@@ -3288,23 +3552,26 @@ function renderResults() {
   $('sortTabs').style.display = 'flex';
   $('sortByApprovals').classList.toggle('active', sortMode === 'approvals');
   $('sortByDate').classList.toggle('active', sortMode === 'date');
-  $('dateFilterBar').style.display = 'flex';
+  // Date range and Submitted-by only show up as filter options when there's actually something
+  // to filter on — a biomarker search with zero dated/attributed records showing an unusable
+  // filter pill is exactly the kind of "doesn't make sense for users" default this pass fixed.
+  $('dateFilterBar').style.display = state.some(s => !s.error && s.records.some(r => r.decision_date)) ? 'flex' : 'none';
   $('dateFilterNote').textContent = dateFilterActive()
     ? 'Approved/Total counts reflect only this range.' : '';
-  $('applicantFilterBar').style.display = 'flex';
+  $('applicantFilterBar').style.display = uniqueApplicants(state).length ? 'flex' : 'none';
+  $('showOnlyFilterBar').style.display = 'flex'; // re-shown here in case a prior LDT-mode search hid it
   populateApplicantFilter();
   renderShowOnlyChips();
   renderCommitteeCheckboxes();
   $('chartCaptag').textContent = 'Figure 1';
   $('resultsCaptag').textContent = 'Table 1';
+  // chartTitle itself is set by renderChannelChart() below (it already knows sortMode/
+  // lastChartMode); chartHint's text never actually varies by mode, so it's just the static
+  // default already in the HTML.
   if (sortMode === 'date') {
-    $('chartTitle').textContent = 'Cleared products by biomarker, ranked by most recent approval';
-    $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
     $('resultsTitle').textContent = 'Results, ranked by most recent approval';
     $('resultsHint').textContent = 'Rank 1 = most recently FDA-cleared product. Biomarkers with 0 cleared products have no date to rank by and sort last.';
   } else {
-    $('chartTitle').textContent = 'Cleared products by biomarker, ranked fewest first';
-    $('chartHint').innerHTML = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
     $('resultsTitle').textContent = 'Results, ranked by fewest approvals';
     $('resultsHint').textContent = 'Rank 1 = fewest FDA-cleared products (least competition / most opportunity). Approval counts in red (≥10) indicate a more saturated space.';
   }
@@ -3405,12 +3672,15 @@ function renderResults() {
     tbody.appendChild(mainRow);
   });
 
-  renderChart(valid);
+  lastFdaValid = valid;
+  lastChartMode = 'fda';
+  renderChannelChart();
+  updateFilterPillStates();
 }
 
 Chart.defaults.font.family = "'IBM Plex Mono', monospace";
 Chart.defaults.font.size = 11;
-Chart.defaults.color = '#4A5A68';
+Chart.defaults.color = '#93A4BC';
 
 // A biomarker with e.g. 300 approvals sitting next to ones with 1-2 squashes the small bars
 // down to a sub-pixel sliver on a shared linear scale — exactly the low-approval-count
@@ -3428,7 +3698,7 @@ const barValueLabelsPlugin = {
         const value = dataset.data[index];
         if (value == null || value === 0) return;
         ctx.save();
-        ctx.fillStyle = '#4A5A68';
+        ctx.fillStyle = '#93A4BC';
         ctx.font = "600 10px 'IBM Plex Mono', monospace";
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
@@ -3495,50 +3765,158 @@ function resolveChartIndex(evt) {
   return null;
 }
 
-function renderChart(valid) {
-  $('chartCard').style.display = valid.length ? 'block' : 'none';
-  if (!valid.length) return;
-  const ctx = document.getElementById('chart');
+// --- Chart channel slider (510(k) / PMA / LDT) -----------------------------------------
+// One bar series at a time (never stacked) so each channel's own counts are legible on their
+// own — the slider just swaps which single metric drawSingleSeriesChart() draws for the SAME
+// rows/order the table below is showing. See CHANNEL_META for per-channel label/color.
+
+const CHANNEL_META = {
+  '510k': { label: '510(k) Approved', color: '#34D399' },
+  pma: { label: 'PMA Approved', color: '#22D3EE' },
+  ldt: { label: 'LDT Matches', color: '#A78BFA' },
+};
+const CHANNELS = ['510k', 'pma', 'ldt'];
+
+function moveChanThumb() {
+  const idx = CHANNELS.indexOf(chartChannel);
+  $('chanThumb').style.transform = `translateX(${idx * 100}%)`;
+  $('chanThumb').style.background = CHANNEL_META[chartChannel].color;
+}
+
+document.querySelectorAll('#chanSlider .chan-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    chartChannel = btn.dataset.ch;
+    document.querySelectorAll('#chanSlider .chan-btn').forEach(b => b.classList.toggle('active', b === btn));
+    moveChanThumb();
+    renderChannelChart();
+  });
+});
+
+// Shared bar-click/hover behavior every channel's chart uses: jump to and flash the matching
+// results-table row. Row order always matches whatever produced the currently-charted `items`
+// (lastFdaValid or lastLdtValid, in their existing table order), so index i here is always the
+// same row index resultsBody rendered — true across every channel, since the slider only ever
+// changes WHICH metric is drawn for those same rows, never their order.
+function chartRowOnClick(evt) {
+  const idx = resolveChartIndex(evt);
+  if (idx == null) return;
+  const row = document.querySelectorAll('#resultsBody tr.rowmain')[idx];
+  if (!row) return;
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const wrap = row.nextElementSibling.querySelector('.detailwrap');
+  if (wrap && !wrap.classList.contains('open')) row.click();
+  row.classList.add('flash');
+  setTimeout(() => row.classList.remove('flash'), 1000);
+}
+
+function drawSingleSeriesChart(items, meta, highlightTerms) {
+  hideChartCta();
   if (chartRef) { chartRef.destroy(); chartRef = null; }
+  const ctx = document.getElementById('chart');
   chartRef = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: valid.map(s => s.term),
-      datasets: [
-        { label: '510(k) Approved', data: valid.map(s => s.approved510k), backgroundColor: '#1B7A4D', minBarLength: 4 },
-        { label: 'PMA Approved', data: valid.map(s => s.approvedPma), backgroundColor: '#0066B3', minBarLength: 4 }
-      ]
+      labels: items.map(s => s.term),
+      datasets: [{ label: meta.label, data: items.map(s => s.value), backgroundColor: meta.color, borderRadius: 5, maxBarThickness: 46, minBarLength: 4 }],
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       scales: {
         x: {
-          stacked: true,
-          grid: { color: 'rgba(10,40,70,.08)' },
-          ticks: { color: (ctx) => (valid[ctx.index] && isLdtCrossCheckCandidate(valid[ctx.index])) ? '#0066B3' : '#4A5A68' }
+          grid: { color: 'rgba(148,178,214,.08)' },
+          ticks: { color: (ctx) => (highlightTerms && items[ctx.index] && highlightTerms.has(items[ctx.index].term)) ? meta.color : '#93A4BC' },
         },
-        y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(10,40,70,.08)' } }
+        y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(148,178,214,.08)' } },
       },
       plugins: {
-        legend: { position: 'bottom', labels: { font: { family: "'IBM Plex Sans', sans-serif", size: 12 } } },
-        tooltip: { callbacks: { footer: () => 'Click to jump to this row in the table' } }
+        legend: { display: false },
+        tooltip: { callbacks: { footer: () => 'Click to jump to this row in the table' } },
       },
-      onHover: (evt) => {
-        evt.native.target.style.cursor = resolveChartIndex(evt) != null ? 'pointer' : 'default';
-      },
-      onClick: (evt) => {
-        const idx = resolveChartIndex(evt);
-        if (idx == null) return;
-        const row = document.querySelectorAll('#resultsBody tr.rowmain')[idx];
-        if (!row) return;
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        const wrap = row.nextElementSibling.querySelector('.detailwrap');
-        if (wrap && !wrap.classList.contains('open')) row.click();
-        row.classList.add('flash');
-        setTimeout(() => row.classList.remove('flash'), 1000);
-      }
-    }
+      onHover: (evt) => { evt.native.target.style.cursor = resolveChartIndex(evt) != null ? 'pointer' : 'default'; },
+      onClick: chartRowOnClick,
+    },
   });
+}
+
+// Shown inside .chartwrap, in place of the canvas, when the selected channel's data hasn't been
+// fetched for these rows yet (e.g. LDT counts before a cross-check has run). `action` is
+// {label, onClick} for a fetchable channel, or omitted for the LDT-mode-viewing-FDA case, which
+// is informational only (no reverse detail table exists for that direction — see the LDT->FDA
+// scoping note on runFdaCrossCheck).
+function showChartCta(text, action) {
+  if (chartRef) { chartRef.destroy(); chartRef = null; }
+  $('chart').style.display = 'none';
+  const cta = $('chartCta');
+  cta.style.display = 'flex';
+  cta.innerHTML = `<i class="ti ti-flask-2"></i><p>${escapeHtml(text)}</p>` +
+    (action ? `<button class="btn-primary" type="button" id="chartCtaBtn">${escapeHtml(action.label)}</button>` : '');
+  if (action) $('chartCtaBtn').addEventListener('click', action.onClick);
+}
+function hideChartCta() {
+  $('chartCta').style.display = 'none';
+  $('chartCta').innerHTML = '';
+  $('chart').style.display = 'block';
+}
+
+function crossLdtTotalForTerm(term) {
+  const e = crossState.find(s => !s.error && s.term === term);
+  return e ? e.total : null;
+}
+function crossFdaForTerm(term) {
+  return fdaCrossState.find(s => !s.error && s.term === term) || null;
+}
+
+function renderChannelChart() {
+  document.querySelectorAll('#chanSlider .chan-btn').forEach(b => b.classList.toggle('active', b.dataset.ch === chartChannel));
+  moveChanThumb();
+
+  const valid = lastChartMode === 'fda' ? lastFdaValid : lastLdtValid;
+  if (!valid.length) { $('chartCard').style.display = 'none'; return; }
+  $('chartCard').style.display = 'block';
+  $('chartTitle').textContent = lastChartMode === 'fda'
+    ? (sortMode === 'date' ? 'Cleared products by biomarker, ranked by most recent approval' : 'Cleared products by biomarker, ranked fewest first')
+    : 'LDT matches by biomarker, ranked fewest first';
+
+  if (lastChartMode === 'fda') {
+    if (chartChannel === 'ldt') {
+      const missing = valid.filter(s => crossLdtTotalForTerm(s.term) == null);
+      if (missing.length) {
+        const text = crossState.length
+          ? `LDT match counts loaded for ${valid.length - missing.length} of ${valid.length} biomarker(s) so far.`
+          : `LDT match counts haven't been loaded for these ${valid.length} biomarker(s) yet — this calls whichever LDT sources are checked on the LDT tab, same as the cross-check below.`;
+        showChartCta(text, {
+          label: `Load LDT matches for ${missing.length} biomarker${missing.length === 1 ? '' : 's'}`,
+          onClick: () => runCrossCheck(valid.map(s => s.term), missing.map(s => s.term)),
+        });
+        return;
+      }
+      const highlight = new Set(valid.filter(s => crossLdtTotalForTerm(s.term) === 0).map(s => s.term));
+      drawSingleSeriesChart(valid.map(s => ({ term: s.term, value: crossLdtTotalForTerm(s.term) })), CHANNEL_META.ldt, highlight);
+    } else {
+      const key = chartChannel === '510k' ? 'approved510k' : 'approvedPma';
+      const highlight = new Set(valid.filter(isLdtCrossCheckCandidate).map(s => s.term));
+      drawSingleSeriesChart(valid.map(s => ({ term: s.term, value: s[key] })), CHANNEL_META[chartChannel], highlight);
+    }
+  } else {
+    if (chartChannel === 'ldt') {
+      const highlight = new Set(valid.filter(s => s.total === 0).map(s => s.term));
+      drawSingleSeriesChart(valid.map(s => ({ term: s.term, value: s.total })), CHANNEL_META.ldt, highlight);
+    } else {
+      const missing = valid.filter(s => !crossFdaForTerm(s.term));
+      if (missing.length) {
+        const text = fdaCrossState.length
+          ? `FDA counts loaded for ${valid.length - missing.length} of ${valid.length} biomarker(s) so far. This direction is chart-only — no detail table like the LDT cross-check below.`
+          : `510(k)/PMA counts haven't been loaded for these ${valid.length} biomarker(s) yet.`;
+        showChartCta(text, {
+          label: `Load FDA counts for ${missing.length} biomarker${missing.length === 1 ? '' : 's'}`,
+          onClick: () => runFdaCrossCheck(valid.map(s => s.term), missing.map(s => s.term)),
+        });
+        return;
+      }
+      const key = chartChannel === '510k' ? 'approved510k' : 'approvedPma';
+      drawSingleSeriesChart(valid.map(s => ({ term: s.term, value: crossFdaForTerm(s.term)[key] })), CHANNEL_META[chartChannel]);
+    }
+  }
 }
 
 // --- LDT rendering ------------------------------------------------------------------
@@ -3671,9 +4049,11 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
     $('dateFilterBar').style.display = 'none'; // same — LDT records have no decision_date to filter on
     $('applicantFilterBar').style.display = 'none'; // same — LDT uses "facility," not "applicant"
     $('committeeFilterBar').style.display = 'none'; // same — LDT records have no advisory_committee field
+    // "Contains" has its own wrapper now (split out of applicantFilterBar for its own popover),
+    // but getLdtRanked() never applies showOnlyTerms the way getRanked() does for FDA rows — hide
+    // it here too rather than showing a filter pill that would silently do nothing.
+    $('showOnlyFilterBar').style.display = 'none';
     $('chartCaptag').textContent = 'Figure 1';
-    $('chartTitle').textContent = 'LDT matches by biomarker, ranked fewest first';
-    $('chartHint').textContent = 'Click a bar or its name on the axis to jump to that row in the table below; hovering a table row highlights its bar here.';
     $('resultsCaptag').textContent = 'Table 1';
     $('resultsTitle').textContent = 'LDT results, ranked by fewest matches';
     $('resultsHint').textContent = 'Rank 1 = fewest total matches summed across every source you selected (least competition / most opportunity). Only NY State is an actual regulatory approval — the rest just mean the term is in that lab\'s own commercial catalog.';
@@ -3738,7 +4118,7 @@ function renderLdtResults(targetState, { tbodyId = 'resultsBody', chartAndCaptio
     tbody.appendChild(mainRow);
   });
 
-  if (chartAndCaptions) renderLdtChart(valid);
+  if (chartAndCaptions) { lastLdtValid = valid; lastChartMode = 'ldt'; renderChannelChart(); }
   return { valid, errored };
 }
 
@@ -3746,50 +4126,6 @@ function ldtStatusBadge(status) {
   const cls = classifyLdt(status);
   const map = { approved: 'se', conditional: 'other', other: 'other' };
   return `<span class="decl ${map[cls]}">${escapeHtml(status || '—')}</span>`;
-}
-
-function renderLdtChart(valid) {
-  $('chartCard').style.display = valid.length ? 'block' : 'none';
-  if (!valid.length) return;
-  const ctx = document.getElementById('chart');
-  if (chartRef) { chartRef.destroy(); chartRef = null; }
-  chartRef = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: valid.map(s => s.term),
-      datasets: [
-        { label: 'Total LDT Matches', data: valid.map(s => s.total), backgroundColor: '#1B7A4D', minBarLength: 4 }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      scales: {
-        x: {
-          grid: { color: 'rgba(10,40,70,.08)' },
-          ticks: { color: (ctx) => (valid[ctx.index] && valid[ctx.index].total === 0) ? '#0066B3' : '#4A5A68' }
-        },
-        y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(10,40,70,.08)' } }
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { footer: () => 'Click to jump to this row in the table' } }
-      },
-      onHover: (evt) => {
-        evt.native.target.style.cursor = resolveChartIndex(evt) != null ? 'pointer' : 'default';
-      },
-      onClick: (evt) => {
-        const idx = resolveChartIndex(evt);
-        if (idx == null) return;
-        const row = document.querySelectorAll('#resultsBody tr.rowmain')[idx];
-        if (!row) return;
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        const wrap = row.nextElementSibling.querySelector('.detailwrap');
-        if (wrap && !wrap.classList.contains('open')) row.click();
-        row.classList.add('flash');
-        setTimeout(() => row.classList.remove('flash'), 1000);
-      }
-    }
-  });
 }
 
 // `terms`: string[]. `logToTerminal`, if true, writes each term's trace live into the shared
@@ -3920,6 +4256,9 @@ async function runLdtSearch() {
   $('crossCard').style.display = 'none';
   $('progressWrap').style.display = 'block';
 
+  fdaCrossState = []; // this search's terms are new — any earlier lazy-loaded FDA counts no longer apply
+  chartChannel = 'ldt'; // reset to the only channel this search has data for out of the gate
+
   ldtState = await runLdtSearchForTerms(terms, (i, n, term) => {
     $('progressTxt').textContent = `Searching LDT ${i + 1} of ${n}: ${term}`;
     $('pbarFill').style.width = `${Math.round((i / n) * 100)}%`;
@@ -3934,23 +4273,64 @@ async function runLdtSearch() {
 
 let crossState = [];
 
-$('crossCheckBtn').addEventListener('click', async () => {
+// Shared by the "Check LDT database for N biomarkers with few FDA approvals" button (below,
+// displayTerms == fetchTerms == just the low-count candidates) AND the chart's LDT-channel CTA
+// (displayTerms == every currently-searched biomarker; fetchTerms == whichever of those aren't
+// already in crossState yet, so re-opening the LDT channel after a partial fetch only asks for
+// the rest). crossState is reset per-FDA-search (see runFdaSearch), so it only ever holds
+// results for the CURRENT search's terms — crossBody can safely always render the whole thing.
+async function runCrossCheck(displayTerms, fetchTerms) {
   if (!getSelectedLdtSources().length) { alert('Check at least one data source on the LDT tab first.'); return; }
-  const terms = state.filter(isLdtCrossCheckCandidate).map(s => s.term);
-  if (!terms.length) return;
+  if (!fetchTerms.length) return;
 
   $('crossCheckBtn').disabled = true;
   $('crossCard').style.display = 'block';
-  $('crossBody').innerHTML = `<tr><td colspan="5" class="dnote" style="padding:12px 10px">Searching LDT sources for ${terms.length} biomarker(s)…</td></tr>`;
+  $('crossTitle').textContent = `LDT cross-check — ${displayTerms.length} biomarker${displayTerms.length === 1 ? '' : 's'}`;
+  $('crossBody').innerHTML = `<tr><td colspan="5" class="dnote" style="padding:12px 10px">Searching LDT sources for ${fetchTerms.length} biomarker(s)…</td></tr>`;
 
-  crossState = await runLdtSearchForTerms(terms, (i, n, term) => {
+  const fetched = await runLdtSearchForTerms(fetchTerms, (i, n, term) => {
     $('crossBody').innerHTML = `<tr><td colspan="5" class="dnote" style="padding:12px 10px">Searching LDT ${i + 1} of ${n}: ${escapeHtml(term)}…</td></tr>`;
   });
+  const fetchedTerms = new Set(fetched.map(s => s.term));
+  crossState = crossState.filter(s => !fetchedTerms.has(s.term)).concat(fetched);
 
   renderLdtResults(crossState, { tbodyId: 'crossBody', chartAndCaptions: false });
   $('crossCheckBtn').disabled = false;
+  renderChannelChart(); // in case the chart's LDT channel is what triggered this
   $('crossCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+$('crossCheckBtn').addEventListener('click', () => {
+  const candidates = state.filter(isLdtCrossCheckCandidate).map(s => s.term);
+  const already = new Set(crossState.map(s => s.term));
+  runCrossCheck(candidates, candidates.filter(t => !already.has(t)));
 });
+
+// Reverse direction of runCrossCheck — lazily loads FDA 510(k)/PMA counts for an LDT-mode
+// search's terms, triggered only from the chart's 510(k)/PMA channel CTA (see
+// renderChannelChart). Deliberately chart-only, no mirrored detail table like crossCard/Table 2:
+// fetchBiomarker's per-term FDA pipeline already surfaces its own detail (panel candidates,
+// inferred matches, match-mode tags) that don't map cleanly onto a compact summary row the way
+// LDT's simpler per-source counts do — scoped down rather than half-building a second table.
+// (fdaCrossState itself is declared up near `state`/`chartChannel`.)
+async function runFdaCrossCheck(displayTerms, fetchTerms) {
+  if (!fetchTerms.length) return;
+  $('progressWrap').style.display = 'block';
+  $('pbarFill').style.width = '0%';
+  $('progressTxt').textContent = `Loading FDA counts for ${fetchTerms.length} biomarker(s)…`;
+
+  const fetched = await runFdaSearchForTerms(fetchTerms, (i, n, term) => {
+    $('progressTxt').textContent = `Loading FDA counts ${i + 1} of ${n}: ${term}`;
+    $('pbarFill').style.width = `${Math.round((i / n) * 100)}%`;
+  });
+  const fetchedTerms = new Set(fetched.map(s => s.term));
+  fdaCrossState = fdaCrossState.filter(s => !fetchedTerms.has(s.term)).concat(fetched);
+
+  $('pbarFill').style.width = '100%';
+  $('progressTxt').textContent = `Done — FDA counts loaded for ${fetchTerms.length} biomarker(s).`;
+  setTimeout(() => { $('progressWrap').style.display = 'none'; }, 1200);
+  renderChannelChart();
+}
 
 $('sortByApprovals').addEventListener('click', () => { sortMode = 'approvals'; renderResults(); });
 $('sortByDate').addEventListener('click', () => { sortMode = 'date'; renderResults(); });
@@ -3966,15 +4346,44 @@ $('dateFilterClear').addEventListener('click', () => {
 
 $('applicantFilterSelect').addEventListener('change', (e) => { applicantFilter = e.target.value; renderResults(); });
 
-$('committeeDropdownBtn').addEventListener('click', (e) => {
-  e.stopPropagation();
-  const panel = $('committeePanel');
-  panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
-});
+// --- Filter toolbar: popover open/close + active-state pills -------------------------
+// One generic trigger<->popover wiring for all 4 filter pills (date/applicant/contains/
+// committee) — replaces what used to be a bespoke click handler just for the committee dropdown.
+// Only one popover open at a time; outside-click or Escape closes whichever is open. The
+// committee popover's own "stays open across a checkbox-driven re-render" behavior (see
+// renderCommitteeCheckboxes) is unaffected — it only ever re-opens itself after renderResults()
+// re-renders the checkboxes, never fighting with this generic close logic.
+function setupFilterPopover(triggerId, popoverId) {
+  $(triggerId).addEventListener('click', (e) => {
+    e.stopPropagation();
+    const popover = $(popoverId);
+    const willOpen = popover.style.display !== 'block';
+    document.querySelectorAll('.filter-popover').forEach(p => { p.style.display = 'none'; });
+    popover.style.display = willOpen ? 'block' : 'none';
+  });
+}
+setupFilterPopover('dateFilterTrigger', 'dateFilterPopover');
+setupFilterPopover('applicantFilterTrigger', 'applicantFilterPopover');
+setupFilterPopover('showOnlyTrigger', 'showOnlyPopover');
+setupFilterPopover('committeeDropdownBtn', 'committeePanel');
 document.addEventListener('click', (e) => {
-  const dropdown = $('committeeFilterBar');
-  if (dropdown && !dropdown.contains(e.target)) $('committeePanel').style.display = 'none';
+  document.querySelectorAll('.filter-popover').forEach(p => {
+    if (p.style.display === 'block' && !p.closest('.filter-pop').contains(e.target)) p.style.display = 'none';
+  });
 });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') document.querySelectorAll('.filter-popover').forEach(p => { p.style.display = 'none'; });
+});
+
+function clearDateFilter() {
+  dateFilter = { from: '', to: '' };
+  $('dateFilterFrom').value = '';
+  $('dateFilterTo').value = '';
+  renderResults();
+}
+$('dateFilterClear').addEventListener('click', clearDateFilter);
+$('dateFilterX').addEventListener('click', (e) => { e.stopPropagation(); clearDateFilter(); });
+$('applicantFilterX').addEventListener('click', (e) => { e.stopPropagation(); applicantFilter = ''; renderResults(); });
 
 $('committeeClearBtn').addEventListener('click', (e) => {
   e.stopPropagation();
@@ -4004,6 +4413,35 @@ function addShowOnlyTerm() {
 }
 $('showOnlyAddBtn').addEventListener('click', addShowOnlyTerm);
 $('showOnlyInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addShowOnlyTerm(); } });
+
+// Reflects current filter state on each toolbar pill: an accent-filled "active" look, a quick
+// inline × to clear without opening the popover (date/applicant), or a small count badge
+// (contains/review-panel, where "active" is inherently a count, not a single value) — plus
+// whether "Clear all filters" is worth showing at all (only once something is actually active;
+// previously it always showed alongside the review-panel dropdown whether or not anything was
+// filtered, which is one of the exact "does this make sense for users" issues this pass fixed).
+function updateFilterPillStates() {
+  const dateActive = dateFilterActive();
+  $('dateFilterTrigger').classList.toggle('active', dateActive);
+  $('dateFilterX').style.display = dateActive ? 'inline-flex' : 'none';
+
+  const applicantActive = Boolean(applicantFilter);
+  $('applicantFilterTrigger').classList.toggle('active', applicantActive);
+  $('applicantFilterX').style.display = applicantActive ? 'inline-flex' : 'none';
+
+  const showOnlyActive = showOnlyTerms.length > 0;
+  $('showOnlyTrigger').classList.toggle('active', showOnlyActive);
+  $('showOnlyBadge').style.display = showOnlyActive ? 'inline-flex' : 'none';
+  $('showOnlyBadge').textContent = String(showOnlyTerms.length);
+
+  const committeeActive = excludedCommittees.size > 0;
+  $('committeeDropdownBtn').classList.toggle('active', committeeActive);
+  $('committeeDropdownCount').style.display = committeeActive ? 'inline-flex' : 'none';
+  $('committeeDropdownCount').textContent = String(excludedCommittees.size);
+
+  $('filterSep').style.display = $('sortTabs').style.display === 'none' ? 'none' : 'block';
+  $('clearAllFiltersBtn').style.display = (dateActive || applicantActive || showOnlyActive || committeeActive) ? 'inline-flex' : 'none';
+}
 
 $('searchBtn').addEventListener('click', runSearch);
 
