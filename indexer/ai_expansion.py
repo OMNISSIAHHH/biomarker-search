@@ -364,6 +364,19 @@ async def check_expansion_plausible(client: httpx.AsyncClient, term: str, full_n
     """Returns True/False, or None if the check couldn't run at all (no local LLM configured,
     network/parse failure) — the caller treats None as "unable to check," never as a rejection,
     same fail-open-to-unverified posture as every other optional AI tier in this tool.
+
+    Deliberately does NOT take a category hint, even though one exists elsewhere in this module
+    (see check_expansion_category_fit below) — confirmed live that mixing that judgment into
+    THIS prompt made llama3.2:3b's answers actively incoherent: "MS"/"Multiple Sclerosis" went
+    YES with no category (correct) to NO with
+    category="Neurology" (a MATCHING category, should stay YES) to YES with category="Mass
+    Spectrometry" (a mismatched category, should now be NO) — the opposite of useful in both
+    directions, not just noisy. A short, single-purpose prompt asking ONLY the category-fit
+    question, run as a separate call, was reliable where the compound version wasn't (5/6 on a
+    held-out test set vs. essentially random) — small local models appear to handle one focused
+    binary judgment per call far better than several folded into one. Keep these two checks
+    separate; don't be tempted to merge them again without re-verifying live against a model this
+    weak, not just a larger one.
     """
     if not local_llm_url or not local_llm_model:
         return None
@@ -405,9 +418,63 @@ async def check_expansion_plausible(client: httpx.AsyncClient, term: str, full_n
         return None
 
 
+# A short/generic abbreviation can collide with a completely different, unrelated meaning in a
+# totally different field — confirmed live: "F17" is ImmunoCAP's allergen code for hazelnut, but
+# PubMed/UMLS literature also uses "F17" for Nicotine Dependence Biomarkers, mosquito genetics,
+# and vaccine strains, any of which could otherwise pass check_expansion_plausible on its own
+# terms (each IS a plausible expansion of "F17" in ITS OWN field — just not the one the user
+# meant). A user-supplied category hint lets this get caught. Deliberately a separate function/
+# call from check_expansion_plausible, not a parameter folded into that prompt — see that
+# function's own docstring for why the compound version was unreliable.
+async def check_expansion_category_fit(client: httpx.AsyncClient, term: str, full_name: str,
+                                        category: str, local_llm_url: str | None,
+                                        local_llm_model: str | None,
+                                        trace: list[dict] | None = None) -> bool | None:
+    """Returns True/False, or None if the check couldn't run (no local LLM, network/parse
+    failure) — same fail-open-to-unverified posture as check_expansion_plausible; the caller
+    never treats None as a rejection. No attempt is made to validate free-text category values
+    beyond trimming — an arbitrary or malformed hint just tends not to match anything, never
+    causes an error.
+    """
+    if not local_llm_url or not local_llm_model or not category:
+        return None
+    prompt = (
+        f'In a medical/laboratory context, "{full_name}" is the proposed meaning of the '
+        f'abbreviation "{term}". The user says "{term}" belongs to the "{category}" field.\n'
+        f'Is "{full_name}" a concept that belongs to the "{category}" field? '
+        "Reply with exactly one word: YES or NO."
+    )
+    t0 = time.monotonic()
+    try:
+        res = await client.post(
+            f"{local_llm_url}/api/generate",
+            json={"model": local_llm_model, "prompt": prompt, "stream": False, "think": False,
+                  "options": {"temperature": 0}},
+            timeout=60.0,
+        )
+        elapsed = int((time.monotonic() - t0) * 1000)
+        if res.status_code != 200:
+            _trace(trace, "expansion:category-fit", "error", f'"{full_name}": HTTP {res.status_code}', elapsed)
+            return None
+        raw = (res.json().get("response") or "").split("</think>", 1)[-1].strip()
+        m = EXPANSION_SANITY_LINE_RE.match(raw)
+        if not m:
+            _trace(trace, "expansion:category-fit", "error", f'"{full_name}": unparseable response', elapsed)
+            return None
+        fits = m.group(1).upper() == "YES"
+        _trace(trace, "expansion:category-fit", "hit" if fits else "miss",
+               f'"{full_name}": {"fits" if fits else "rejected, does not fit"} "{category}"', elapsed)
+        return fits
+    except httpx.HTTPError as e:
+        _trace(trace, "expansion:category-fit", "error", f'"{full_name}": {e}',
+               int((time.monotonic() - t0) * 1000))
+        return None
+
+
 async def sanity_check_and_merge_expansion(client: httpx.AsyncClient, term: str,
                                             umls_expansion: dict | None, pubmed_expansion: dict | None,
                                             local_llm_url: str | None, local_llm_model: str | None,
+                                            category: str | None = None,
                                             trace: list[dict] | None = None) -> tuple[dict | None, str]:
     """Sanity-checks each source's OWN candidate independently before merging — so one source's
     implausible pick gets dropped without discarding the other's good one (checking only the
@@ -416,6 +483,10 @@ async def sanity_check_and_merge_expansion(client: httpx.AsyncClient, term: str,
     A no-op (returns merge_umls_pubmed_expansion's own result unchanged) when no local LLM is
     configured — this check is a pure quality improvement on top of that merge, never a
     requirement for it to work.
+
+    `category`, when given, additionally runs check_expansion_category_fit on each surviving
+    candidate (only the ones check_expansion_plausible didn't already drop — no point asking
+    whether an already-rejected name fits the field) — a candidate must pass BOTH checks.
     """
     if umls_expansion:
         plausible = await check_expansion_plausible(
@@ -423,16 +494,29 @@ async def sanity_check_and_merge_expansion(client: httpx.AsyncClient, term: str,
         )
         if plausible is False:
             umls_expansion = None
+        elif category and umls_expansion:
+            fits = await check_expansion_category_fit(
+                client, term, umls_expansion["full"], category, local_llm_url, local_llm_model, trace,
+            )
+            if fits is False:
+                umls_expansion = None
     if pubmed_expansion:
         plausible = await check_expansion_plausible(
             client, term, pubmed_expansion["full"], local_llm_url, local_llm_model, trace,
         )
         if plausible is False:
             pubmed_expansion = None
+        elif category and pubmed_expansion:
+            fits = await check_expansion_category_fit(
+                client, term, pubmed_expansion["full"], category, local_llm_url, local_llm_model, trace,
+            )
+            if fits is False:
+                pubmed_expansion = None
     return merge_umls_pubmed_expansion(umls_expansion, pubmed_expansion)
 
 
 async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: str | None,
+                         category: str | None = None,
                          trace: list[dict] | None = None) -> dict | None:
     if not tavily_api_key:
         _trace(trace, "expansion:tavily", "skipped", "no Tavily key configured")
@@ -446,11 +530,14 @@ async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: st
         # than just mentioning "biomarker" in passing. The grounding-verification guard below
         # only checks that the model's answer traces back to whatever got retrieved — it can't
         # fix a search that retrieved the wrong domain's content in the first place, so the
-        # domain hint has to go in the query itself.
+        # domain hint has to go in the query itself. A user-supplied category hint (see
+        # check_expansion_plausible) is appended the same way, for the same reason — it steers
+        # what actually gets retrieved, not just how the retrieved text gets read afterward.
+        query = f"{term} biomarker full name" + (f", {category}" if category else "")
         res = await client.post(
             TAVILY_SEARCH_URL,
             headers={"Authorization": f"Bearer {tavily_api_key}"},
-            json={"query": f"{term} biomarker full name", "search_depth": "basic", "max_results": 5,
+            json={"query": query, "search_depth": "basic", "max_results": 5,
                   "include_answer": True},
             timeout=20.0,
         )
@@ -472,10 +559,17 @@ async def tavily_search(client: httpx.AsyncClient, term: str, tavily_api_key: st
         return None
 
 
-def crosscheck_prompt(term: str, tavily_response: dict) -> str:
+def crosscheck_prompt(term: str, tavily_response: dict, category: str | None = None) -> str:
     lines = [
         "You are extracting laboratory/medical terminology from web search results.",
         f'Term to identify: "{term}"',
+    ]
+    if category:
+        lines.append(
+            f'The user indicated this term belongs to the "{category}" category/field — if the '
+            "search results support more than one reading, prefer the one that fits this field."
+        )
+    lines += [
         "",
         "Search results:",
     ]
@@ -532,13 +626,14 @@ def _grounded_in_snippets(full_name: str, tavily_response: dict) -> bool:
 
 async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavily_api_key: str | None,
                                       local_llm_url: str | None, local_llm_model: str | None,
+                                      category: str | None = None,
                                       trace: list[dict] | None = None) -> dict | None:
     if not (tavily_api_key and local_llm_url and local_llm_model):
         _trace(trace, "expansion:local-llm", "skipped",
                "Tavily key and/or local LLM URL/model not fully configured")
         return None
 
-    tavily_response = await tavily_search(client, term, tavily_api_key, trace)
+    tavily_response = await tavily_search(client, term, tavily_api_key, category, trace)
     if not tavily_response:
         return None  # tavily_search already recorded why
 
@@ -546,7 +641,7 @@ async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavil
     try:
         res = await client.post(
             f"{local_llm_url}/api/generate",
-            json={"model": local_llm_model, "prompt": crosscheck_prompt(term, tavily_response),
+            json={"model": local_llm_model, "prompt": crosscheck_prompt(term, tavily_response, category),
                   "stream": False, "think": False},
             timeout=LOCAL_LLM_TIMEOUT,
         )
@@ -601,11 +696,16 @@ async def lookup_search_ai_expansion(client: httpx.AsyncClient, term: str, tavil
 
 async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: str | None,
                              tavily_api_key: str | None = None, local_llm_url: str | None = None,
-                             local_llm_model: str | None = None,
+                             local_llm_model: str | None = None, category: str | None = None,
                              trace: list[dict] | None = None) -> tuple[dict | None, str]:
     """Returns (expansion, source) where source is 'umls' | 'pubmed' | 'umls+pubmed' |
     'search-ai' | 'none' — the caller persists source alongside the expansion in expansion_cache
     so a genuinely-unresolvable term doesn't get re-asked of any source on every single search.
+
+    `category` (see check_expansion_plausible's own comment) is forwarded to the sanity check and
+    the Tavily/AI tier; it deliberately does NOT change lookup_umls_expansion's own query/ranking
+    — UMLS returns exactly one candidate with no per-category filtering knob to steer, so this
+    relies on the sanity check to catch a wrong-field UMLS pick after the fact instead.
 
     Confirmed live (a real UMLS key): a UMLS hit used to short-circuit here, skipping the AI
     crosscheck entirely — but UMLS returns exactly ONE candidate name, no alternates, unlike the
@@ -628,10 +728,10 @@ async def resolve_expansion(client: httpx.AsyncClient, term: str, umls_api_key: 
     umls_expansion = await lookup_umls_expansion(client, term, umls_api_key, trace)
     pubmed_expansion = await lookup_pubmed_expansion(client, term, trace)
     primary, primary_source = await sanity_check_and_merge_expansion(
-        client, term, umls_expansion, pubmed_expansion, local_llm_url, local_llm_model, trace,
+        client, term, umls_expansion, pubmed_expansion, local_llm_url, local_llm_model, category, trace,
     )
     ai_expansion = await lookup_search_ai_expansion(client, term, tavily_api_key, local_llm_url,
-                                                     local_llm_model, trace)
+                                                     local_llm_model, category, trace)
     if primary and ai_expansion:
         merged_search = "/".join([
             primary.get("search") or primary["full"],

@@ -375,6 +375,18 @@ result (or nothing, falling through to the next tier) is used instead. Without a
 configured, only the pattern filter runs — the browser-only fallback (no backend) gets the
 pattern filter too, but not the AI check, same as every other backend-only AI tier here.
 
+**Category hint (backend only)** — some short/generic codes genuinely mean more than one thing
+depending on field (e.g. "F17" is ImmunoCAP's allergen code for hazelnut, but PubMed/UMLS
+literature also uses "F17" for Nicotine Dependence Biomarkers, mosquito genetics, and vaccine
+strains). Pick a category from the dropdown next to the biomarker box (or "Other…" for free
+text) and a second AI check rejects a UMLS/PubMed pick that doesn't fit the stated field — a
+*separate* check from the plausibility one above, not folded into it (a combined prompt turned
+out unreliable with a small local model; two focused single-purpose checks work far better). A
+category-hinted search is cached under its own key, fully separate from a plain search of the
+same term, so picking a hint never changes what a later hint-less search of that term returns.
+Has no effect without a local index server configured (same backend-only limitation as the
+plausibility check) — the dropdown is always visible either way, just inert without one.
+
 **Search-grounded AI crosscheck (backend only)** — for whatever UMLS and PubMed don't cover,
 including the wait while a UMLS license is pending. It searches the web for the term first (via
 [Tavily](https://tavily.com), free tier: 1,000 searches/month, no card, instant signup), then

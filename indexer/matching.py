@@ -461,8 +461,19 @@ def panel_candidate_search_token_groups(search_term: str) -> list[list[str]]:
     return groups
 
 
-def expansion_key(term: str) -> str:
-    return strip_anti_prefix(strip_isotype_suffix(term)).strip().lower()
+def expansion_key(term: str, category: str | None = None) -> str:
+    """The DB identity for one term's resolved expansion AND its cached FDA/PMA matches (both
+    keyed by this same string — see indexer/lookup.py). A category hint (e.g. "Allergen" for
+    "F17", which otherwise also resolves to Nicotine Dependence Biomarkers literature) changes
+    which expansion gets resolved and therefore which matches get found, so it gets its own
+    isolated key rather than sharing/overwriting the plain term's cache — a category-less repeat
+    search of the same term must never silently inherit a one-off disambiguation someone else
+    applied. The cost: a category-hinted search never benefits from a plain search's cache (or
+    vice versa) — acceptable, since a category hint is a deliberate, occasional disambiguation
+    action, not the default hot path.
+    """
+    base = strip_anti_prefix(strip_isotype_suffix(term)).strip().lower()
+    return f"{base}::{category.strip().lower()}" if category else base
 
 
 # Confirmed live: an AI-crosscheck-resolved synonym list for "ama-m2" included a bare "Serum"

@@ -107,7 +107,7 @@ def _sse(payload: dict) -> str:
 # inside the term itself.
 @app.get("/biomarker/{term:path}/stream")
 async def biomarker_stream(term: str, api_key: str | None = None, umls_api_key: str | None = None,
-                            refresh: bool = False):
+                            refresh: bool = False, category: str | None = None):
     """Same result as GET /biomarker/{term}, but delivered as Server-Sent Events: each trace
     entry streams the instant it's actually recorded (including mid-way through a real Tavily
     search or a 10-25s local-LLM call), not just once the whole pipeline finishes — this is what
@@ -130,7 +130,7 @@ async def biomarker_stream(term: str, api_key: str | None = None, umls_api_key: 
         async def worker() -> None:
             try:
                 if not refresh:
-                    cached = try_cached_result(conn, term)
+                    cached = try_cached_result(conn, term, category)
                     if cached is not None:
                         for entry in cached["trace"]:
                             queue.put_nowait({"type": "trace", "entry": entry})
@@ -139,7 +139,7 @@ async def biomarker_stream(term: str, api_key: str | None = None, umls_api_key: 
                 async with httpx.AsyncClient() as client:
                     result = await compute_and_cache_result(
                         conn, client, term, _ai_config_for_request(umls_api_key), api_key or OPENFDA_API_KEY,
-                        force_refresh=refresh, on_trace_entry=on_trace_entry,
+                        force_refresh=refresh, category=category, on_trace_entry=on_trace_entry,
                     )
                 queue.put_nowait({"type": "result", "result": result})
             except Exception as e:  # noqa: BLE001 — reported to the client, not raised past SSE
@@ -167,41 +167,46 @@ async def biomarker_stream(term: str, api_key: str | None = None, umls_api_key: 
 
 @app.get("/biomarker/{term:path}")
 async def biomarker(term: str, api_key: str | None = None, umls_api_key: str | None = None,
-                     refresh: bool = False):
+                     refresh: bool = False, category: str | None = None):
     conn = get_conn()
     try:
         # Checked before constructing an httpx.AsyncClient at all — a cache hit should be a
         # pure local read, and on some machines just instantiating a client costs real
         # wall-clock time, which would otherwise quietly defeat the point of caching.
         if not refresh:
-            cached = try_cached_result(conn, term)
+            cached = try_cached_result(conn, term, category)
             if cached is not None:
                 return cached
         async with httpx.AsyncClient() as client:
             return await compute_and_cache_result(
                 conn, client, term, _ai_config_for_request(umls_api_key),
-                api_key or OPENFDA_API_KEY, force_refresh=refresh
+                api_key or OPENFDA_API_KEY, force_refresh=refresh, category=category,
             )
     finally:
         conn.close()
 
 
 @app.get("/expansion/{term:path}")
-async def expansion(term: str, umls_api_key: str | None = None, refresh: bool = False):
+async def expansion(term: str, umls_api_key: str | None = None, refresh: bool = False,
+                     category: str | None = None):
     """Resolves (or returns the cached) full-name/synonym expansion for a term, without running
     the FDA tier queries or predicate propagation /biomarker/{term} also does — for callers that
     only need the resolved name itself (the LDT search tab, see FDA510kBiomarkerSearch.html's
     fetchExpansionForLdt) and shouldn't pay for openFDA work + cache writes they don't need just
     to read one cached string.
+
+    `category` (see check_expansion_plausible's own comment for the motivating F17 example)
+    changes `key` itself — a category-hinted resolution is cached fully separately from the plain
+    term's, so a category-less repeat lookup never silently inherits someone else's disambiguation.
     """
     conn = get_conn()
     try:
-        key = expansion_key(term)
+        key = expansion_key(term, category)
         trace: list[dict] = []
         async with httpx.AsyncClient() as client:
             resolved_expansion, source = await resolve_and_cache_expansion(
                 conn, client, term, key, _ai_config_for_request(umls_api_key),
-                force_refresh=refresh, trace=trace,
+                force_refresh=refresh, category=category, trace=trace,
             )
         conn.commit()
         return {"term": term, "expansion": resolved_expansion, "source": source, "trace": trace}

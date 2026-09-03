@@ -85,8 +85,12 @@ EXPANSION_SOURCE_MATCH_MODE = {
 
 
 async def resolve_and_cache_expansion(conn, client, term: str, key: str, ai_config: dict,
-                                       force_refresh: bool,
+                                       force_refresh: bool, category: str | None = None,
                                        trace: list[dict] | None = None) -> tuple[dict | None, str]:
+    """`key` already encodes `category` (see expansion_key) — the caller computes it once and
+    passes it in rather than this function re-deriving it, so caller and cache always agree on
+    which row they're reading/writing.
+    """
     if not force_refresh:
         cached = db.get_expansion_cache_entry(conn, key)
         if cached is not None:
@@ -99,19 +103,19 @@ async def resolve_and_cache_expansion(conn, client, term: str, key: str, ai_conf
     expansion, source = await ai_expansion.resolve_expansion(
         client, term, ai_config.get("umls_api_key"),
         ai_config.get("tavily_api_key"), ai_config.get("local_llm_url"), ai_config.get("local_llm_model"),
-        trace=trace,
+        category=category, trace=trace,
     )
     db.upsert_expansion_cache(conn, key, expansion, source, datetime.now(timezone.utc).isoformat())
     return expansion, source
 
 
-def try_cached_result(conn, term: str) -> dict | None:
+def try_cached_result(conn, term: str, category: str | None = None) -> dict | None:
     """Pure local check, no client/network involved — lets the caller (server/main.py) avoid
     constructing an httpx.AsyncClient at all for a cache hit, which matters in practice: on some
     machines just instantiating one costs real wall-clock time (TLS/proxy setup), which would
     otherwise silently defeat the whole point of caching for a repeat search.
     """
-    key = expansion_key(term)
+    key = expansion_key(term, category)
     if not db.already_searched(conn, key):
         return None
     cached = db.get_expansion_cache_entry(conn, key)
@@ -127,9 +131,16 @@ def try_cached_result(conn, term: str) -> dict | None:
 
 async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
                                     api_key: str | None = None, force_refresh: bool = False,
+                                    category: str | None = None,
                                     on_trace_entry: Callable[[dict], None] | None = None) -> dict:
     """The network-needing path: resolve (or re-resolve) the term's expansion, run the tiered
     match + predicate-propagation pipeline, cache everything, and return the result.
+
+    `category` is a user-supplied domain hint for a short/ambiguous term (e.g. "Allergen" for
+    "F17" — see ai_expansion.check_expansion_plausible's own comment for the motivating example).
+    It changes `key` itself (via expansion_key), so a category-hinted search's resolved expansion
+    AND matched devices are cached under their own row, fully isolated from a plain search of the
+    same term — never silently overwriting or being overwritten by the un-hinted answer.
 
     `on_trace_entry`, if given, is called the instant each trace entry is recorded (not just once
     everything finishes) — this is what lets server/main.py's GET /biomarker/{term}/stream stream
@@ -150,7 +161,7 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
     few more matches via a less-reliable AI-generated name the way the old unconditional
     version did — an acceptable trade given Tavily is the one tier with a real, metered cost.
     """
-    key = expansion_key(term)
+    key = expansion_key(term, category)
     trace = TraceSink(on_trace_entry)
 
     cached = None if force_refresh else db.get_expansion_cache_entry(conn, key)
@@ -174,7 +185,8 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
         pubmed_expansion = await ai_expansion.lookup_pubmed_expansion(client, term, trace=trace)
         expansion, source = await ai_expansion.sanity_check_and_merge_expansion(
             client, term, umls_expansion, pubmed_expansion,
-            ai_config.get("local_llm_url"), ai_config.get("local_llm_model"), trace=trace,
+            ai_config.get("local_llm_url"), ai_config.get("local_llm_model"),
+            category=category, trace=trace,
         )
 
     # No DB writes from here through the last-resort "unconfirmed" fallback below — every step in between
@@ -196,7 +208,7 @@ async def compute_and_cache_result(conn, client, term: str, ai_config: dict,
     if cached is None and (result["total"] == 0 or result["match_mode"] == "expansion"):
         ai_result = await ai_expansion.lookup_search_ai_expansion(
             client, term, ai_config.get("tavily_api_key"), ai_config.get("local_llm_url"),
-            ai_config.get("local_llm_model"), trace=trace,
+            ai_config.get("local_llm_model"), category=category, trace=trace,
         )
         if ai_result:
             if expansion:
